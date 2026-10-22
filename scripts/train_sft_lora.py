@@ -487,7 +487,11 @@ def main():
     # 3. wandb 接入：显式控制 report_to，避免默认 "all" 在无 wandb 环境下报错
     wandb_mod, wandb_ready = None, False
     _rt = training_args.report_to
-    _user_disabled = extra["no_wandb"] or _rt == "none" or _rt == [] or _rt == [""]
+    # transformers 5.x report_to 默认就是 "none"（4.x 是 "all"）——
+    # 不能拿值判断「用户禁用」，得看命令行是否显式传了 --report_to
+    _user_gave_report_to = "--report_to" in sys.argv
+    _user_disabled = extra["no_wandb"] or \
+        (_user_gave_report_to and (_rt == "none" or _rt == [] or _rt == [""]))
     if _user_disabled:
         training_args.report_to = []
     else:
@@ -498,40 +502,20 @@ def main():
             print("[WARN] 未安装 wandb，本次跳过在线同步（pip install wandb 后重跑可恢复）")
             training_args.report_to = []
     if wandb_ready:
+        # 让 Trainer 的 WandbCallback 自己 init/finish：report_to=["wandb"] 即可。
+        # 手动 wandb.init 会和 callback 的 lifecycle 打架（train 指标推不上、双 run），
+        # 自定义 config/run_name 走 env 变量 + 训练后用 wandb.run.config.update 补。
         os.environ.setdefault("WANDB_PROJECT", extra["wandb_project"])
+        os.environ.setdefault("WANDB_NAME", extra["wandb_run_name"])
         # 探针不上传权重，只传指标
         os.environ.setdefault("WANDB_LOG_MODEL", "false")
-        # 不覆盖用户已显式传入的 --report_to
-        if not training_args.report_to or training_args.report_to == "all":
+        # 不覆盖用户显式传入的 --report_to；默认 "none" / "all" 一律改成只报 wandb
+        if not _user_gave_report_to or _rt == "all" or _rt == ["all"]:
             training_args.report_to = ["wandb"]
+        # run_name 也喂给 TrainingArguments，callback 拿它命名
+        training_args.run_name = extra["wandb_run_name"]
         # 80 条小样本只跑几十步，聚合会丢曲线 —— 每步上报
         training_args.logging_steps = 1
-        # 训练超参与数据血缘先写进 wandb run config，方便多轮探针对比
-        try:
-            if wandb_mod.run is None:
-                wandb_mod.init(
-                    project=extra["wandb_project"],
-                    name=extra["wandb_run_name"],
-                    config={
-                        "probe_tag": "sentiment-sft-probe",
-                        "train_file": data_args.train_file,
-                        "base_model": model_args.model_name_or_path,
-                        "lora_r": model_args.lora_r,
-                        "lora_alpha": model_args.lora_alpha,
-                        "max_seq_length": data_args.max_seq_length,
-                        "field_weights": json.dumps(FIELD_WEIGHTS, ensure_ascii=False),
-                        "poc_stage": POC_STAGE,
-                        "use_skeleton_mask": USE_SKELETON_MASK,
-                        "use_field_weights": USE_FIELD_WEIGHTS,
-                        "epochs": float(training_args.num_train_epochs),
-                        "lr": float(training_args.learning_rate),
-                        "batch_size": training_args.per_device_train_batch_size,
-                    },
-                )
-        except Exception as e:
-            print(f"[WARN] wandb.init 失败，降级为本地日志: {e}")
-            wandb_ready = False
-            training_args.report_to = []
 
     print("=" * 66)
     print("正在初始化 Qwen3-4B SFT LoRA 训练引擎...")
@@ -618,16 +602,7 @@ def main():
     print("  早停策略            : 无早停（SOP §训练纪律：epoch 受控 + cosine 退火；"
           "靠 eval_loss 反弹判定过拟合，不自动掐停）\n")
 
-    if wandb_ready and wandb_mod is not None:
-        try:
-            wandb_mod.config.update({
-                "train_samples": len(train_dataset),
-                "val_samples": len(eval_dataset) if eval_dataset else 0,
-                "effective_batch": eff_batch,
-                "optimizer_steps_total": total_steps,
-            }, allow_val_change=True)
-        except Exception:
-            pass
+    # 训练规模相关的 wandb config 在 run 建立后统一补（见训练收尾段），此处不重复
 
     trainer = FieldWeightedTrainer(
         model=model,
@@ -680,10 +655,30 @@ def main():
 
     if wandb_ready and wandb_mod is not None:
         try:
-            wandb_mod.log(metrics)
-            print(f"[OK] wandb 同步完成: run={extra['wandb_run_name']}, "
-                  f"查看 {wandb_mod.run.url if wandb_mod.run else ''}")
-            wandb_mod.finish()
+            # Trainer 的 WandbCallback 已在 train() 里把 train/loss、train/grad_norm、
+            # eval/* 逐步调 wandb.log；这里只补自定义收尾指标，不再自己 init/finish
+            # （finish 由 callback 在 trainer 退出时统一处理）
+            _probe_cfg = {
+                "probe_tag": "sentiment-sft-probe",
+                "train_file": data_args.train_file,
+                "base_model": model_args.model_name_or_path,
+                "lora_r": model_args.lora_r,
+                "lora_alpha": model_args.lora_alpha,
+                "max_seq_length": data_args.max_seq_length,
+                "field_weights": json.dumps(FIELD_WEIGHTS, ensure_ascii=False),
+                "poc_stage": POC_STAGE,
+                "use_skeleton_mask": USE_SKELETON_MASK,
+                "use_field_weights": USE_FIELD_WEIGHTS,
+                "train_samples": len(train_dataset),
+                "val_samples": len(eval_dataset) if eval_dataset else 0,
+                "effective_batch": eff_batch,
+                "optimizer_steps_total": total_steps,
+            }
+            if wandb_mod.run is not None:
+                wandb_mod.config.update(_probe_cfg, allow_val_change=True)
+                wandb_mod.log(metrics)
+                print(f"[OK] wandb 同步完成: run={extra['wandb_run_name']}, "
+                      f"查看 {wandb_mod.run.url}")
         except Exception as e:
             print(f"[WARN] wandb 收尾同步失败: {e}")
 

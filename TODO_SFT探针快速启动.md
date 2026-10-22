@@ -10,7 +10,7 @@
 
 > **不建多个虚拟环境**：SFT 与 GRPO 依赖栈兼容（GRPO 只比 SFT 多 `trl`），统一装一份即可。
 
-- [ ] **0.1** 租卡：AutoDL 单卡 RTX 4090 24GB（镜像选 PyTorch 2.x + CUDA 12.x + Python 3.10+）
+- [x] **0.1** 租卡：AutoDL 单卡 RTX 4090 24GB（镜像选 PyTorch 2.x + CUDA 12.x + Python 3.10+）
 - [ ] **0.2** 进入实例后**只装一次依赖**（单环境，含 GRPO 需求，一步到位）：
   ```bash
   pip install "torch>=2.1" "transformers>=4.55" "trl>=0.19" "peft>=0.12" \
@@ -18,7 +18,8 @@
   ```
   验证版本：`python3 -c "import transformers, trl, peft; print(transformers.__version__, trl.__version__, peft.__version__)"`
   （Qwen3 要 transformers≥4.51；trl≥0.19 才认 `temperature`/`processing_class`）
-- [ ] **0.3**（可选但推荐）`wandb login` 登录；不登录则自动降级只写本地日志
+- [ ] **0.3**（可选但推荐）`wandb login` 登录；不登录则自动降级只写本地日志。
+  > **开关：`SYNC_WANDB=1` 才上传**。探针实验默认只落本地日志（`logs/train_probe*.log`），不污染 wandb 项目；正式跑或想看曲线时在命令前加 `SYNC_WANDB=1`（例：`SYNC_WANDB=1 SFT_POC_STAGE=POC1 ./scripts/run_probe_e2e.sh train`）。登录态认两条路径：`WANDB_API_KEY` 环境变量 或 `~/.netrc` 里 `api.wandb.ai` 凭据（`wandb login` 写入的即是后者）。上传目标项目固定为 `sentiment-sft-probe`，run 名 `probe_<时间戳>`。
 - [ ] **0.4** 上传 `tests/` 目录（或 git clone 仓库），`cd tests && chmod +x scripts/*.sh`
 - [ ] **0.5** 零依赖自检：`python3 -m unittest discover -s unit -p "test_*.py"` —— 全绿才继续
 
@@ -90,7 +91,7 @@
   SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh train
   ```
   > 每档 adapter 目录带时间戳自动区分；回填时用 `cat output/latest_adapter_path.txt` 找到当前档，或直接取各时间戳目录。
-- [ ] **3.4 每档训练中盯防**（wandb / `logs/train_probe*.log`）：
+- [ ] **3.4 每档训练中盯防**（本地 `logs/train_probe*.log`；要看曲线就 `SYNC_WANDB=1` 重跑同步 wandb，项目 `sentiment-sft-probe`）：
   - [ ] loss 能压下去、无 NaN（NaN = 整轮作废，查毒样本）
   - [ ] `grad_norm` 无连续 >10 暴跳
   - [ ] `eval_loss`（每 5 步一采）是否反弹 → **人判**，不自动早停；反弹则记录拐点（这正是「多轮过拟合 → 支撑正式轮锁 1 epoch」的证据）
@@ -176,7 +177,7 @@
 
 > 跑完上述步骤后，把下列数字逐项回填到各文档对应 `[待实测]` 处（回填后同步更新本清单勾选状态）。
 
-### A. 训练过程指标（→ `train_metrics.json` / wandb / `logs/train_probe*.log`）
+### A. 训练过程指标（→ `train_metrics.json` / `logs/train_probe*.log`；开 `SYNC_WANDB=1` 跑过则有 wandb）
 
 - [ ] **A1** 每档 `train_loss` 曲线与终值（POC1/2/3 各一份）
 - [ ] **A2** `final_eval_loss`（训练结束 `trainer.evaluate()` 终考值），以及全程 eval_loss 是否反弹、拐点在第几步

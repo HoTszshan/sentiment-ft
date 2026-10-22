@@ -10,10 +10,11 @@
 #   ./scripts/run_probe_e2e.sh test         # 只跑推理+评测
 #
 # 开关 (环境变量):
-#   WANDB_API_KEY=xxx  设了就同步 wandb；不设则只落本地日志
+#   SYNC_WANDB=1       探针默认不上传 wandb (只落本地日志)；正式跑设此开关才同步
+#                      (需已 wandb login 或设 WANDB_API_KEY)
 #   MODEL_NAME=...     覆盖基座模型 (默认 Qwen/Qwen3-4B-Instruct-2507)
-#   MODEL_DIR=...      模型存放目录 (默认 $BASE_DIR/models；AutoDL 可设 /root/autodl-tmp/models)
-#   DATA_DIR=...       公开数据集与混合产物目录 (默认 $BASE_DIR/data；AutoDL 可设 /root/autodl-tmp/datasets)
+#   MODEL_DIR=...      模型存放目录 (缺省: /root/autodl-tmp/models，本机自动退回 $BASE_DIR/models)
+#   DATA_DIR=...       公开数据集与混合产物目录 (缺省: /root/autodl-tmp/datasets，本机自动退回 $BASE_DIR/data)
 #   DOMAIN_FILE=...    领域训练数据 (默认 $BASE_DIR/data/train_synth_81.jsonl，仓库内置不外移)
 #   EPOCHS=3           覆盖训练轮数
 #   FORCE=1            忽略已有产物强制重跑
@@ -25,13 +26,20 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BASE_DIR"
 echo "工作目录: $BASE_DIR"
 
+# 与 download_assets.py 的默认逻辑对齐：环境变量 > AutoDL 数据盘 > 仓库本地
+if [ -n "$MODEL_DIR" ]; then :;
+elif [ -d /root/autodl-tmp ]; then MODEL_DIR=/root/autodl-tmp/models;
+else MODEL_DIR="$BASE_DIR/models"; fi
+if [ -n "$DATA_DIR" ]; then :;
+elif [ -d /root/autodl-tmp ]; then DATA_DIR=/root/autodl-tmp/datasets;
+else DATA_DIR="$BASE_DIR/data"; fi
+
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-4B-Instruct-2507}"
-MODEL_DIR="${MODEL_DIR:-$BASE_DIR/models}"
-DATA_DIR="${DATA_DIR:-$BASE_DIR/data}"
 DOMAIN_FILE="${DOMAIN_FILE:-$BASE_DIR/data/train_synth_81.jsonl}"
 ANCHOR_FILE="$DATA_DIR/coig_cqia_anchor.jsonl"
 MIXED_DIR="$DATA_DIR/mixed"
 EPOCHS="${EPOCHS:-3}"
+echo "路径解析: MODEL_DIR=$MODEL_DIR  DATA_DIR=$DATA_DIR  DOMAIN_FILE=$DOMAIN_FILE"
 FORCE="${FORCE:-0}"
 # Loss 消融阶段 (POC1=仅前缀掩码 / POC2=+骨架掩码 / POC3=+字段加权 FIELD_W)
 # 透传给 sft_weight_planner，一次只动一个变量
@@ -41,8 +49,18 @@ TS=$(date +"%Y%m%d_%H%M%S")
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR" output
 
+# LOCAL_MODEL 只在 step_download 里赋值；train/test 单步跑时为空。
+# 兜底：若 $MODEL_DIR 下已有同名目录则直接用本地副本，避免误走 HF Hub 联网下载。
+resolve_local_model() {
+  if [ -z "${LOCAL_MODEL:-}" ] && [ -d "$MODEL_DIR/$(basename "$MODEL_NAME")" ]; then
+    LOCAL_MODEL="$MODEL_DIR/$(basename "$MODEL_NAME")"
+    log "基座本地路径(探测): $LOCAL_MODEL"
+  fi
+}
+
 RUN_LOG="$LOG_DIR/probe_e2e_${TS}.log"
 log() { echo "[PROBE] $*" | tee -a "$RUN_LOG"; }
+
 
 # ---------------------------------------------------------------- 0. 环境自检
 check_deps() {
@@ -58,14 +76,21 @@ check_deps() {
   else
     log "训练依赖齐全"
   fi
-  if [ -n "${WANDB_API_KEY:-}" ]; then
-    log "wandb: 已检测到 WANDB_API_KEY，训练指标将同步在线"
+  # wandb 默认关：探针实验不上传，正式跑才 SYNC_WANDB=1 显式开启。
+  # 登录态有两条路径: WANDB_API_KEY 环境变量 或 ~/.netrc 里的 api.wandb.ai 凭据
+  if [ "${SYNC_WANDB:-0}" != "1" ]; then
+    log "wandb: 探针模式默认关闭，只落本地日志 (正式跑: SYNC_WANDB=1 ./scripts/run_probe_e2e.sh)"
+    WANDB_FLAG="--no_wandb"
+  elif ! python3 -c "import wandb" 2>/dev/null; then
+    log "wandb: SYNC_WANDB=1 但未安装 wandb，降级为本地日志 (pip install wandb)"
+    WANDB_FLAG="--no_wandb"
+  elif [ -n "${WANDB_API_KEY:-}" ] || grep -q "api.wandb.ai" ~/.netrc 2>/dev/null; then
+    log "wandb: SYNC_WANDB=1 且已登录，训练指标将同步在线"
     WANDB_FLAG=""
   else
-    log "wandb: 未设 WANDB_API_KEY，只落本地日志 (需要同步请先 wandb login)"
+    log "wandb: SYNC_WANDB=1 但未登录，降级为本地日志 (wandb login 或设 WANDB_API_KEY)"
     WANDB_FLAG="--no_wandb"
   fi
-  python3 -c "import wandb" 2>/dev/null || { log "提示: 未安装 wandb (pip install wandb)"; WANDB_FLAG="--no_wandb"; }
 }
 
 # ---------------------------------------------------------------- 1. 下载
@@ -109,6 +134,7 @@ step_mix() {
 # ---------------------------------------------------------------- 3. 训练
 step_train() {
   log "步骤 3/5 · LoRA SFT 探针训练 (前缀掩码 + 骨架掩码 + FIELD_W 字段级加权)"
+  resolve_local_model
   TRAIN_LOG="$LOG_DIR/train_probe_${TS}.log"
   RUN_NAME="probe_${TS}"
   python3 scripts/train_sft_lora.py \
@@ -117,11 +143,11 @@ step_train() {
     --val_file "$MIXED_DIR/sft_val.jsonl" \
     --output_dir "output/probe_lora_${TS}" \
     --num_train_epochs "$EPOCHS" \
-    --per_device_train_batch_size 2 \
-    --gradient_accumulation_steps 4 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 8 \
     --learning_rate 2e-5 \
     --lr_scheduler_type cosine \
-    --warmup_ratio 0.05 \
+    --warmup_steps 0.05 \
     --logging_steps 1 \
     --eval_steps 5 \
     --bf16 \
@@ -131,8 +157,13 @@ step_train() {
     --wandb_project sentiment-sft-probe \
     --wandb_run_name "$RUN_NAME" \
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
+  train_rc=${PIPESTATUS[0]}
 
   ADAPTER_DIR="output/probe_lora_${TS}"
+  if [ "$train_rc" -ne 0 ]; then
+    log "⚠️ 训练失败 (exit=$train_rc)，跳过 adapter 登记 —— 详见 $TRAIN_LOG"
+    return "$train_rc"
+  fi
   echo "$ADAPTER_DIR" > output/latest_adapter_path.txt
   log "Adapter 产出: $ADAPTER_DIR"
   log "训练日志   : $TRAIN_LOG"
@@ -140,6 +171,7 @@ step_train() {
 
 # ---------------------------------------------------------------- 4. 推理
 step_infer() {
+  resolve_local_model
   ADAPTER_DIR="$(cat output/latest_adapter_path.txt 2>/dev/null || echo "")"
   log "步骤 4/5 · 加载 Adapter 在内部 val 上批量推理"
   python3 scripts/probe_infer.py \
