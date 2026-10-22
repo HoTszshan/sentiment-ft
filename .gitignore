@@ -1,0 +1,10 @@
+# 运行期产物不入库
+logs/
+output/
+models/
+__pycache__/
+*.pyc
+# 混炼结果每次由 mix 脚本重生成
+data/mixed/
+# 公开 Anchor 数据集（由 download_assets.py 生成）
+data/coig_cqia_anchor.jsonl

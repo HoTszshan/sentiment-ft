@@ -1,0 +1,695 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+舆情负面精判 · Qwen3-4B SFT LoRA 训练主脚本 (《训练手册SOP》对齐版)
+
+核心特性:
+1. 基座: Qwen/Qwen3-4B-Instruct + LoRA (r=16, alpha=32, target_modules=全量线性层)。
+2. 协议分隔符对齐: 识别 <|begin_of_thought|> ... <|end_of_thought|>（训练语料固定形态）。
+3. 前缀损失掩码 (Prefix Masking): 输入指令、Schema 与原文整段置 -100 (Ignore Index)。
+4. 骨架差分掩码 (Skeleton Masking): JSON 结构骨架（键名/引号/括号/冒号/逗号）权重置 0，
+   梯度只回传给 CoT 与各字段 Value；协议分隔符留 1.0x 不遮（遮了就学不会开口与停笔）。
+5. FIELD_W 自定义加权损失 (防梯度稀释核心技术):
+   - 覆写 Trainer.compute_loss;
+   - hard_case 提权 4.0x / sentiment·relevance 提权 3.0x / risk 提权 2.0x;
+   - evidence 降权 0.4x (防长证据文本稀释离散标签);
+   - CoT 保持 1.0x (保留语用推演梯度);
+   - 以加权有效 Token 之和重算分母，规避梯度漂移与伪尖峰。
+6. **POC 阶段开关 (SFT_POC_STAGE)** —— 三阶段共用本脚本，一次只动一个变量:
+   - POC1 = 仅前缀掩码，输出侧等权 1.0        (baseline / 消融对照组)
+   - POC2 = POC1 + 骨架掩码
+   - POC3 = POC2 + 字段级加权 FIELD_W
+   见 `sft_weight_planner.POC_STAGE` 与《SFT训练实战手册》§1.4。
+7. 训练纪律: **不做自动早停**；正式训练 Epoch 严格控 1 (防过拟合 + 给下游 GRPO 留策略熵)，
+   探针跑 EPOCHS=3 只为看曲线拐点；bf16 混合精度, lr=2e-5 (Cosine + warmup 0.05)。
+
+用法:
+  真实训练 (需 torch/transformers/peft):
+      python scripts/train_sft_lora.py --output_dir out/lora_r1 --bf16
+
+  落盘训练日志 + 同步 wandb (AutoDL 探针推荐):
+      python scripts/train_sft_lora.py \
+          --output_dir out/probe_r1 --bf16 \
+          --train_file output/dataset/sft_train.jsonl \
+          --num_train_epochs 3 --per_device_train_batch_size 2 \
+          --logging_steps 1 --log_file logs/train_probe.log \
+          --wandb_project sentiment-sft-probe --wandb_run_name probe-81seed
+
+  离线加权检视 (无需任何 DL 依赖，用于验证/面试演示):
+      python scripts/train_sft_lora.py --dry_run
+
+自定义 flag (不与 transformers TrainingArguments 冲突, 在解析前拦截):
+  --log_file PATH      训练全程日志同时写入文件 (tee, 终端与文件双写)
+  --wandb_project NAME wandb 项目名 (默认 sentiment-sft-probe)
+  --wandb_run_name NAME wandb 运行名 (默认 probe_<时间戳>)
+  --no_wandb           关闭 wandb (本地冒烟用)
+"""
+
+import os
+import sys
+import json
+import time
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+
+# 字段级 Loss 权重 span 规划器（纯逻辑，有独立单测 unit/test_weight_planner.py）
+# FIELD_W 定值: hard_case 4.0 / sentiment·relevance 3.0 / risk 2.0 / evidence 0.4 / CoT 1.0
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+from sft_weight_planner import (
+    FIELD_WEIGHTS, plan_token_weights,
+    POC_STAGE, USE_SKELETON_MASK, USE_FIELD_WEIGHTS,
+)
+
+
+# ============================================================
+# 训练日志落盘 (终端 + 文件双写)
+# ============================================================
+
+class _Tee:
+    """
+    把 stdout/stderr 同时写向原终端与日志文件。
+    覆盖三类输出源: print、transformers.logging (走 StreamHandler→sys.stdout)、tqdm。
+    """
+
+    def __init__(self, stream, file_handle, orig):
+        self._stream = stream
+        self._file = file_handle
+        self._orig = orig
+
+    def write(self, data):
+        try:
+            self._orig.write(data)
+        except Exception:
+            pass
+        try:
+            self._file.write(data.replace("\r", "\n"))  # tqdm 的 \r 换成换行，避免文件里糊成一行
+            self._file.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self._orig.flush()
+        except Exception:
+            pass
+        try:
+            self._file.flush()
+        except Exception:
+            pass
+
+    # tqdm / print(end="") 需要的属性透传
+    @property
+    def encoding(self):
+        return getattr(self._orig, "encoding", "utf-8")
+
+    def isatty(self):
+        try:
+            return self._orig.isatty()
+        except Exception:
+            return False
+
+    def fileno(self):
+        return self._orig.fileno()
+
+
+def _install_log_file(log_file: str):
+    """创建日志目录并把 stdout/stderr 接到 tee 上；返回打开的句柄供收尾关闭。"""
+    import io
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # 以追加模式打开，保证同一文件可承载多次探针迭代
+    fh = io.open(log_path, "a", encoding="utf-8", buffering=1)
+    fh.write("\n" + "=" * 74 + "\n")
+    fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 训练任务启动\n")
+    fh.write("=" * 74 + "\n")
+    sys.stdout = _Tee(sys.stdout, fh, sys.stdout)
+    sys.stderr = _Tee(sys.stderr, fh, sys.stderr)
+    return fh, log_path
+
+
+def _intercept_custom_flags():
+    """
+    在 HfArgumentParser 之前拦截本项目自定义 flag，避免撞 TrainingArguments 字段。
+    返回 dict: log_file / wandb_project / wandb_run_name / no_wandb
+    """
+    opts = {
+        "log_file": None,
+        "wandb_project": "sentiment-sft-probe",
+        "wandb_run_name": f"probe_{time.strftime('%m%d_%H%M%S')}",
+        "no_wandb": False,
+    }
+    argv = list(sys.argv)
+    out = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        key_map = {
+            "--log_file": "log_file",
+            "--wandb_project": "wandb_project",
+            "--wandb_run_name": "wandb_run_name",
+        }
+        if a in key_map:
+            if i + 1 < len(argv):
+                opts[key_map[a]] = argv[i + 1]
+                i += 2
+            else:
+                raise SystemExit(f"[FATAL] {a} 缺少取值")
+            continue
+        if a == "--no_wandb":
+            opts["no_wandb"] = True
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    sys.argv = out
+    return opts
+
+
+# ============================================================
+# 参数定义
+# ============================================================
+
+@dataclass
+class ModelArguments:
+    model_name_or_path: str = field(
+        default="Qwen/Qwen3-4B-Instruct",
+        metadata={"help": "基座模型路径或 HuggingFace ID"}
+    )
+    lora_r: int = field(default=16, metadata={"help": "LoRA rank"})
+    lora_alpha: int = field(default=32, metadata={"help": "LoRA alpha"})
+    lora_dropout: float = field(default=0.05, metadata={"help": "LoRA dropout"})
+
+
+@dataclass
+class DataArguments:
+    train_file: str = field(
+        default="data/mixed/sft_train.jsonl",
+        metadata={"help": "训练集 JSONL 文件路径"}
+    )
+    val_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "验证集 JSONL；给了才开 eval，用于观测 val_loss 是否反弹（过拟合信号）"}
+    )
+    max_seq_length: int = field(
+        default=2560,
+        metadata={"help": "最大截断长度 (SOP §6.3 P99 定值)"}
+    )
+
+
+# ============================================================
+# 离线加权检视 (不依赖 torch / transformers / peft)
+# ============================================================
+
+def dry_run_inspect(data_file: str, n: int = 2):
+    """
+    离线检视模式：不加载模型、不训练，仅打印 FIELD_W 加权与掩码分布。
+    用途: 无 GPU 环境下验证加权逻辑；面试现场演示「梯度没有被 JSON 骨架稀释」。
+
+    注: 用字符级伪编码器（1 字符 = 1 token）展示分布形态。真实 token 划分由 tokenizer 决定，
+        但 span 的「归属」与「相对占比」不受影响 —— span 定位走字符级映射，与分词算法无关。
+    """
+    from sft_weight_planner import char_level_encode
+
+    print("=" * 74)
+    print(f"DRY-RUN 加权检视模式 (不加载模型，纯离线逻辑验证)")
+    print(f"POC 阶段      : {POC_STAGE}  (骨架掩码={'开' if USE_SKELETON_MASK else '关'} / "
+          f"字段加权={'开' if USE_FIELD_WEIGHTS else '关'}；切换: SFT_POC_STAGE=POC1|POC2|POC3)")
+    print(f"FIELD_W 配置: hard_case={FIELD_WEIGHTS['hard_case_type']}x  "
+          f"sentiment={FIELD_WEIGHTS['sentiment']}x  relevance={FIELD_WEIGHTS['relevance']}x  "
+          f"risk={FIELD_WEIGHTS['risk_categories']}x  evidence={FIELD_WEIGHTS['evidence']}x  "
+          f"CoT={FIELD_WEIGHTS['cot']}x"
+          + ("" if USE_FIELD_WEIGHTS else "  ← 当前阶段输出侧等权，上方 FIELD_W 不生效"))
+    print("=" * 74)
+
+    if not os.path.exists(data_file):
+        sys.stderr.write(f"[FATAL] 数据文件不存在: {data_file}\n")
+        raise SystemExit(2)
+
+    with open(data_file, encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+
+    if not lines:
+        sys.stderr.write(f"[FATAL] 数据文件为空: {data_file}\n")
+        raise SystemExit(2)
+
+    for i, line in enumerate(lines[:n], 1):
+        d = json.loads(line)
+        prompt_t = (f"<|im_start|>system\n{d['instruction']}<|im_end|>\n"
+                    f"<|im_start|>user\n{d['input']}<|im_end|>\n"
+                    f"<|im_start|>assistant\n")
+
+        plan = plan_token_weights(prompt_t, d["output"], encode=char_level_encode)
+
+        print(f"\n--- 样本 #{i} ---")
+        print(f"  prompt 长度 : {plan['prompt_len']} tokens  (全部置 -100 且权重 0)")
+        print(f"  总长度      : {plan['full_len']} tokens | 截断: {plan['truncated']}")
+        print(f"\n  {'字段区间':<18}{'token 区间':<16}{'权重':<8}覆盖文本")
+        print(f"  {'-' * 18}{'-' * 16}{'-' * 8}{'-' * 28}")
+
+        full_text = prompt_t + d["output"]
+        for t_s, t_e, key, w in plan["spans"]:
+            snippet = full_text[t_s:t_e].replace("\n", "\\n")
+            if len(snippet) > 32:
+                snippet = snippet[:32] + "…"
+            print(f"  {key:<18}[{t_s:>5},{t_e:>5})  {w:<8}{snippet}")
+
+        total_pos = sum(1 for w in plan["weights"] if w > 0)
+        weighted_sum = sum(w for w in plan["weights"])
+        hi = sum(1 for w in plan["weights"] if w >= 3.0)
+        # 仅在「有效(非掩码)」区间内统计降权占比，否则会把权重 0 的 prompt 区误计入
+        low = sum(1 for w in plan["weights"] if 0 < w < 1.0)
+
+        out_tokens = max(plan["full_len"] - plan["prompt_len"], 1)
+        sk = sum(1 for w in plan["weights"][plan["prompt_len"]:] if w == 0.0)
+
+        print(f"\n  有效(非掩码) token : {total_pos}")
+        print(f"  加权总量 Σw        : {weighted_sum:.1f}  "
+              f"(等权基线应为 {total_pos}；偏离即 FIELD_W 生效)")
+        if USE_FIELD_WEIGHTS:
+            print(f"  高权(≥3.0x) 占比   : {hi / total_pos * 100:.1f}%   ← 核心分类字段")
+            print(f"  降权(0<w<1.0) 占比 : {low / total_pos * 100:.1f}%   ← evidence 长文本")
+        if USE_SKELETON_MASK:
+            print(f"  骨架遮蔽(0×) 占输出: {sk / out_tokens * 100:.1f}%   ← Skeleton Masking 省下的梯度")
+
+    print("\n" + "=" * 74)
+    if USE_FIELD_WEIGHTS:
+        print("验证要点: 高权重落在 hard_case/sentiment/relevance 的枚举值上；")
+        print("          evidence 整段被降到 0.4x，不参与稀释核心标签梯度；")
+    else:
+        print("验证要点: 输出侧全为 1.0x（POC1/POC2 等权），FIELD_W 不参与；")
+    if USE_SKELETON_MASK:
+        print("          JSON 骨架（键名/引号/括号/逗号）整体置 0x，")
+    else:
+        print("          未启用骨架掩码：JSON 骨架按 1.0x 计损失；")
+    print("          CoT 与协议分隔符始终留 1.0x（掩码的边界，不是疏漏）。")
+    print("提示: 真实训练请去掉 --dry_run 并确保已安装 torch/transformers/peft/accelerate")
+    print("=" * 74)
+
+
+# ============================================================
+# 训练组件 (惰性构建 — 仅在真实训练路径导入重型依赖)
+# ============================================================
+
+def _build_training_components(max_seq_length: int):
+    """
+    惰性导入训练栈并构建 (Dataset 类, Collator 类, Trainer 类, torch, tokenizer 依赖)。
+    重型依赖缺失时给出明确安装指引而非晦涩的 ImportError。
+    """
+    try:
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import Dataset
+        from transformers import (
+            AutoModelForCausalLM, AutoTokenizer,
+            TrainingArguments, Trainer, HfArgumentParser,
+        )
+        from peft import LoraConfig, get_peft_model, TaskType
+    except ImportError as e:
+        sys.stderr.write(
+            f"\n[FATAL] 缺少训练依赖: {e}\n"
+            f"  安装: pip install torch transformers peft accelerate\n"
+            f"  仅验证加权逻辑: python scripts/train_sft_lora.py --dry_run\n\n"
+        )
+        raise SystemExit(2)
+
+    class SFTWeightedDataset(Dataset):
+        """带字段级 Loss 权重 Span 标注的 SFT 数据集"""
+
+        def __init__(self, data_path: str, tokenizer, max_len: int = 2560):
+            self.tokenizer = tokenizer
+            self.max_len = max_len
+            self.samples = []
+            with open(data_path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        self.samples.append(json.loads(line))
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, idx: int) -> Dict[str, Any]:
+            item = self.samples[idx]
+
+            prompt_text = (
+                f"<|im_start|>system\n{item['instruction']}<|im_end|>\n"
+                f"<|im_start|>user\n{item['input']}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
+            output_text = item["output"]
+            full_text = prompt_text + output_text + "<|im_end|>"
+
+            full_ids = self.tokenizer.encode(full_text, add_special_tokens=False)
+            if len(full_ids) > self.max_len:
+                full_ids = full_ids[:self.max_len]
+
+            prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+            prompt_len = min(len(prompt_ids), len(full_ids))
+
+            input_ids = torch.tensor(full_ids, dtype=torch.long)
+
+            # 1. 前缀掩码: 输入侧 (System Prompt / Schema / 原文) 置 -100，不参与梯度
+            labels = input_ids.clone()
+            labels[:prompt_len] = -100
+
+            # 2. FIELD_W 字段级加权 —— 复用已单测覆盖的 span 规划器
+            #    (字符级 span → token 下标，规避 BPE 子序列滑窗匹配的漏命中/误命中)
+            plan = plan_token_weights(
+                prompt_text=prompt_text,
+                output_text=output_text,
+                encode=lambda t: self.tokenizer.encode(t, add_special_tokens=False),
+                max_len=self.max_len,
+            )
+            weights = torch.tensor(plan["weights"], dtype=torch.float)
+
+            # 尾部 (如 <|im_end|>) 未被 span 覆盖 → 归 default 1.0x。
+            # 刻意保留: 让模型学到「物理停靠」，与 SOP「repetition_penalty=1.0」呼应。
+            if len(weights) < len(input_ids):
+                weights = torch.cat([
+                    weights,
+                    torch.full((len(input_ids) - len(weights),),
+                               FIELD_WEIGHTS["default"], dtype=torch.float)
+                ])[:len(input_ids)]
+
+            return {"input_ids": input_ids, "labels": labels, "loss_weights": weights}
+
+    class WeightedDataCollator:
+        """右填充 collator: labels 补 -100、weights 补 0.0，防 padding 污染分母"""
+
+        def __init__(self, tokenizer, pad_to_multiple_of: Optional[int] = 8):
+            self.tokenizer = tokenizer
+            self.pad_to_multiple_of = pad_to_multiple_of
+
+        def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+            max_len = max(len(f["input_ids"]) for f in features)
+            if self.pad_to_multiple_of:
+                m = self.pad_to_multiple_of
+                max_len = ((max_len + m - 1) // m) * m
+
+            pad_id = self.tokenizer.pad_token_id or 0
+            out = {"input_ids": [], "labels": [], "loss_weights": [], "attention_mask": []}
+
+            for f in features:
+                ids, lbl, w = f["input_ids"], f["labels"], f["loss_weights"]
+                pad_len = max_len - len(ids)
+                out["input_ids"].append(torch.cat([ids, torch.full((pad_len,), pad_id, dtype=torch.long)]))
+                out["labels"].append(torch.cat([lbl, torch.full((pad_len,), -100, dtype=torch.long)]))
+                out["loss_weights"].append(torch.cat([w, torch.zeros(pad_len, dtype=torch.float)]))
+                out["attention_mask"].append(torch.cat([
+                    torch.ones(len(ids), dtype=torch.long), torch.zeros(pad_len, dtype=torch.long)
+                ]))
+
+            return {k: torch.stack(v) for k, v in out.items()}
+
+    class FieldWeightedTrainer(Trainer):
+        """
+        覆写 compute_loss: 加权 CE + 分母按加权有效 Token 重算 (SOP §6.2)。
+
+        为何不用默认 mean: 默认对「所有非 -100 token」等权取均，导致
+          (a) ~40% 梯度被 JSON 结构骨架钥匙消耗；
+          (b) hard_case 仅 1 token，被 evidence ~30-50 token 严重稀释。
+        本实现在分子加权、分母同步加权，保持 loss 量纲稳定 (不因加权而整体放大)。
+        """
+
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+            labels = inputs.get("labels")
+            loss_weights = inputs.get("loss_weights")
+
+            outputs = model(
+                input_ids=inputs.get("input_ids"),
+                attention_mask=inputs.get("attention_mask"),
+            )
+            logits = outputs.get("logits")
+
+            # next-token 预测：整体左移一位
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            shift_weights = loss_weights[..., 1:].contiguous()
+
+            loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+            token_losses = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            ).view(shift_labels.size())
+
+            weighted_token_losses = token_losses * shift_weights
+
+            # 动态重算分母: 加权有效 Token 之和；floor 防分母为 0 产生 NaN/伪尖峰
+            valid_mask = (shift_labels != -100).float()
+            effective_tokens = (shift_weights * valid_mask).sum()
+            denominator = torch.clamp(effective_tokens, min=1.0)
+
+            loss = weighted_token_losses.sum() / denominator
+            return (loss, outputs) if return_outputs else loss
+
+    return (SFTWeightedDataset, WeightedDataCollator, FieldWeightedTrainer,
+            torch, AutoModelForCausalLM, AutoTokenizer, TrainingArguments,
+            HfArgumentParser, LoraConfig, get_peft_model, TaskType)
+
+
+# ============================================================
+# 主流程
+# ============================================================
+
+def main():
+    # 1. 拦截本项目自定义 flag（在 HfArgumentParser 之前，避免与 TrainingArguments 撞字段）
+    dry_run = "--dry_run" in sys.argv
+    if dry_run:
+        sys.argv = [a for a in sys.argv if a != "--dry_run"]
+    extra = _intercept_custom_flags()
+
+    # 2. 尽早装上 tee，保证 dry_run / 训练 / 报错信息都能落盘
+    log_handle, log_path = None, None
+    if extra["log_file"]:
+        log_handle, log_path = _install_log_file(extra["log_file"])
+        print(f"[LOG] 训练日志同时写入: {log_path}")
+
+    if dry_run:
+        # 允许 --train_file 覆盖，默认用 DataArguments 的默认值
+        train_file = DataArguments.__dataclass_fields__["train_file"].default
+        for i, a in enumerate(sys.argv):
+            if a == "--train_file" and i + 1 < len(sys.argv):
+                train_file = sys.argv[i + 1]
+        dry_run_inspect(train_file, n=2)
+        if log_handle:
+            log_handle.close()
+        return
+
+    (SFTWeightedDataset, WeightedDataCollator, FieldWeightedTrainer,
+     torch, AutoModelForCausalLM, AutoTokenizer, TrainingArguments,
+     HfArgumentParser, LoraConfig, get_peft_model, TaskType) = \
+        _build_training_components(max_seq_length=2560)
+
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # 3. wandb 接入：显式控制 report_to，避免默认 "all" 在无 wandb 环境下报错
+    wandb_mod, wandb_ready = None, False
+    _rt = training_args.report_to
+    _user_disabled = extra["no_wandb"] or _rt == "none" or _rt == [] or _rt == [""]
+    if _user_disabled:
+        training_args.report_to = []
+    else:
+        try:
+            import wandb as _wandb
+            wandb_mod, wandb_ready = _wandb, True
+        except ImportError:
+            print("[WARN] 未安装 wandb，本次跳过在线同步（pip install wandb 后重跑可恢复）")
+            training_args.report_to = []
+    if wandb_ready:
+        os.environ.setdefault("WANDB_PROJECT", extra["wandb_project"])
+        # 探针不上传权重，只传指标
+        os.environ.setdefault("WANDB_LOG_MODEL", "false")
+        # 不覆盖用户已显式传入的 --report_to
+        if not training_args.report_to or training_args.report_to == "all":
+            training_args.report_to = ["wandb"]
+        # 80 条小样本只跑几十步，聚合会丢曲线 —— 每步上报
+        training_args.logging_steps = 1
+        # 训练超参与数据血缘先写进 wandb run config，方便多轮探针对比
+        try:
+            if wandb_mod.run is None:
+                wandb_mod.init(
+                    project=extra["wandb_project"],
+                    name=extra["wandb_run_name"],
+                    config={
+                        "probe_tag": "sentiment-sft-probe",
+                        "train_file": data_args.train_file,
+                        "base_model": model_args.model_name_or_path,
+                        "lora_r": model_args.lora_r,
+                        "lora_alpha": model_args.lora_alpha,
+                        "max_seq_length": data_args.max_seq_length,
+                        "field_weights": json.dumps(FIELD_WEIGHTS, ensure_ascii=False),
+                        "poc_stage": POC_STAGE,
+                        "use_skeleton_mask": USE_SKELETON_MASK,
+                        "use_field_weights": USE_FIELD_WEIGHTS,
+                        "epochs": float(training_args.num_train_epochs),
+                        "lr": float(training_args.learning_rate),
+                        "batch_size": training_args.per_device_train_batch_size,
+                    },
+                )
+        except Exception as e:
+            print(f"[WARN] wandb.init 失败，降级为本地日志: {e}")
+            wandb_ready = False
+            training_args.report_to = []
+
+    print("=" * 66)
+    print("正在初始化 Qwen3-4B SFT LoRA 训练引擎...")
+    print(f"基座模型   : {model_args.model_name_or_path}")
+    print(f"训练数据   : {data_args.train_file}")
+    print(f"LoRA       : r={model_args.lora_r}, alpha={model_args.lora_alpha}, "
+          f"dropout={model_args.lora_dropout}")
+    print(f"max_len    : {data_args.max_seq_length}")
+    print(f"POC 阶段   : {POC_STAGE}  (骨架掩码={'开' if USE_SKELETON_MASK else '关'} / "
+          f"字段加权={'开' if USE_FIELD_WEIGHTS else '关'}；切换: SFT_POC_STAGE=POC1|POC2|POC3)")
+    print(f"FIELD_W    : {FIELD_WEIGHTS}")
+    print(f"日志落盘   : {log_path or '(未启用 --log_file)'}")
+    print(f"wandb      : {'同步至项目 ' + extra['wandb_project'] + ' / run ' + extra['wandb_run_name'] if wandb_ready else '已关闭'}")
+    print("=" * 66)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path, trust_remote_code=True, padding_side="right"
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path,
+        torch_dtype=torch.bfloat16 if training_args.bf16 else torch.float16,
+        trust_remote_code=True,
+        device_map="auto",
+    )
+
+    peft_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=model_args.lora_r,
+        lora_alpha=model_args.lora_alpha,
+        lora_dropout=model_args.lora_dropout,
+        # 全量线性层旁路: 覆盖 attention + MLP，冻结 base
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        bias="none",
+    )
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
+
+    train_dataset = SFTWeightedDataset(
+        data_path=data_args.train_file,
+        tokenizer=tokenizer,
+        max_len=data_args.max_seq_length,
+    )
+    collator = WeightedDataCollator(tokenizer=tokenizer)
+
+    # ---- 验证集：给了才开 eval；SOP 口径不做早停，靠观察 val_loss 是否反弹 ----
+    eval_dataset = None
+    if data_args.val_file and Path(data_args.val_file).exists():
+        eval_dataset = SFTWeightedDataset(
+            data_path=data_args.val_file,
+            tokenizer=tokenizer,
+            max_len=data_args.max_seq_length,
+        )
+        # transformers 版本差异: 4.41+ 叫 eval_strategy，更早叫 evaluation_strategy
+        if hasattr(training_args, "eval_strategy"):
+            training_args.eval_strategy = "steps"
+        else:
+            training_args.evaluation_strategy = "steps"
+        print(f"[EVAL] 验证集: {data_args.val_file} ({len(eval_dataset)} 条)；"
+              f"eval_loss 走同一套 FIELD_W 加权口径")
+    else:
+        if data_args.val_file:
+            print(f"[WARN] --val_file {data_args.val_file} 不存在，本次不启用 eval")
+
+    # ---- 训练规模预算（把「实际 batch / 优化器步数」直接打出来，避免口径含糊）----
+    n = len(train_dataset)
+    eff_batch = training_args.per_device_train_batch_size * \
+        max(int(training_args.gradient_accumulation_steps), 1) * \
+        max(int(training_args.world_size), 1)
+    micro_batches_per_epoch = -(-n // max(int(training_args.per_device_train_batch_size), 1))
+    steps_per_epoch = -(-micro_batches_per_epoch // max(int(training_args.gradient_accumulation_steps), 1))
+    total_steps = int(round(steps_per_epoch * float(training_args.num_train_epochs)))
+    print("\n--- 训练规模预算 ---")
+    print(f"  训练样本            : {n} 条 (含 Anchor)")
+    print(f"  单卡 batch          : {training_args.per_device_train_batch_size}")
+    print(f"  梯度累积            : {training_args.gradient_accumulation_steps}")
+    print(f"  实际 (有效) batch   : {eff_batch}")
+    print(f"  每 epoch 优化器步数 : {steps_per_epoch}")
+    print(f"  合计优化器步数      : {total_steps}  ({float(training_args.num_train_epochs)} epoch)")
+    print(f"  学习率              : {training_args.learning_rate} / {training_args.lr_scheduler_type}")
+    print("  早停策略            : 无早停（SOP §训练纪律：epoch 受控 + cosine 退火；"
+          "靠 eval_loss 反弹判定过拟合，不自动掐停）\n")
+
+    if wandb_ready and wandb_mod is not None:
+        try:
+            wandb_mod.config.update({
+                "train_samples": len(train_dataset),
+                "val_samples": len(eval_dataset) if eval_dataset else 0,
+                "effective_batch": eff_batch,
+                "optimizer_steps_total": total_steps,
+            }, allow_val_change=True)
+        except Exception:
+            pass
+
+    trainer = FieldWeightedTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=collator,
+    )
+
+    print(f">>> 启动训练 (样本 {len(train_dataset)} 条, Epochs={training_args.num_train_epochs}) <<<")
+    t_start = time.time()
+    try:
+        train_result = trainer.train()
+        metrics = dict(train_result.metrics or {})
+    except Exception:
+        print(f"[FATAL] 训练异常中断，耗时 {time.time() - t_start:.1f}s")
+        raise
+    elapsed = time.time() - t_start
+
+    # 训练结束复测 val（同一套 FIELD_W 加权口径），把过拟合信号留档
+    if eval_dataset is not None:
+        try:
+            eval_metrics = trainer.evaluate()
+            metrics.update({f"final_{k}": v for k, v in (eval_metrics or {}).items()})
+            print(f"[EVAL] 训练结束 val_loss = {eval_metrics.get('eval_loss')} "
+                  f"(对照 train_loss={metrics.get('train_loss')}；"
+                  f"val 明显高于 train ⇒ 73 条小样本已出现过拟合，属探针预期内观察)")
+        except Exception as e:
+            print(f"[WARN] 训练后 eval 失败: {e}")
+
+    trainer.save_model(training_args.output_dir)
+    tokenizer.save_pretrained(training_args.output_dir)
+
+    # 训练收尾指标落盘：同时写进 output_dir 与 wandb，方便多轮探针对比
+    metrics.update({
+        "train_runtime_sec": round(elapsed, 1),
+        "train_samples": len(train_dataset),
+        "base_model": model_args.model_name_or_path,
+        "lora_r": model_args.lora_r,
+        "lora_alpha": model_args.lora_alpha,
+    })
+    metrics_path = Path(training_args.output_dir) / "train_metrics.json"
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+    print(f"[OK] 训练完成，LoRA Adapter 已存盘: {training_args.output_dir}")
+    print(f"[OK] 训练指标存盘: {metrics_path}")
+    print(f"[OK] 本轮耗时: {elapsed:.1f}s | loss(train)={metrics.get('train_loss')}")
+
+    if wandb_ready and wandb_mod is not None:
+        try:
+            wandb_mod.log(metrics)
+            print(f"[OK] wandb 同步完成: run={extra['wandb_run_name']}, "
+                  f"查看 {wandb_mod.run.url if wandb_mod.run else ''}")
+            wandb_mod.finish()
+        except Exception as e:
+            print(f"[WARN] wandb 收尾同步失败: {e}")
+
+    if log_handle:
+        log_handle.close()
+
+
+if __name__ == "__main__":
+    main()
