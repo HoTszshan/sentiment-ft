@@ -10,7 +10,7 @@
 
 > **不建多个虚拟环境**：SFT 与 GRPO 依赖栈兼容（GRPO 只比 SFT 多 `trl`），统一装一份即可。
 
-- [x] **0.1** 租卡：AutoDL 单卡 RTX 4090 24GB（镜像选 PyTorch 2.x + CUDA 12.x + Python 3.10+）
+- [ ] **0.1** 租卡：AutoDL 单卡 RTX 4090 24GB（镜像选 PyTorch 2.x + CUDA 12.x + Python 3.10+）
 - [ ] **0.2** 进入实例后**只装一次依赖**（单环境，含 GRPO 需求，一步到位）：
   ```bash
   pip install "torch>=2.1" "transformers>=4.55" "trl>=0.19" "peft>=0.12" \
@@ -64,6 +64,14 @@
   python3 scripts/evaluate_sft.py --test_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl
   ```
   **Anchor 分账说明**：锚点数据是通用指令（自然语言答案，无 CoT+JSON 协议），**不走舆情协议四查**（对它查 JSON 合法率/evidence 子串会 100% 假 FAIL，属口径错配）。脚本已改为分账处理——锚点只查行级结构合法（报告 `anchor_partition` 字段），四查只对领域样本执行。验收看：领域分账四查全过 + `Anchor 行级结构: OK`。
+- [ ] **2.2b** 序列长度统计与 OOM 归因（domain / anchor 分账）：
+  ```bash
+  python3 scripts/stat_seq_len.py \
+      --train_file /root/autodl-tmp/datasets/mixed/sft_train.jsonl \
+      --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 --top_n 5
+  ```
+  看三处：① domain / anchor 两桶 max 谁更长（定位长尾来源）；② total max 是否逼近 `max_seq_length 2560`（超过则该样本会被截断）；③ Top-N 清单定位具体样本行号。
+  判据：total max ≈ 1821（已知领域极值，实测过）→ 维持 batch 1×8 配置即可；若 anchor 桶冒出 2500+ token 长样本 → 收紧锚点采样量或加长度过滤（见 `download_assets.py --anchor_samples`）。
 - [ ] **2.3** 离线 dry-run 验证加权逻辑（无 GPU 成本，三档都要跑）：
   ```bash
   SFT_POC_STAGE=POC1 python3 scripts/train_sft_lora.py --dry_run --train_file /root/autodl-tmp/datasets/mixed/sft_train.jsonl

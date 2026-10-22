@@ -33,6 +33,11 @@ else MODEL_DIR="$BASE_DIR/models"; fi
 if [ -n "$DATA_DIR" ]; then :;
 elif [ -d /root/autodl-tmp ]; then DATA_DIR=/root/autodl-tmp/datasets;
 else DATA_DIR="$BASE_DIR/data"; fi
+# 微调产物（LoRA adapter / 预测 / 评测报告 / 日志）与基座同盘：
+#   AutoDL 下 /root/autodl-tmp/models/sft_senti/，本机退回 $BASE_DIR/output
+if [ -n "$OUTPUT_DIR" ]; then :;
+elif [ -d /root/autodl-tmp ]; then OUTPUT_DIR=/root/autodl-tmp/models/sft_senti;
+else OUTPUT_DIR="$BASE_DIR/output"; fi
 
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-4B-Instruct-2507}"
 DOMAIN_FILE="${DOMAIN_FILE:-$BASE_DIR/data/train_synth_81.jsonl}"
@@ -46,8 +51,12 @@ FORCE="${FORCE:-0}"
 export SFT_POC_STAGE="${SFT_POC_STAGE:-POC1}"
 
 TS=$(date +"%Y%m%d_%H%M%S")
-LOG_DIR="logs"
-mkdir -p "$LOG_DIR" output
+
+# 单次实验独立目录: 本轮所有产物 (adapter/预测/报告) 与日志全收在 run_<TS>/ 下,
+# 一个目录 = 一次完整实验, 拷走即归档; latest 指针放 OUTPUT_DIR 顶层供跨步衔接
+RUN_DIR="$OUTPUT_DIR/run_${TS}"
+LOG_DIR="$RUN_DIR/logs"
+mkdir -p "$RUN_DIR" "$LOG_DIR" "$OUTPUT_DIR"
 
 # LOCAL_MODEL 只在 step_download 里赋值；train/test 单步跑时为空。
 # 兜底：若 $MODEL_DIR 下已有同名目录则直接用本地副本，避免误走 HF Hub 联网下载。
@@ -58,7 +67,7 @@ resolve_local_model() {
   fi
 }
 
-RUN_LOG="$LOG_DIR/probe_e2e_${TS}.log"
+RUN_LOG="$LOG_DIR/probe_e2e.log"
 log() { echo "[PROBE] $*" | tee -a "$RUN_LOG"; }
 
 
@@ -124,27 +133,50 @@ step_mix() {
     --anchor_ratio 0.1 --val_ratio 0.1 --seed 42 2>&1 | tee -a "$RUN_LOG"
 
   # 混合日志与四查质检一并落盘，供回看与回填
-  MIX_LOG="$LOG_DIR/mix_check_${TS}.log"
+  MIX_LOG="$LOG_DIR/mix_check.log"
   python3 scripts/evaluate_sft.py --test_file "$MIXED_DIR/sft_train.jsonl" \
-    --out "output/report_train_check_${TS}.json" > "$MIX_LOG" 2>&1 \
+    --out "$RUN_DIR/report_train_check.json" > "$MIX_LOG" 2>&1 \
     && log "四查(Train) PASS -> $MIX_LOG" \
-    || log "⚠️ 四查(Train) FAIL -> $MIX_LOG (详见 report_train_check_${TS}.json)"
+    || log "⚠️ 四查(Train) FAIL -> $MIX_LOG (详见 report_train_check.json)"
 }
 
 # ---------------------------------------------------------------- 3. 训练
 step_train() {
   log "步骤 3/5 · LoRA SFT 探针训练 (前缀掩码 + 骨架掩码 + FIELD_W 字段级加权)"
   resolve_local_model
-  TRAIN_LOG="$LOG_DIR/train_probe_${TS}.log"
+  TRAIN_LOG="$LOG_DIR/train_probe.log"
   RUN_NAME="probe_${TS}"
-  python3 scripts/train_sft_lora.py \
+
+  # ---- 启动方式选择: 自动探测 GPU 数, 可用 NPROC 环境变量覆盖 ----
+  #   1 卡  → python3 直启
+  #   2 卡  → accelerate launch --multi_gpu DDP (不用 DeepSpeed)
+  # 双卡时 grad_accum 8→4, 保持「有效 batch 8 / 33 步」的消融口径 (1 × 4 × 2 = 8)
+  if [ -z "${NPROC:-}" ]; then
+    NPROC=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 1)
+    [ "$NPROC" -lt 1 ] && NPROC=1
+  fi
+  if [ "$NPROC" -gt 1 ]; then
+    # grad_accum = 8 / NPROC，保证 eff_batch = batch × accum × world_size 恒为 8
+    ACCUM=$(( 8 / NPROC ))
+    [ "$ACCUM" -lt 1 ] && ACCUM=1
+    log "启动方式: accelerate launch --multi_gpu (NPROC=$NPROC, grad_accum=$ACCUM, eff_batch=8)"
+    LAUNCH_CMD=(accelerate launch --multi_gpu --num_processes "$NPROC"
+                --mixed_precision bf16)
+    TRAIN_ARGS=(--gradient_accumulation_steps "$ACCUM")
+  else
+    log "启动方式: python3 直启 (单卡)"
+    LAUNCH_CMD=(python3)
+    TRAIN_ARGS=(--gradient_accumulation_steps 8)
+  fi
+
+  "${LAUNCH_CMD[@]}" scripts/train_sft_lora.py \
     --model_name_or_path "${LOCAL_MODEL:-$MODEL_NAME}" \
     --train_file "$MIXED_DIR/sft_train.jsonl" \
     --val_file "$MIXED_DIR/sft_val.jsonl" \
-    --output_dir "output/probe_lora_${TS}" \
+    --output_dir "$RUN_DIR/probe_lora" \
     --num_train_epochs "$EPOCHS" \
     --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps 8 \
+    "${TRAIN_ARGS[@]}" \
     --learning_rate 2e-5 \
     --lr_scheduler_type cosine \
     --warmup_steps 0.05 \
@@ -159,12 +191,12 @@ step_train() {
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
   train_rc=${PIPESTATUS[0]}
 
-  ADAPTER_DIR="output/probe_lora_${TS}"
+  ADAPTER_DIR="$RUN_DIR/probe_lora"
   if [ "$train_rc" -ne 0 ]; then
     log "⚠️ 训练失败 (exit=$train_rc)，跳过 adapter 登记 —— 详见 $TRAIN_LOG"
     return "$train_rc"
   fi
-  echo "$ADAPTER_DIR" > output/latest_adapter_path.txt
+  echo "$ADAPTER_DIR" > "$OUTPUT_DIR/latest_adapter_path.txt"
   log "Adapter 产出: $ADAPTER_DIR"
   log "训练日志   : $TRAIN_LOG"
 }
@@ -172,20 +204,20 @@ step_train() {
 # ---------------------------------------------------------------- 4. 推理
 step_infer() {
   resolve_local_model
-  ADAPTER_DIR="$(cat output/latest_adapter_path.txt 2>/dev/null || echo "")"
+  ADAPTER_DIR="$(cat "$OUTPUT_DIR/latest_adapter_path.txt" 2>/dev/null || echo "")"
   log "步骤 4/5 · 加载 Adapter 在内部 val 上批量推理"
   python3 scripts/probe_infer.py \
     --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
     --adapter_path "$ADAPTER_DIR" \
     --data_file "$MIXED_DIR/sft_val.jsonl" \
-    --out "output/pred_val_${TS}.jsonl" 2>&1 | tee -a "$RUN_LOG"
-  echo "output/pred_val_${TS}.jsonl" > output/latest_pred_path.txt
+    --out "$RUN_DIR/pred_val.jsonl" 2>&1 | tee -a "$RUN_LOG"
+  echo "$RUN_DIR/pred_val.jsonl" > "$OUTPUT_DIR/latest_pred_path.txt"
 }
 
 # ---------------------------------------------------------------- 5. 评测
 step_eval() {
   log "步骤 5/5 · 评测验收 (模式 B: 金标 vs 预测)"
-  PRED="$(cat output/latest_pred_path.txt 2>/dev/null || echo "")"
+  PRED="$(cat "$OUTPUT_DIR/latest_pred_path.txt" 2>/dev/null || echo "")"
   if [ -z "$PRED" ] || [ ! -f "$PRED" ]; then
     log "未找到预测文件，跳过 (先跑 test)"
     return 0

@@ -5,7 +5,7 @@
 
 核心特性:
 1. 基座: Qwen/Qwen3-4B-Instruct + LoRA (r=16, alpha=32, target_modules=全量线性层)。
-2. 协议分隔符对齐: 识别 <|begin_of_thought|> ... <|end_of_thought|>（训练语料固定形态）。
+2. 协议分隔符对齐: 识别 <think> ... </think>（训练语料固定形态）。
 3. 前缀损失掩码 (Prefix Masking): 输入指令、Schema 与原文整段置 -100 (Ignore Index)。
 4. 骨架差分掩码 (Skeleton Masking): JSON 结构骨架（键名/引号/括号/冒号/逗号）权重置 0，
    梯度只回传给 CoT 与各字段 Value；协议分隔符留 1.0x 不遮（遮了就学不会开口与停笔）。
@@ -441,6 +441,17 @@ def _build_training_components(max_seq_length: int):
             denominator = torch.clamp(effective_tokens, min=1.0)
 
             loss = weighted_token_losses.sum() / denominator
+
+            # HF Trainer (transformers>=4.46) 梯度累积缩放契约:
+            # 当 model.forward 含 **kwargs (Qwen3 如此 → model_accepts_loss_kwargs=True) 时，
+            # training_step 认为子类 compute_loss 已按 num_items_in_batch 做了"token 求和"口径，
+            # 不再替我们除以 gradient_accumulation_steps。
+            # 我们的 compute_loss 返回的是加权 mean 口径 → 8 个 micro-batch 的梯度直接相加，
+            # 等效学习率放大 8 倍、logged train_loss 虚高 8 倍 (探针实测 20~27, ÷8 后 2.5~3.4
+            # 与 eval_loss 2.15~3.0 完全吻合 —— 本 bug 的数值铁证)。
+            # 修法: 返回前除以 grad_accum，把口径还原为"每 micro-batch 份额"。
+            if num_items_in_batch is not None:
+                loss = loss / max(int(self.args.gradient_accumulation_steps), 1)
             return (loss, outputs) if return_outputs else loss
 
     return (SFTWeightedDataset, WeightedDataCollator, FieldWeightedTrainer,

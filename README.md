@@ -51,6 +51,7 @@ MVP/tests/
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
 │   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
+│   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；无 tokenizer 退化为字符级近似）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
 │   ├── generate_corpus.py          语料量产（生成+异族打标+四查）
@@ -244,6 +245,23 @@ python3 scripts/evaluate_sft.py --test_file data/mixed/sft_train.jsonl
 python3 scripts/evaluate_sft.py --gold_file data/mixed/sft_val.jsonl \
                                 --pred_file output/pred_val.jsonl
 ```
+
+### 步骤 5b · 序列长度统计（OOM 排查 / 数据体检）
+
+```bash
+# AutoDL：真 token 口径 + Top-N 最长样本定位（domain / anchor 分账）
+python3 scripts/stat_seq_len.py \
+    --train_file data/mixed/sft_train.jsonl \
+    --tokenizer models/Qwen3-4B-Instruct-2507 --top_n 5
+
+# 无 tokenizer 环境：字符级近似（1 汉字 ≈ 1.4 token）
+python3 scripts/stat_seq_len.py --train_file data/train_synth_81.jsonl
+```
+
+输出 domain / anchor 两桶各自的 prompt / output / total 的 p50/p95/p99/max，
+末尾自动打印归因速读（哪桶贡献长尾）。典型用途：
+排查「大 vocab + 长 seq 的 CE 峰值 OOM」（长样本来源是领域数据还是锚点）、
+确认训练数据是否逼近 `max_seq_length 2560`（超过即被截断）。
 
 ---
 

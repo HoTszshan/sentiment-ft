@@ -18,7 +18,7 @@
         --data_file data/mixed/sft_val.jsonl \
         --out output/pred_val.jsonl
 
-产出文件: 每行 = 该样本模型的原始输出 (含 <|begin_of_thought|> ... JSON)，
+产出文件: 每行 = 该样本模型的原始输出 (含 <think> ... JSON)，
           行序与 --data_file 完全对齐，供 evaluate_sft --gold_file/--pred_file 使用。
 """
 
@@ -109,10 +109,10 @@ def main():
                                     skip_special_tokens=False)
 
             # 静态合规指标（四查的①②在推理侧可提前观测）
-            if "<|begin_of_thought|>" in text and "<|end_of_thought|>" in text:
+            if "<think>" in text and "</think>" in text:
                 n_tag += 1
             try:
-                after = text.split("<|end_of_thought|>")[-1].lstrip()
+                after = text.split("</think>")[-1].lstrip()
                 pred = json.loads(after[: after.rfind("}") + 1]) if "}" in after else None
                 if isinstance(pred, dict):
                     n_json += 1

@@ -40,8 +40,8 @@ def _good_pred(sent="negative", hc="explicit", rel="core",
             "hard_case_type": hc, "risk_categories": list(risk), "evidence": ev}
 
 
-OUT_OK = ('<|begin_of_thought|>Step1 主体某品牌；Step2 判 negative'
-          '<|end_of_thought|>{"subject":"某品牌","relevance":"core",'
+OUT_OK = ('<think>Step1 主体某品牌；Step2 判 negative'
+          '</think>{"subject":"某品牌","relevance":"core",'
           '"sentiment":"negative","hard_case_type":"explicit",'
           '"risk_categories":["product"],"evidence":"才一天就亏了3000多"}')
 
@@ -70,7 +70,7 @@ class TestParseOutput(unittest.TestCase):
     def test_schema_violation_is_invalid_json(self):
         """闭集越界 → 训练侧判 -2.5，评测侧必须同判（5.11）。"""
         _, _, flags = parse_output(
-            '<|begin_of_thought|>x<|end_of_thought|>'
+            '<think>x</think>'
             '{"sentiment":"超级负面","relevance":"core","hard_case_type":"explicit",'
             '"risk_categories":[],"evidence":"abcd","subject":"x"}')
         self.assertTrue(flags["valid_json"])          # json.loads 能过
@@ -79,7 +79,7 @@ class TestParseOutput(unittest.TestCase):
 
     def test_nested_object_rejected(self):
         _, _, flags = parse_output(
-            '<|begin_of_thought|>x<|end_of_thought|>'
+            '<think>x</think>'
             '{"sentiment":"negative","relevance":"core","hard_case_type":"explicit",'
             '"risk_categories":{"a":1},"evidence":"abcd","subject":"x"}')
         self.assertIsNotNone(flags["schema_error"])
@@ -92,7 +92,7 @@ class TestParseOutput(unittest.TestCase):
 class TestResolveGold(unittest.TestCase):
     def test_output_json_is_authoritative(self):
         """output 与 meta 冲突 → 以 output 为准，且冲突入清单（不静默）。"""
-        out = ('<|begin_of_thought|>x<|end_of_thought|>'
+        out = ('<think>x</think>'
                + _good_pred().__repr__().replace("'", '"'))
         row = {"output": ('{"subject":"某品牌","relevance":"core",'
                           '"sentiment":"negative","hard_case_type":"explicit",'

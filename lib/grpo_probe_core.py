@@ -136,7 +136,7 @@ def oracle_sampler(gold: Dict[str, Any]) -> Sampler:
         # 造一条落在 40~65 token 理想带的 CoT（与 test_reward_fns 同一套校准手法）
         cot = ("Step1 主体居叙事中心故core。Step2 字面语义与真实取向相反判irony。"
                "Step3 风险归product与marketing，负面定negative。")
-        comp = f"<|begin_of_thought|>{cot}<|end_of_thought|>" + json.dumps(body, ensure_ascii=False)
+        comp = f"<think>{cot}</think>" + json.dumps(body, ensure_ascii=False)
         return [comp] * g
 
     return _sampler

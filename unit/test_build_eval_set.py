@@ -31,7 +31,7 @@ def _a(**kw):
 
 class TestParseAnnotation(unittest.TestCase):
     def test_coT_wrapped_json(self):
-        raw = ("<|begin_of_thought|>Step1 判 core。Step2 判 irony。Step3 判负。<|end_of_thought|>"
+        raw = ("<think>Step1 判 core。Step2 判 irony。Step3 判负。</think>"
                + json.dumps(_a(), ensure_ascii=False))
         self.assertIsNotNone(parse_annotation(raw))
 

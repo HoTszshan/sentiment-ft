@@ -60,11 +60,11 @@ def _mk(sentiment="negative", hard="irony", risk=None, evidence=None, rel="core"
             "evidence": GOLD["evidence"] if evidence is None else evidence}
     cot = cot or ("Step1 主体居叙事中心故core。Step2 字面语义与真实取向相反判irony。"
                   "Step3 风险归product与marketing，负面定negative。")
-    return f"<|begin_of_thought|>{cot}<|end_of_thought|>" + _j.dumps(body, ensure_ascii=False)
+    return f"<think>{cot}</think>" + _j.dumps(body, ensure_ascii=False)
 
 
 GOOD = _mk()
-BROKEN = "<|begin_of_thought|>cot<|end_of_thought|>{broken"
+BROKEN = "<think>cot</think>{broken"
 
 
 # ============================================================

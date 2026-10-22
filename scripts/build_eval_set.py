@@ -48,8 +48,8 @@ from reward_fns import split_completion, validate_schema            # noqa: E402
 
 def parse_annotation(raw: str) -> Optional[Dict[str, Any]]:
     """从 (可能带 CoT 的) 打标输出里取出 5 字段 JSON。"""
-    _, pred, _ = split_completion(raw if "<|begin_of_thought|>" in (raw or "")
-                                  else f"<|begin_of_thought|>{raw}<|end_of_thought|>{raw}")
+    _, pred, _ = split_completion(raw if "<think>" in (raw or "")
+                                  else f"<think>{raw}</think>{raw}")
     if pred is None:
         # 退路: 直接是 JSON
         t = (raw or "").strip()

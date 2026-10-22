@@ -51,8 +51,8 @@ EVIDENCE_MIN_LEN = 4
 EVIDENCE_MAX_LEN = 80
 
 # 思考标签 (训练模板与推理模板逐字一致)
-THOUGHT_BEGIN = "<|begin_of_thought|>"
-THOUGHT_END = "<|end_of_thought|>"
+THOUGHT_BEGIN = "<think>"   # Qwen3 词表原生标签 (id 151667)，不再用自定义碎 token
+THOUGHT_END = "</think>"    # Qwen3 词表原生标签 (id 151668)
 
 _THOUGHT_RE = re.compile(re.escape(THOUGHT_BEGIN) + r"(.*?)" + re.escape(THOUGHT_END),
                          re.DOTALL)

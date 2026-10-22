@@ -46,7 +46,7 @@ def _mk(cot: str, **kw) -> str:
             "hard_case_type": "irony", "risk_categories": ["product", "marketing"],
             "evidence": "才一天就亏了3000多"}
     body.update(kw)
-    return (f"<|begin_of_thought|>{cot}<|end_of_thought|>"
+    return (f"<think>{cot}</think>"
             f"{json.dumps(body, ensure_ascii=False)}")
 
 
@@ -86,7 +86,7 @@ class TestFormatGate(unittest.TestCase):
 
     def test_broken_json(self):
         self.assertEqual(
-            r_format("<|begin_of_thought|>cot<|end_of_thought|>{broken"),
+            r_format("<think>cot</think>{broken"),
             R_GATE_SHORT_CIRCUIT)
 
     def test_out_of_set_enum(self):
@@ -214,7 +214,7 @@ class TestTotalReward(unittest.TestCase):
 
     def test_corruption_beats_miss_in_bad_ranking(self):
         """核心防御: 崩格式 (-2.5) 必须比危机漏报 (-2.0) 更差。"""
-        corrupt = compute_reward("<|begin_of_thought|>x<|end_of_thought|>{bad",
+        corrupt = compute_reward("<think>x</think>{bad",
                                  INPUT_TEXT, GOLD)["total"]
         miss = compute_reward(_mk(GOOD_COT, sentiment="positive"),
                               INPUT_TEXT, GOLD)["total"]

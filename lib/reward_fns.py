@@ -297,13 +297,13 @@ def assert_contract_invariants() -> bool:
     """三条门禁不变量 + 单调性铁律，任一破坏即抛 AssertionError。"""
     # 1. 门禁项只取 {0, -2.5}，绝不给正分 —— 用**真实行为**验证，
     #    不对常量断常量（恒真断言防不住 r_format 实现被改坏）
-    _ok_out = ('<|begin_of_thought|>x<|end_of_thought|>'
+    _ok_out = ('<think>x</think>'
                '{"subject":"某品牌","relevance":"core","sentiment":"negative",'
                '"hard_case_type":"explicit","risk_categories":["product"],'
                '"evidence":"才一天就亏了3000多"}')
     assert r_format(_ok_out) == 0.0, "合规输出必须得 0 分（门禁不放行也不扣分）"
     assert r_format("格式崩了") == R_GATE_SHORT_CIRCUIT, "崩格式必须短路 -2.5"
-    assert r_format('<|begin_of_thought|>x<|end_of_thought|>{"sentiment":"越界"}') \
+    assert r_format('<think>x</think>{"sentiment":"越界"}') \
         == R_GATE_SHORT_CIRCUIT, "闭集越界必须短路 -2.5"
     # 2. 短路罚 > 业务罚 (严格更负)
     assert R_GATE_SHORT_CIRCUIT < R_MISS_SEVERE, "协议罚必须重于危机漏报"

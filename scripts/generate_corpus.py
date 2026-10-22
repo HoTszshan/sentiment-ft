@@ -121,12 +121,12 @@ def check_four(text: str, target: str, out_raw: str) -> Tuple[bool, Dict[str, An
     返回 (是否通过, 解析结果, 失败原因)
     """
     # 查① JSON 合法 + 结构
-    if "<|begin_of_thought|>" not in out_raw or "<|end_of_thought|>" not in out_raw:
+    if "<think>" not in out_raw or "</think>" not in out_raw:
         return False, {}, "查① 缺少思考标签"
     try:
-        cot = out_raw[out_raw.index("<|begin_of_thought|>") + len("<|begin_of_thought|>"):
-                      out_raw.index("<|end_of_thought|>")]
-        after = out_raw[out_raw.index("<|end_of_thought|>") + len("<|end_of_thought|>"):]
+        cot = out_raw[out_raw.index("<think>") + len("<think>"):
+                      out_raw.index("</think>")]
+        after = out_raw[out_raw.index("</think>") + len("</think>"):]
         if not after.lstrip().startswith("{"):
             return False, {}, "查① 尾赘：end_of_thought 后首字符非 {"
         pred = parse_json_loose(after)
@@ -294,8 +294,8 @@ def build_one(gen: LLMClient, anno: LLMClient, spec: Dict[str, Any],
     # 第③项「证据支撑」与查④ **同一份实现**（lib/evidence_support.py），不重复判两次。
     # 裁判模型与打标模型必须异族（与查④ 同一 client，沿用异族铁律）。
     if judge is not None:
-        _cot = out_raw[out_raw.index("<|begin_of_thought|>") + len("<|begin_of_thought|>"):
-                       out_raw.index("<|end_of_thought|>")].strip()
+        _cot = out_raw[out_raw.index("<think>") + len("<think>"):
+                       out_raw.index("</think>")].strip()
         rb = rubric_check(cot=_cot, pred=pred, input_text=text,
                           judge=lambda p: judge.chat(
                               [{"role": "user", "content": p}],
@@ -308,9 +308,9 @@ def build_one(gen: LLMClient, anno: LLMClient, spec: Dict[str, Any],
              f"行业：【{ind}】；行业风险口径：\n{schema_to_inline(ind)}")
 
     if keep_cot:
-        cot = out_raw[out_raw.index("<|begin_of_thought|>") + len("<|begin_of_thought|>"):
-                      out_raw.index("<|end_of_thought|>")].strip()
-        output = (f"<|begin_of_thought|>\n{cot}\n<|end_of_thought|>"
+        cot = out_raw[out_raw.index("<think>") + len("<think>"):
+                      out_raw.index("</think>")].strip()
+        output = (f"<think>\n{cot}\n</think>"
                   + json.dumps(pred, ensure_ascii=False))
     else:
         output = json.dumps(pred, ensure_ascii=False)

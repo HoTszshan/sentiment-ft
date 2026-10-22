@@ -47,7 +47,7 @@ FIELD_WEIGHTS: Dict[str, float] = {
                             #   仅 POC2/POC3 生效（POC1 下不参与，等权由 span_weight 兜回 1.0）；
                             #   理由见 3.2 Q1：基座已有 JSON 先验，再算模板字符属过度学习，
                             #   且会把大头梯度烧在背模板上、稀释领域标签判别。
-    "default": 1.0,         # 协议分隔符与尾部（<|begin_of_thought|> / <|end_of_thought|> 等）
+    "default": 1.0,         # 协议分隔符与尾部（<think> / </think> 等）
                             #   必须留梯度：这些分隔符未必在基座词表里，遮了就再也学不会发
 }
 
@@ -73,7 +73,7 @@ def span_weight(weight_key: str) -> float:
     """
     return FIELD_WEIGHTS[weight_key] if USE_FIELD_WEIGHTS else FIELD_WEIGHTS["default"]
 
-THOUGHT_END_TOKEN = "<|end_of_thought|>"
+THOUGHT_END_TOKEN = "</think>"   # 与 schema_contract.THOUGHT_END 同源 (Qwen3 原生标签)
 
 EscapeAware = Callable[[str], List[int]]
 
@@ -81,7 +81,7 @@ EscapeAware = Callable[[str], List[int]]
 def find_json_start(output_text: str) -> int:
     """
     定位 output 中 6 字段 JSON 的起始字符下标。
-    约定输出形态: <|begin_of_thought|>{CoT}<|end_of_thought|>{JSON}
+    约定输出形态: <think>{CoT}</think>{JSON}
     """
     if THOUGHT_END_TOKEN in output_text:
         idx = output_text.index(THOUGHT_END_TOKEN) + len(THOUGHT_END_TOKEN)
@@ -155,8 +155,8 @@ def plan_field_char_spans(output_text: str) -> List[Tuple[int, int, str]]:
     """
     spans: List[Tuple[int, int, str]] = []
 
-    if "<|begin_of_thought|>" in output_text:
-        cot_start = output_text.index("<|begin_of_thought|>") + len("<|begin_of_thought|>")
+    if "<think>" in output_text:
+        cot_start = output_text.index("<think>") + len("<think>")
     else:
         cot_start = 0
 
@@ -243,7 +243,7 @@ def plan_token_weights(
     # ---- 3. JSON 结构骨架遮蔽 (Skeleton Masking) —— 仅 POC2 / POC3 ----
     # 只遮 JSON「语法」：键名 / 引号 / 括号 / 冒号 / 逗号 —— 位置固定、信息熵为零，
     # 算它们的 Loss 等于把大头梯度烧在背模板上。
-    # 绝不遮协议分隔符 <|begin_of_thought|> / <|end_of_thought|>：它们位于 prompt 之后、
+    # 绝不遮协议分隔符 <think> / </think>：它们位于 prompt 之后、
     # JSON 之前，归 default 1.0 必须留梯度 —— 这些串未必在基座词表里，遮了就再也学不会发。
     # 前提是 JSON 真解析得开：解析失败则整体保留 default，避免整条样本零梯度、分母坍缩。
     if USE_SKELETON_MASK:

@@ -35,7 +35,7 @@ EMPTY_JSON = ('{"subject": "广发证券", "relevance": "core", "sentiment": "po
 
 
 def output(cot=COT, js=FULL_JSON):
-    return f"<|begin_of_thought|>{cot}<|end_of_thought|>{js}"
+    return f"<think>{cot}</think>{js}"
 
 
 def plan_for(text, stage):
@@ -176,7 +176,7 @@ class TestDenominatorAndBounds(unittest.TestCase):
 class TestInvalidJson(unittest.TestCase):
     def test_broken_json_keeps_default_weight(self):
         """C3: JSON 解析失败 → 整段保留 1.0, 不遮不塌。"""
-        broken = "<|begin_of_thought|>cot<|end_of_thought|>{\"subject\": \"x\", "
+        broken = "<think>cot</think>{\"subject\": \"x\", "
         plan = plan_for(broken, "POC2")
         w = plan["weights"]
         self.assertTrue(all(x in (0.0, 1.0) for x in w[plan["prompt_len"]:]))

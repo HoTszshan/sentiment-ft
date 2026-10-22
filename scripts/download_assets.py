@@ -107,24 +107,56 @@ def download_anchor_dataset(out_dir: str, num_samples: int = 500):
         print(f"✓ 已就绪 {num_samples} 条通用 Anchor 样本 -> {out_path}")
 
 
+def _default_dir(env_key: str, fallback: str) -> str:
+    """默认目录优先级：环境变量 > AutoDL 数据盘 /root/autodl-tmp > 仓库本地 fallback。
+
+    非 AutoDL 环境（如 macOS 本机无 /root 写权限）自动退回仓库内目录，脚本永不因默认路径崩。
+    """
+    import os as _os
+    env = _os.environ.get(env_key)
+    if env:
+        return env
+    if _os.path.isdir("/root/autodl-tmp"):
+        return f"/root/autodl-tmp/{fallback}"
+    return fallback
+
+
 def main():
     parser = argparse.ArgumentParser(description="基座模型与公开数据集一键下载器")
     parser.add_argument("--model", default="Qwen/Qwen3-4B-Instruct-2507",
                         help="基座模型ID (默认 Qwen3-4B-Instruct-2507，ModelScope 实际在架仓库名)")
-    parser.add_argument("--model_dir", default="/root/autodl-tmp/models",
-                        help="模型存放目录 (AutoDL 数据盘默认 /root/autodl-tmp/models)")
+    parser.add_argument("--model_dir", default=None,
+                        help="模型存放目录 (缺省: AutoDL 数据盘 /root/autodl-tmp/models，本机自动退回 ./models)")
     parser.add_argument("--source", choices=["modelscope", "huggingface"], default="modelscope", help="下载源")
     parser.add_argument("--download_anchor", action="store_true", help="是否下载 COIG-CQIA 通用 Anchor 数据集")
-    parser.add_argument("--data_dir", default="/root/autodl-tmp/datasets",
-                        help="公开数据集存放目录 (AutoDL 数据盘默认 /root/autodl-tmp/datasets)")
+    parser.add_argument("--data_dir", default=None,
+                        help="公开数据集存放目录 (缺省: AutoDL 数据盘 /root/autodl-tmp/datasets，本机自动退回 ./data)")
     parser.add_argument("--anchor_samples", type=int, default=float('inf'), help="Anchor 采样条数")
+    parser.add_argument("--skip_model", action="store_true",
+                        help="只下数据集、跳过基座模型下载 (默认数据集下载完后自动接着下模型)")
     args = parser.parse_args()
 
+    args.model_dir = args.model_dir or _default_dir("MODEL_DIR", "models")
+    args.data_dir = args.data_dir or _default_dir("DATA_DIR", "datasets")
+
+    did_any = False
     if args.download_anchor:
         download_anchor_dataset(args.data_dir, num_samples=args.anchor_samples)
+        did_any = True
+        # 数据集下载完成后自动接着下基座模型（一条命令跑完两步资产准备）。
+        # snapshot_download 幂等：模型已在本地时秒级校验跳过，重复执行无副作用。
+        if not args.skip_model:
+            print("\n[自动] Anchor 数据集就绪，接着下载基座模型 (跳过请加 --skip_model)")
+            download_model(args.model, args.model_dir, source=args.source)
 
-    if args.model:
+    if args.model and not args.download_anchor:
+        # 未开 --download_anchor 时保持旧行为：只下模型
         download_model(args.model, args.model_dir, source=args.source)
+        did_any = True
+
+    if not did_any:
+        print("未指定任何下载动作: 加 --download_anchor 下数据集(自动连带模型)，"
+              "或单独用 --model 指定模型。")
 
 if __name__ == "__main__":
     main()
