@@ -52,6 +52,7 @@ MVP/tests/
 │   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
 │   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；无 tokenizer 退化为字符级近似）
+│   ├── pick_hard_cases.py          难例选样（按 hard_case_type 过滤打印行号+摘要，对比样张/四档对照选样用）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
 │   ├── generate_corpus.py          语料量产（生成+异族打标+四查）

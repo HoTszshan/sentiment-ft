@@ -138,14 +138,10 @@
 
 - [ ] **4.5.1** 从 val 里挑难例样本（按 `hard_case_type` 过滤），确认其原文与金标：
   ```bash
-  python3 -c "
-  import json
-  for i, line in enumerate(open('/root/autodl-tmp/datasets/mixed/sft_val.jsonl')):
-      d = json.loads(line)
-      gold = d.get('output') or d.get('gold') or {}
-      if gold.get('hard_case_type') in ('irony','multi_subject','counterfactual'):
-          print(i, gold.get('hard_case_type'), '|', d.get('input_text', d.get('text',''))[:50])
-  "
+  python3 scripts/pick_hard_cases.py --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl
+  # 命中太少可从全量领域集挑（用同一段原文临时构造输入）:
+  python3 scripts/pick_hard_cases.py --data_file data/train_synth_81.jsonl --n 5
+  # 自定义类型: --types irony,metaphor
   ```
   > 记下选中的行号（8 条 val 若无难例，就从 `data/train_synth_81.jsonl` 全量里挑，用同一段原文临时构造输入）。
 - [ ] **4.5.2** 分别跑两版推理（同一份输入、同一解码配置）：

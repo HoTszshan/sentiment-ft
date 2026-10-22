@@ -18,6 +18,8 @@
 #   DOMAIN_FILE=...    领域训练数据 (默认 $BASE_DIR/data/train_synth_81.jsonl，仓库内置不外移)
 #   EPOCHS=3           覆盖训练轮数
 #   FORCE=1            忽略已有产物强制重跑
+#   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
+#   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
 # ==============================================================================
 
 set -e
@@ -135,7 +137,8 @@ step_mix() {
     --domain_file "$DOMAIN_FILE" \
     --anchor_file "$ANCHOR_FILE" \
     --out_dir "$MIXED_DIR" \
-    --anchor_ratio 0.1 --val_ratio 0.1 --seed 42 2>&1 | tee -a "$RUN_LOG"
+    --anchor_ratio 0.1 --val_ratio 0.1 --seed 42 \
+    --anchor_max_chars "${ANCHOR_MAX_CHARS:-1200}" 2>&1 | tee -a "$RUN_LOG"
 
   # 混合日志与四查质检一并落盘，供回看与回填
   MIX_LOG="$LOG_DIR/mix_check.log"
@@ -155,26 +158,30 @@ step_train() {
   # ---- 启动方式选择: 自动探测 GPU 数, 可用 NPROC 环境变量覆盖 ----
   #   1 卡 → python3 直启
   #   2 卡 → accelerate launch --multi_gpu DDP (不用 DeepSpeed)
-  # 双卡时 grad_accum 8→4, 保持「有效 batch 8」的消融口径 (1 × 4 × 2 = 8)。
-  # 显存预算: 3090×2 DDP batch=1 已实测顶穿 23.5G (autograd 图叠加 vocab logits),
-  #           需配 per_device_batch=1 + max_len 收紧; 正式轮或显存 ≥32G 时可放宽。
+  # 有效 batch 恒为 8 (消融口径不变): ACCUM = 8 / (PER_DEV_BATCH × NPROC)
+  #   默认 per_dev=2: 单卡 2×4=8, 双卡 2×2×2=8; OOM 时 PER_DEV_BATCH=1 退回保守档
+  # 显存注记: 3090×2 DDP 曾在「未做 anchor 长度过滤(1835 token 长尾)+batch=2」下顶穿 23.5G;
+  #           anchor 过滤后全库 max≈719 token, batch=2 峰值回落 ~2.5 倍, 默认 2 可用。
   if [ -z "${NPROC:-}" ]; then
     NPROC=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 1)
     [ "$NPROC" -lt 1 ] && NPROC=1
   fi
-  if [ "$NPROC" -gt 1 ]; then
-    # grad_accum = 8 / NPROC，保证 eff_batch = batch × accum × world_size 恒为 8
+  PER_DEV_BATCH="${PER_DEV_BATCH:-2}"
+  ACCUM=$(( 8 / (PER_DEV_BATCH * NPROC) ))
+  if [ "$ACCUM" -lt 1 ] || [ $(( PER_DEV_BATCH * NPROC * ACCUM )) -ne 8 ]; then
+    log "⚠️ PER_DEV_BATCH=$PER_DEV_BATCH × NPROC=$NPROC 不能整除有效 batch 8, 回退 per_dev=1"
+    PER_DEV_BATCH=1
     ACCUM=$(( 8 / NPROC ))
-    [ "$ACCUM" -lt 1 ] && ACCUM=1
-    log "启动方式: accelerate launch --multi_gpu (NPROC=$NPROC, grad_accum=$ACCUM, eff_batch=8)"
+  fi
+  if [ "$NPROC" -gt 1 ]; then
+    log "启动方式: accelerate launch --multi_gpu (NPROC=$NPROC, per_dev=$PER_DEV_BATCH, accum=$ACCUM, eff_batch=8)"
     LAUNCH_CMD=(accelerate launch --multi_gpu --num_processes "$NPROC"
                 --mixed_precision bf16)
-    TRAIN_ARGS=(--gradient_accumulation_steps "$ACCUM")
   else
-    log "启动方式: python3 直启 (单卡)"
+    log "启动方式: python3 直启 (单卡 per_dev=$PER_DEV_BATCH, accum=$ACCUM, eff_batch=8)"
     LAUNCH_CMD=(python3)
-    TRAIN_ARGS=(--gradient_accumulation_steps 8)
   fi
+  TRAIN_ARGS=(--gradient_accumulation_steps "$ACCUM")
 
   # 显存紧时的杠杆选项 (MAX_LEN=... 覆盖):
   #   2560 = SOP 定值 (P99); 数据实测 P95=650 / max=1821 → 2560 只是留安全边际,
@@ -189,7 +196,7 @@ step_train() {
     --val_file "$MIXED_DIR/sft_val.jsonl" \
     --output_dir "$RUN_DIR/probe_lora" \
     --num_train_epochs "$EPOCHS" \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size "$PER_DEV_BATCH" \
     --max_seq_length "$MAX_LEN" \
     "${TRAIN_ARGS[@]}" \
     --learning_rate 2e-5 \

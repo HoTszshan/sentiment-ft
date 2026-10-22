@@ -117,7 +117,8 @@ def print_split_stats(tag: str, rows):
 
 def mix_datasets(domain_file: str, anchor_file: str, out_dir: str,
                  anchor_ratio: float = 0.1, val_ratio: float = 0.1,
-                 seed: int = 42, stratified: bool = True):
+                 seed: int = 42, stratified: bool = True,
+                 anchor_max_chars: int = 1200):
     rng = random.Random(seed)
     domain_path = Path(domain_file)
     anchor_path = Path(anchor_file)
@@ -136,6 +137,22 @@ def mix_datasets(domain_file: str, anchor_file: str, out_dir: str,
     anchor_pool = []
     if anchor_path.exists():
         raw = [json.loads(l) for l in open(anchor_path, encoding="utf-8") if l.strip()]
+        # ---- 长度过滤（混合前）: 锚点是通用指令文本, 无 CoT+JSON 协议长度约束,
+        # COIG-CQIA 里混有长文 (实测单条 prompt 段可达 1828 token, 为 domain max 719 的 2.6 倍),
+        # 是 OOM 长尾的主要来源。按字符数过滤 (1 汉字≈1.4 token, 1200 字符 ≈ 1680 token 上限;
+        # 默认 1200 字符下 95%+ 正常锚点保留, 超长维基类长文被剔除)。
+        n_raw = len(raw)
+        filtered = [r for r in raw
+                    if len(r.get("instruction", "") or "") + len(r.get("input", "") or "")
+                    + len(r.get("output", "") or "") <= anchor_max_chars]
+        n_dropped = n_raw - len(filtered)
+        raw = filtered
+        if n_dropped:
+            print(f"⚠️ Anchor 长度过滤: 剔除 {n_dropped}/{n_raw} 条 (拼接超 {anchor_max_chars} 字符, "
+                  f"防 OOM 长尾; 可用 --anchor_max_chars 调整)")
+        if not raw:
+            raise SystemExit(f"[FATAL] 锚点数据经长度过滤后为空 (max_chars={anchor_max_chars}), "
+                             f"请检查 anchor 文件或放宽 --anchor_max_chars")
         rng.shuffle(raw)
         anchor_pool = raw[:n_anchor]
         # 不足则循环补齐
@@ -211,13 +228,16 @@ def main():
     p.add_argument("--anchor_ratio", type=float, default=0.1, help="Anchor 占比 (默认 10%，即 9:1)")
     p.add_argument("--val_ratio", type=float, default=0.1, help="Val 占比 (默认 10%)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--anchor_max_chars", type=int, default=1200,
+                   help="锚点单条 (instruction+input+output) 最大字符数, 超长剔除防 OOM (默认 1200≈1680 token)")
     p.add_argument("--random_split", action="store_true",
                    help="关掉分层，退化为随机洗牌切分")
     args = p.parse_args()
 
     mix_datasets(args.domain_file, args.anchor_file, args.out_dir,
                  anchor_ratio=args.anchor_ratio, val_ratio=args.val_ratio,
-                 seed=args.seed, stratified=not args.random_split)
+                 seed=args.seed, stratified=not args.random_split,
+                 anchor_max_chars=args.anchor_max_chars)
 
 
 if __name__ == "__main__":
