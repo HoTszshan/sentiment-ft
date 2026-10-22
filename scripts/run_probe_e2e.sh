@@ -52,6 +52,11 @@ export SFT_POC_STAGE="${SFT_POC_STAGE:-POC1}"
 
 TS=$(date +"%Y%m%d_%H%M%S")
 
+# 显存碎片缓解：大 vocab(151936)×seq2560 的 logits/loss 临时块 + DDP 通信 buffer
+# 容易把 reserved-but-unallocated 顶高；expandable_segments 让 caching allocator
+# 按需扩展段而非按 2 的幂整块预留，显著降低 OOM 概率（对 3090 24G 尤其有效）
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
 # 单次实验独立目录: 本轮所有产物 (adapter/预测/报告) 与日志全收在 run_<TS>/ 下,
 # 一个目录 = 一次完整实验, 拷走即归档; latest 指针放 OUTPUT_DIR 顶层供跨步衔接
 RUN_DIR="$OUTPUT_DIR/run_${TS}"
@@ -148,9 +153,11 @@ step_train() {
   RUN_NAME="probe_${TS}"
 
   # ---- 启动方式选择: 自动探测 GPU 数, 可用 NPROC 环境变量覆盖 ----
-  #   1 卡  → python3 直启
-  #   2 卡  → accelerate launch --multi_gpu DDP (不用 DeepSpeed)
-  # 双卡时 grad_accum 8→4, 保持「有效 batch 8 / 33 步」的消融口径 (1 × 4 × 2 = 8)
+  #   1 卡 → python3 直启
+  #   2 卡 → accelerate launch --multi_gpu DDP (不用 DeepSpeed)
+  # 双卡时 grad_accum 8→4, 保持「有效 batch 8」的消融口径 (1 × 4 × 2 = 8)。
+  # 显存预算: 3090×2 DDP batch=1 已实测顶穿 23.5G (autograd 图叠加 vocab logits),
+  #           需配 per_device_batch=1 + max_len 收紧; 正式轮或显存 ≥32G 时可放宽。
   if [ -z "${NPROC:-}" ]; then
     NPROC=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 1)
     [ "$NPROC" -lt 1 ] && NPROC=1
@@ -169,6 +176,13 @@ step_train() {
     TRAIN_ARGS=(--gradient_accumulation_steps 8)
   fi
 
+  # 显存紧时的杠杆选项 (MAX_LEN=... 覆盖):
+  #   2560 = SOP 定值 (P99); 数据实测 P95=650 / max=1821 → 2560 只是留安全边际,
+  #          砍到 1024 只截尾部超长样本, 但 activation/logits 随 seq 平方省。
+  #   探针已开 gradient_checkpointing (activation -80%), 2560 可扛;
+  #   若仍 OOM 就 MAX_LEN=1536/1024 再压, 或直接显式 --max_seq_length。
+  MAX_LEN="${MAX_LEN:-2560}"
+
   "${LAUNCH_CMD[@]}" scripts/train_sft_lora.py \
     --model_name_or_path "${LOCAL_MODEL:-$MODEL_NAME}" \
     --train_file "$MIXED_DIR/sft_train.jsonl" \
@@ -176,6 +190,7 @@ step_train() {
     --output_dir "$RUN_DIR/probe_lora" \
     --num_train_epochs "$EPOCHS" \
     --per_device_train_batch_size 1 \
+    --max_seq_length "$MAX_LEN" \
     "${TRAIN_ARGS[@]}" \
     --learning_rate 2e-5 \
     --lr_scheduler_type cosine \
@@ -186,7 +201,7 @@ step_train() {
     --save_strategy no \
     --remove_unused_columns false \
     --log_file "$TRAIN_LOG" \
-    --wandb_project sentiment-sft-probe \
+    --wandb_project sentiment-sft-probe2 \
     --wandb_run_name "$RUN_NAME" \
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
   train_rc=${PIPESTATUS[0]}

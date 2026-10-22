@@ -416,9 +416,16 @@ def _build_training_components(max_seq_length: int):
             labels = inputs.get("labels")
             loss_weights = inputs.get("loss_weights")
 
-            outputs = model(
+            # 显存预算最紧的路径（4B + 151936-vocab logits + DDP）下绕开 DDP 壳：
+            # DDP.forward 除了正常前向外还有 find_unused_parameters 的全图遍历
+            # 与通信 bucket 分配，额外 ~GB 级瞬时占用，3090×2 顶不住。
+            # 直接调 .module (PeftModel) 走 LoRA 分支；梯度跨卡同步由 DDP 在
+            # 参数上注册的 grad hook 在 backward 时完成，forward 不经 DDP 不破坏同步。
+            base = getattr(model, "module", model)
+            outputs = base(
                 input_ids=inputs.get("input_ids"),
                 attention_mask=inputs.get("attention_mask"),
+                logits_to_keep=0,   # 明确要全量 logits 且不触发 labels→loss 路径
             )
             logits = outputs.get("logits")
 
@@ -428,6 +435,8 @@ def _build_training_components(max_seq_length: int):
             shift_weights = loss_weights[..., 1:].contiguous()
 
             loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+            # bf16 logits 直接喂 CE：fp32 upcast 发生在内核内部按需要处理，
+            # 不再预先把整个 [seq, vocab] 矩阵转 fp32（又省 ~0.7GB）
             token_losses = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
@@ -470,9 +479,12 @@ def main():
         sys.argv = [a for a in sys.argv if a != "--dry_run"]
     extra = _intercept_custom_flags()
 
-    # 2. 尽早装上 tee，保证 dry_run / 训练 / 报错信息都能落盘
+    # 2. 尽早装上 tee，保证 dry_run / 训练 / 报错信息都能落盘。
+    #    DDP 多 rank 会各自执行 main()，只有 rank0 装 tee 写 log_file，
+    #    其余 rank 只打终端 —— 否则 N 个进程向同一文件追加会交错重复。
+    _is_rank0 = int(os.environ.get("RANK", 0)) == 0
     log_handle, log_path = None, None
-    if extra["log_file"]:
+    if extra["log_file"] and _is_rank0:
         log_handle, log_path = _install_log_file(extra["log_file"])
         print(f"[LOG] 训练日志同时写入: {log_path}")
 
@@ -548,12 +560,27 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # DDP 下不能用 device_map="auto"（accelerate 禁分布式自动切分）；
+    # 多卡时每 rank 独占一张卡，单卡时与 device_map="auto" 等价
+    _local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    _device_map = {"": _local_rank} if torch.cuda.is_available() else None
+
     model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         torch_dtype=torch.bfloat16 if training_args.bf16 else torch.float16,
         trust_remote_code=True,
-        device_map="auto",
+        device_map=_device_map,
     )
+
+    # 显存预算: 4B bf16 权重 ~8G + activations(seq² 增长) + 151936-vocab logits。
+    # 24G 卡即便 batch=1 + max_len=1024，梯度累积期间多个 forward 的 autograd
+    # 图叠加会在第 ~5 个 micro-batch 顶穿 (实测 23.5G OOM 于 dropout)。
+    # gradient checkpointing 把中间激活换成 backward 时重算 (~80% 激活显存),
+    # 是 24G 卡跑 4B SFT 的必选项, 代价 ~30% 速度。正式轮/显存≥32G 可关。
+    model.gradient_checkpointing_enable()
+    # 与 use_cache 冲突（Trainer 会警告，这里显式关掉）
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = False
 
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
