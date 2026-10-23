@@ -503,6 +503,17 @@ def main():
         _build_training_components(
             trainer_backend=extra.get("trainer_backend", "auto"))
 
+    # transformers 5.x 从 TrainingArguments 里移除了 warmup_ratio（只留 warmup_steps），
+    # 直接传 --warmup_ratio 会被 HfArgumentParser 拒掉。这里把它从 argv 摘出来自行解析，
+    # 等 total_steps 算出后再换算成 warmup_steps —— 对 4.x / 5.x 都兼容。
+    _warmup_ratio = None  # type: Optional[float]
+    for i, a in enumerate(list(sys.argv)):
+        if a == "--warmup_ratio" and i + 1 < len(sys.argv):
+            _warmup_ratio = float(sys.argv[i + 1])
+            sys.argv.pop(i + 1)
+            sys.argv.pop(i)
+            break
+
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
@@ -658,10 +669,13 @@ def main():
     total_steps = int(round(steps_per_epoch * float(training_args.num_train_epochs)))
 
     # warmup 实际步数：HF 优先用绝对 warmup_steps，否则 ceil(total × warmup_ratio)。
-    # 把真实步数算出来打屏 —— 33 步探针里 warmup 只有 2 步这种事，不该靠人脑估。
+    # 5.x 没有 warmup_ratio 字段：由 --warmup_ratio 手动换算；4.x 用户也可直接传 --warmup_steps。
+    if _warmup_ratio is not None:
+        training_args.warmup_steps = math.ceil(total_steps * _warmup_ratio)
+        _ratio_disp = _warmup_ratio
+    else:
+        _ratio_disp = (training_args.warmup_steps / total_steps) if total_steps else 0.0
     _warmup_steps = int(training_args.warmup_steps or 0)
-    if _warmup_steps <= 0 and training_args.warmup_ratio > 0:
-        _warmup_steps = math.ceil(total_steps * training_args.warmup_ratio)
 
     print("\n--- 训练规模预算 ---")
     print(f"  训练样本            : {n} 条 (含 Anchor)")
@@ -671,7 +685,7 @@ def main():
     print(f"  每 epoch 优化器步数 : {steps_per_epoch}")
     print(f"  合计优化器步数      : {total_steps}  ({float(training_args.num_train_epochs)} epoch)")
     print(f"  warmup 步数         : {_warmup_steps}  "
-          f"(ratio={training_args.warmup_ratio} / steps={training_args.warmup_steps})")
+          f"(ratio={_ratio_disp:.3f} / steps={_warmup_steps})")
     print(f"  学习率              : {training_args.learning_rate} / {training_args.lr_scheduler_type}")
     print(f"  Weight Decay        : {training_args.weight_decay}")
     print("  早停策略            : 无早停（SOP §训练纪律：epoch 受控 + cosine 退火；"
