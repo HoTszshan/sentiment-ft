@@ -23,12 +23,15 @@ p50 / p95 / p99 / max 分位数，定位 OOM 长样本来源。
 
 import argparse
 import json
+import os
 import statistics as st
+import sys
 from pathlib import Path
 
-PROMPT_TMPL = ("<|im_start|>system\n{instruction}<|im_end|>\n"
-               "<|im_start|>user\n{input}<|im_end|>\n"
-               "<|im_start|>assistant\n")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+
+# 外壳与训练/推理同源；长度口径必须与实际喂进模型的序列一致，否则 p99 定的 max_len 是假的
+import prompt_template as pt  # noqa: E402
 
 
 def _pct(sorted_vals, p):
@@ -76,6 +79,7 @@ def main():
     print(f"数据: {args.train_file}  共 {len(rows)} 条")
 
     encode = None
+    tok = None
     if args.tokenizer:
         try:
             from transformers import AutoTokenizer
@@ -83,6 +87,7 @@ def main():
             encode = lambda s: len(tok.encode(s, add_special_tokens=False))
             unit = "token"
         except Exception as e:
+            tok = None
             print(f"⚠️ tokenizer 加载失败 ({e})，退化为字符级近似 (1 汉字≈1.4 token)")
     if encode is None:
         encode = lambda s: len(s or "")
@@ -91,9 +96,11 @@ def main():
     buckets = {}
     for i, r in enumerate(rows):
         b = _bucket(r)
-        prompt = PROMPT_TMPL.format(instruction=r.get("instruction", ""),
-                                    input=r.get("input", ""))
-        output = (r.get("output", "") or "") + "<|im_end|>"
+        # 与训练/推理同源：chat 模板可用就用 chat（与 Dataset 同一渲染路径），否则手写
+        prompt = pt.render_prompt(tok if args.tokenizer else None,
+                                  r.get("instruction", ""),
+                                  r.get("input", ""))
+        output = (r.get("output", "") or "") + pt.ASSISTANT_SUFFIX
         d = buckets.setdefault(b, {"p": [], "o": [], "t": [], "top": []})
         np_, no, nt = encode(prompt), encode(output), encode(prompt + output)
         d["p"].append(np_)

@@ -173,7 +173,7 @@ class GrpoHyper:
     """GRPO 特有超参。✅=手册标定 / [设计值]=有推导未跑。"""
     num_generations: int = 4                 # G ✅ 手册 1.3
     temperature: float = 0.7                 # T ✅ 手册 1.3
-    lr: float = 2e-6                         # [设计值] 1e-6~5e-6 区间中值，比 SFT 2e-5 低一个量级
+    lr: float = 2e-6                         # [设计值] 1e-6~5e-6 区间中值，比 SFT 1e-4（LoRA 口径）低约两个量级
     beta_kl: float = 0.04                    # β ✅ 手册 1.3 常数 KL
     per_device: int = 4                      # 一步内同时进来的 prompt 数
     grad_accum: int = 2                      # → 8 题/步 × G=4 = 32 条轨迹/步 ✅

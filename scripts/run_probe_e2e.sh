@@ -25,6 +25,8 @@
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
+#   TRAINER_BACKEND=...  训练器后端 (默认 auto: 有 trl 用 trl.SFTTrainer 否则 HF Trainer;
+#                        显式 trl 缺库即报错; 显式 hf 强制回退 HF Trainer)
 #   BG=1                  后台执行: nohup + PID 文件 + 日志重定向, 断 SSH 不死
 #                         (正式训练 3~6 小时必用; 探针 2~3 分钟可前台直跑)
 #                         三件套: tail -f <nohup日志> / ps -p $(cat <pid文件>) / kill $(cat <pid文件>)
@@ -231,14 +233,15 @@ step_train() {
     --per_device_train_batch_size "$PER_DEV_BATCH" \
     --max_seq_length "$MAX_LEN" \
     "${TRAIN_ARGS[@]}" \
-    --learning_rate 2e-5 \
+    --learning_rate 1e-4 \
     --lr_scheduler_type cosine \
-    --warmup_steps 0.05 \
+    --warmup_ratio 0.05 \
     --logging_steps 1 \
     --eval_steps 5 \
     --bf16 \
     --save_strategy no \
     --remove_unused_columns false \
+    --trainer_backend "${TRAINER_BACKEND:-auto}" \
     --log_file "$TRAIN_LOG" \
     --wandb_project sentiment-sft-probe2 \
     --wandb_run_name "$RUN_NAME" \

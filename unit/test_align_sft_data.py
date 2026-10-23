@@ -146,10 +146,18 @@ class TestCotInheritance(unittest.TestCase):
     """CoT 只继承不生成：源行自带 <think> 则逐字沿用，否则只出裸 JSON。"""
 
     def test_source_with_cot_is_preserved_verbatim(self):
-        row = aligner.flatten(make_row(output='<think>\n原始推理\n</think>{"subject":"广发证券"}'))
+        src = '<think>\n原始推理\n</think>{"subject":"广发证券"}'
+        row = aligner.flatten(make_row(output=src))
         out, has = aligner.render_output(row, aligner.gold_of(row))
         self.assertTrue(has)
-        self.assertIn("原始推理", out)
+        self.assertEqual(out, src)          # 逐字沿用，不做任何格式改写
+
+    def test_think_tail_newline_is_user_format_kept(self):
+        """</think> 后带换行是用户定稿格式，继承时原样保留。"""
+        src = '<think>x</think>\n{"subject":"广发证券"}'
+        row = aligner.flatten(make_row(output=src))
+        out, _ = aligner.render_output(row, aligner.gold_of(row))
+        self.assertEqual(out, src)
 
     def test_source_without_cot_emits_bare_json(self):
         row = aligner.flatten(make_row())

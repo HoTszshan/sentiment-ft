@@ -217,7 +217,7 @@ def print_budget(h: GrpoHyper, n: int, extra: Dict[str, Any]) -> None:
         ("生成组数 G", f"{h.num_generations}   ← 组内要有方差，4 是最小偶数组"),
         ("有效 batch", f"{b['trajectories_per_step']} 条轨迹/步 = {b['prompts_per_step']} 题 × G={h.num_generations}"),
         ("采样温度 T", f"{h.temperature}   ← T=0 会退化成更贵的 SFT"),
-        ("学习率 lr", f"{h.lr}   ← SFT 是 2e-5，RL 叠在已收敛策略上必须低一个量级"),
+        ("学习率 lr", f"{h.lr}   ← SFT 是 1e-4（LoRA 口径），RL 叠在已收敛策略上低约两个量级"),
         ("KL 系数 β", f"{h.beta_kl}   ← 常数 KL 管分布漂移，长度由 R_length 管，两者正交"),
         ("CoT 预算", f"{h.max_completion_length}   ← {budget_note(h)}"),
         ("prompt 上限", f"{h.max_prompt_length}   ← 含行业风险词表，超了会截断原文"),

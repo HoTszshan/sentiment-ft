@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
 from sft_template import SUBJECT_RE  # noqa: E402
+import prompt_template as pt         # noqa: E402
 
 GOLD_FIELDS = ["sentiment", "relevance", "hard_case_type", "risk_categories", "evidence"]
 
@@ -80,18 +81,17 @@ def extract_gold(row: dict) -> dict:
     return gold
 
 
-def build_prompt(row: dict) -> str:
+def build_prompt(row: dict, tokenizer=None) -> str:
     """
-    与训练侧逐字同构的 prompt:
-      system = instruction (含目标主体与行业风险词表)
-      user   = input (待判原文)
-    走原生 chat 模板时直接吃 instruction/input 即可；这里拼好是为了 rollout 零解析。
+    和SFT共用一套prompt_template.render_prompt渲染：system为指令，user为主体+文本。
+    禁止手动拼<|im_start|>，模板分叉会导致GRPO rollout分布和SFT不匹配，reward大面积掉底。
+    有tokenizer用chat模板，无tokenizer自动降级手写拼接。
     """
-    return (
-        "<|im_start|>system\n{inst}<|im_end|>\n"
-        "<|im_start|>user\n{inp}<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    ).format(inst=row.get("instruction", ""), inp=row.get("input", ""))
+    return pt.render_prompt(
+        tokenizer,
+        row.get("instruction", "") or "",
+        row.get("input", "") or "",
+    )
 
 
 def main():

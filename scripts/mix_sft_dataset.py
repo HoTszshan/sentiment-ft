@@ -222,7 +222,7 @@ def mix_datasets(domain_file: str, anchor_file: str, out_dir: str,
 
 def main():
     p = argparse.ArgumentParser(description="领域数据与公开 Anchor 数据混合脚本")
-    p.add_argument("--domain_file", default="data/train_synth_aligned.jsonl")
+    p.add_argument("--domain_file", default="data/train_synth_81_aligned.jsonl")
     p.add_argument("--anchor_file", default="data/coig_cqia_anchor.jsonl")
     p.add_argument("--out_dir", default="data/mixed")
     p.add_argument("--anchor_ratio", type=float, default=0.1, help="Anchor 占比 (默认 10%，即 9:1)")

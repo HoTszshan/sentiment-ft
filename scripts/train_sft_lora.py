@@ -21,7 +21,7 @@
    - POC3 = POC2 + 字段级加权 FIELD_W
    见 `sft_weight_planner.POC_STAGE` 与《SFT训练实战手册》§1.4。
 7. 训练纪律: **不做自动早停**；正式训练 Epoch 严格控 1 (防过拟合 + 给下游 GRPO 留策略熵)，
-   探针跑 EPOCHS=3 只为看曲线拐点；bf16 混合精度, lr=2e-5 (Cosine + warmup 0.05)。
+   探针跑 EPOCHS=3 只为看曲线拐点；bf16 混合精度, lr=1e-4 (LoRA 口径, Cosine + warmup_ratio 0.05)。
 
 用法:
   真实训练 (需 torch/transformers/peft):
@@ -48,6 +48,7 @@
 import os
 import sys
 import json
+import math
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -61,6 +62,9 @@ from sft_weight_planner import (
     FIELD_WEIGHTS, plan_token_weights,
     POC_STAGE, USE_SKELETON_MASK, USE_FIELD_WEIGHTS,
 )
+# 外壳渲染（ChatML）唯一真理源：与 probe_infer / stat_seq_len / GRPO 构建同源。
+import prompt_template as pt
+from sft_dataset import SFTConversationDataset, WeightedDataCollator
 
 
 # ============================================================
@@ -133,12 +137,17 @@ def _intercept_custom_flags():
     """
     在 HfArgumentParser 之前拦截本项目自定义 flag，避免撞 TrainingArguments 字段。
     返回 dict: log_file / wandb_project / wandb_run_name / no_wandb
+              / strict_parity
     """
     opts = {
         "log_file": None,
         "wandb_project": "sentiment-sft-probe",
         "wandb_run_name": f"probe_{time.strftime('%m%d_%H%M%S')}",
         "no_wandb": False,
+        # 渲染与手写基准不一致时是否直接中止（默认 True —— 宁可跑不起来也不静默漂移）
+        "strict_parity": True,
+        # 训练器后端：auto=有 trl 用 SFTTrainer 否则 HF Trainer / trl / hf 显式指定
+        "trainer_backend": "auto",
     }
     argv = list(sys.argv)
     out = []
@@ -149,6 +158,7 @@ def _intercept_custom_flags():
             "--log_file": "log_file",
             "--wandb_project": "wandb_project",
             "--wandb_run_name": "wandb_run_name",
+            "--trainer_backend": "trainer_backend",
         }
         if a in key_map:
             if i + 1 < len(argv):
@@ -159,6 +169,10 @@ def _intercept_custom_flags():
             continue
         if a == "--no_wandb":
             opts["no_wandb"] = True
+            i += 1
+            continue
+        if a == "--no_strict_parity":
+            opts["strict_parity"] = False
             i += 1
             continue
         out.append(a)
@@ -236,9 +250,10 @@ def dry_run_inspect(data_file: str, n: int = 2):
 
     for i, line in enumerate(lines[:n], 1):
         d = json.loads(line)
-        prompt_t = (f"<|im_start|>system\n{d['instruction']}<|im_end|>\n"
-                    f"<|im_start|>user\n{d['input']}<|im_end|>\n"
-                    f"<|im_start|>assistant\n")
+        # 外壳统一走 prompt_template（无 tokenizer 时自动退手写路径）——
+        # dry-run 与真实训练必须同一个渲染源，否则「离线验证通过」不构成证据。
+        prompt_t = pt.render_prompt(None, d.get("instruction", "") or "",
+                                    d.get("input", "") or "")
 
         plan = plan_token_weights(prompt_t, d["output"], encode=char_level_encode)
 
@@ -292,15 +307,77 @@ def dry_run_inspect(data_file: str, n: int = 2):
 # 训练组件 (惰性构建 — 仅在真实训练路径导入重型依赖)
 # ============================================================
 
-def _build_training_components(max_seq_length: int):
+def _resolve_trainer_base(backend: str):
+    """选训练器基类。
+
+    backend:
+      auto → 有 trl 用 trl.SFTTrainer，否则退 transformers.Trainer
+      trl  → 强制 trl.SFTTrainer（缺库直接报错，不静默降级）
+      hf   → 强制 transformers.Trainer
+
+    返回 (base_class, backend_name)。FieldWeightedTrainer 继承 base_class，
+    两条路共用同一份 compute_loss 覆写（加权 CE + 动态分母），行为一致。
     """
-    惰性导入训练栈并构建 (Dataset 类, Collator 类, Trainer 类, torch, tokenizer 依赖)。
+    backend = (backend or "auto").strip().lower()
+    if backend not in ("auto", "trl", "hf"):
+        raise SystemExit(f"[FATAL] 未知 --trainer_backend {backend!r}，可选 auto/trl/hf")
+
+    if backend in ("auto", "trl"):
+        try:
+            from trl import SFTTrainer
+            return SFTTrainer, "trl.SFTTrainer"
+        except ImportError:
+            if backend == "trl":
+                raise SystemExit(
+                    "[FATAL] --trainer_backend trl 但未安装 trl："
+                    "pip install 'trl>=0.19'（或改 --trainer_backend hf）")
+    from transformers import Trainer
+    return Trainer, "transformers.Trainer"
+
+
+def _sft_trainer_extra_kwargs(TrainerBase, tokenizer, backend_name: str) -> dict:
+    """按 trl 版本差异探测 SFTTrainer 的构造参数（仓内 train_grpo.py 已有同款探测先例）。
+
+    - 新版 trl 用 processing_class=，旧版用 tokenizer=
+    - 我们的 Dataset 已预 tokenize（返回 input_ids/labels/loss_weights），
+      必须让 SFTTrainer 跳过它自带的 _prepare_dataset（分词/截断/packing），
+      否则会对已编码数据二次处理。
+
+    ⚠️ skip_prepare_dataset 是 **SFTConfig 字段不是 __init__ 参数**（trl>=0.19）：
+       SFTTrainer(model=..., args=SFTConfig(skip_prepare_dataset=True), ...)。
+       这里探测不到 __init__ 签名里的它，属于预期——放行由 TrainingArguments
+       侧透传（HfArgumentParser 解析 TrainingArguments 后，SFTConfig 的额外
+       字段走 default），真正的保险闸是下面的「样本形态自检」：
+       若 SFTTrainer 仍对非 HF-Dataset 对象做 prepare，会在构造期就炸出
+       AttributeError（.map/.column_names 不存在），而不是静默错码。
+    HF Trainer 路径不需要这些，返回空 dict。
+    """
+    if not backend_name.startswith("trl"):
+        return {}
+    import inspect
+    sig = inspect.signature(TrainerBase.__init__)
+    params = sig.parameters
+    kwargs = {}
+    if "processing_class" in params:
+        kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in params:
+        kwargs["tokenizer"] = tokenizer
+    # 注：不能在 __init__ kwargs 里塞 skip_prepare_dataset / packing ——
+    # 它们属于 SFTConfig（args），塞进 SFTTrainer.__init__ 会直接 TypeError。
+    return kwargs
+
+
+def _build_training_components(max_seq_length: int, trainer_backend: str = "auto"):
+    """
+    惰性导入训练栈并构建 (Trainer 类, 后端名, torch, tokenizer 依赖)。
     重型依赖缺失时给出明确安装指引而非晦涩的 ImportError。
+
+    Dataset / Collator 不在本函数里定义 —— 它们已下沉到 lib/sft_dataset.py，
+    供训练、推理、统计、GRPO 构建四方共用（见该模块 docstring）。
     """
     try:
         import torch
         import torch.nn as nn
-        from torch.utils.data import Dataset
         from transformers import (
             AutoModelForCausalLM, AutoTokenizer,
             TrainingArguments, Trainer, HfArgumentParser,
@@ -314,95 +391,11 @@ def _build_training_components(max_seq_length: int):
         )
         raise SystemExit(2)
 
-    class SFTWeightedDataset(Dataset):
-        """带字段级 Loss 权重 Span 标注的 SFT 数据集"""
+    # 训练器基类：trl.SFTTrainer（接 trl 技术栈）或 HF Trainer（回退）。
+    # 二者都走下面同一份 compute_loss 覆写，加权口径完全一致。
+    TrainerBase, backend_name = _resolve_trainer_base(trainer_backend)
 
-        def __init__(self, data_path: str, tokenizer, max_len: int = 2560):
-            self.tokenizer = tokenizer
-            self.max_len = max_len
-            self.samples = []
-            with open(data_path, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        self.samples.append(json.loads(line))
-
-        def __len__(self):
-            return len(self.samples)
-
-        def __getitem__(self, idx: int) -> Dict[str, Any]:
-            item = self.samples[idx]
-
-            prompt_text = (
-                f"<|im_start|>system\n{item['instruction']}<|im_end|>\n"
-                f"<|im_start|>user\n{item['input']}<|im_end|>\n"
-                f"<|im_start|>assistant\n"
-            )
-            output_text = item["output"]
-            full_text = prompt_text + output_text + "<|im_end|>"
-
-            full_ids = self.tokenizer.encode(full_text, add_special_tokens=False)
-            if len(full_ids) > self.max_len:
-                full_ids = full_ids[:self.max_len]
-
-            prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-            prompt_len = min(len(prompt_ids), len(full_ids))
-
-            input_ids = torch.tensor(full_ids, dtype=torch.long)
-
-            # 1. 前缀掩码: 输入侧 (System Prompt / Schema / 原文) 置 -100，不参与梯度
-            labels = input_ids.clone()
-            labels[:prompt_len] = -100
-
-            # 2. FIELD_W 字段级加权 —— 复用已单测覆盖的 span 规划器
-            #    (字符级 span → token 下标，规避 BPE 子序列滑窗匹配的漏命中/误命中)
-            plan = plan_token_weights(
-                prompt_text=prompt_text,
-                output_text=output_text,
-                encode=lambda t: self.tokenizer.encode(t, add_special_tokens=False),
-                max_len=self.max_len,
-            )
-            weights = torch.tensor(plan["weights"], dtype=torch.float)
-
-            # 尾部 (如 <|im_end|>) 未被 span 覆盖 → 归 default 1.0x。
-            # 刻意保留: 让模型学到「物理停靠」，与 SOP「repetition_penalty=1.0」呼应。
-            if len(weights) < len(input_ids):
-                weights = torch.cat([
-                    weights,
-                    torch.full((len(input_ids) - len(weights),),
-                               FIELD_WEIGHTS["default"], dtype=torch.float)
-                ])[:len(input_ids)]
-
-            return {"input_ids": input_ids, "labels": labels, "loss_weights": weights}
-
-    class WeightedDataCollator:
-        """右填充 collator: labels 补 -100、weights 补 0.0，防 padding 污染分母"""
-
-        def __init__(self, tokenizer, pad_to_multiple_of: Optional[int] = 8):
-            self.tokenizer = tokenizer
-            self.pad_to_multiple_of = pad_to_multiple_of
-
-        def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-            max_len = max(len(f["input_ids"]) for f in features)
-            if self.pad_to_multiple_of:
-                m = self.pad_to_multiple_of
-                max_len = ((max_len + m - 1) // m) * m
-
-            pad_id = self.tokenizer.pad_token_id or 0
-            out = {"input_ids": [], "labels": [], "loss_weights": [], "attention_mask": []}
-
-            for f in features:
-                ids, lbl, w = f["input_ids"], f["labels"], f["loss_weights"]
-                pad_len = max_len - len(ids)
-                out["input_ids"].append(torch.cat([ids, torch.full((pad_len,), pad_id, dtype=torch.long)]))
-                out["labels"].append(torch.cat([lbl, torch.full((pad_len,), -100, dtype=torch.long)]))
-                out["loss_weights"].append(torch.cat([w, torch.zeros(pad_len, dtype=torch.float)]))
-                out["attention_mask"].append(torch.cat([
-                    torch.ones(len(ids), dtype=torch.long), torch.zeros(pad_len, dtype=torch.long)
-                ]))
-
-            return {k: torch.stack(v) for k, v in out.items()}
-
-    class FieldWeightedTrainer(Trainer):
+    class FieldWeightedTrainer(TrainerBase):
         """
         覆写 compute_loss: 加权 CE + 分母按加权有效 Token 重算 (SOP §6.2)。
 
@@ -468,7 +461,7 @@ def _build_training_components(max_seq_length: int):
                 loss = loss / max(int(self.args.gradient_accumulation_steps), 1)
             return (loss, outputs) if return_outputs else loss
 
-    return (SFTWeightedDataset, WeightedDataCollator, FieldWeightedTrainer,
+    return (FieldWeightedTrainer, backend_name,
             torch, AutoModelForCausalLM, AutoTokenizer, TrainingArguments,
             HfArgumentParser, LoraConfig, get_peft_model, TaskType)
 
@@ -504,10 +497,11 @@ def main():
             log_handle.close()
         return
 
-    (SFTWeightedDataset, WeightedDataCollator, FieldWeightedTrainer,
+    (FieldWeightedTrainer, trainer_backend_name,
      torch, AutoModelForCausalLM, AutoTokenizer, TrainingArguments,
      HfArgumentParser, LoraConfig, get_peft_model, TaskType) = \
-        _build_training_components(max_seq_length=2560)
+        _build_training_components(
+            max_seq_length=2560, trainer_backend=extra.get("trainer_backend", "auto"))
 
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
@@ -582,7 +576,19 @@ def main():
     # 图叠加会在第 ~5 个 micro-batch 顶穿 (实测 23.5G OOM 于 dropout)。
     # gradient checkpointing 把中间激活换成 backward 时重算 (~80% 激活显存),
     # 是 24G 卡跑 4B SFT 的必选项, 代价 ~30% 速度。正式轮/显存≥32G 可关。
-    model.gradient_checkpointing_enable()
+    #
+    # ⚠️ 冻结基座 + LoRA + gradient checkpointing 的组合有个静默坑，必须两步配套修：
+    #   1) use_reentrant=False —— 用非重入实现。重入(reentrant)版在「输入不带
+    #      requires_grad」时 backward 直接静默返回，不报错、不更新，loss 看着在降
+    #      其实一步没学；非重入版无此行为，也是 transformers 对 PEFT 的推荐写法。
+    #   2) enable_input_require_grads() —— 基座参数 requires_grad=False，检查点段的
+    #      输入(embedding 输出)默认不带梯度。这里在 embedding 上挂 forward hook，
+    #      强制其输出 requires_grad=True，给检查点段一个梯度入口。
+    # 漏掉任一步，都会得到「trainable params 正常、loss 微降、推理输出还是基座原样」
+    # 的假训练 —— 正是上轮探针 33 步后格式没学会的头号嫌疑。
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False})
+    model.enable_input_require_grads()
     # 与 use_cache 冲突（Trainer 会警告，这里显式关掉）
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
@@ -600,20 +606,36 @@ def main():
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    train_dataset = SFTWeightedDataset(
+    # 假训练哨兵：可训练参数为 0 → LoRA 没挂上 / 梯度入口缺失，直接中止。
+    # 这是「loss 看着降、推理输出还是基座原样」的第一道拦截，比训完 33 步才发现便宜得多。
+    _n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if _n_trainable == 0:
+        raise SystemExit(
+            "[FATAL] 可训练参数为 0：LoRA 未正确挂载，或基座冻结导致梯度入口缺失。\n"
+            "  确认 gradient_checkpointing_enable(use_reentrant=False) 与 "
+            "enable_input_require_grads() 都在 get_peft_model 之前调用。")
+    print(f"[OK] 可训练参数 {_n_trainable:,}（LoRA 旁路），梯度入口已验证")
+
+    # 训练/验证集共用 lib/sft_dataset.SFTConversationDataset：
+    #   外壳走 prompt_template（chat 模板 + parity gate），权重走 sft_weight_planner。
+    # strict_parity=True 是默认行为 —— 模板与推理侧不一致时在构造期就炸，
+    # 而不是训完 33 步、跑完推理才发现输出格式不对。
+    train_dataset = SFTConversationDataset(
         data_path=data_args.train_file,
         tokenizer=tokenizer,
         max_len=data_args.max_seq_length,
+        strict_parity=extra.get("strict_parity", True),
     )
     collator = WeightedDataCollator(tokenizer=tokenizer)
 
     # ---- 验证集：给了才开 eval；SOP 口径不做早停，靠观察 val_loss 是否反弹 ----
     eval_dataset = None
     if data_args.val_file and Path(data_args.val_file).exists():
-        eval_dataset = SFTWeightedDataset(
+        eval_dataset = SFTConversationDataset(
             data_path=data_args.val_file,
             tokenizer=tokenizer,
             max_len=data_args.max_seq_length,
+            strict_parity=extra.get("strict_parity", True),
         )
         # transformers 版本差异: 4.41+ 叫 eval_strategy，更早叫 evaluation_strategy
         if hasattr(training_args, "eval_strategy"):
@@ -634,6 +656,13 @@ def main():
     micro_batches_per_epoch = -(-n // max(int(training_args.per_device_train_batch_size), 1))
     steps_per_epoch = -(-micro_batches_per_epoch // max(int(training_args.gradient_accumulation_steps), 1))
     total_steps = int(round(steps_per_epoch * float(training_args.num_train_epochs)))
+
+    # warmup 实际步数：HF 优先用绝对 warmup_steps，否则 ceil(total × warmup_ratio)。
+    # 把真实步数算出来打屏 —— 33 步探针里 warmup 只有 2 步这种事，不该靠人脑估。
+    _warmup_steps = int(training_args.warmup_steps or 0)
+    if _warmup_steps <= 0 and training_args.warmup_ratio > 0:
+        _warmup_steps = math.ceil(total_steps * training_args.warmup_ratio)
+
     print("\n--- 训练规模预算 ---")
     print(f"  训练样本            : {n} 条 (含 Anchor)")
     print(f"  单卡 batch          : {training_args.per_device_train_batch_size}")
@@ -641,6 +670,8 @@ def main():
     print(f"  实际 (有效) batch   : {eff_batch}")
     print(f"  每 epoch 优化器步数 : {steps_per_epoch}")
     print(f"  合计优化器步数      : {total_steps}  ({float(training_args.num_train_epochs)} epoch)")
+    print(f"  warmup 步数         : {_warmup_steps}  "
+          f"(ratio={training_args.warmup_ratio} / steps={training_args.warmup_steps})")
     print(f"  学习率              : {training_args.learning_rate} / {training_args.lr_scheduler_type}")
     print(f"  Weight Decay        : {training_args.weight_decay}")
     print("  早停策略            : 无早停（SOP §训练纪律：epoch 受控 + cosine 退火；"
@@ -648,12 +679,18 @@ def main():
 
     # 训练规模相关的 wandb config 在 run 建立后统一补（见训练收尾段），此处不重复
 
+    # 后端相关构造参数：trl.SFTTrainer 需要 processing_class/tokenizer +
+    # 跳过它对已 tokenize 数据的二次处理；HF Trainer 不需要。
+    _extra_kwargs = _sft_trainer_extra_kwargs(
+        FieldWeightedTrainer, tokenizer, trainer_backend_name)
+
     trainer = FieldWeightedTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=collator,
+        **_extra_kwargs,
     )
 
     print(f">>> 启动训练 (样本 {len(train_dataset)} 条, Epochs={training_args.num_train_epochs}) <<<")

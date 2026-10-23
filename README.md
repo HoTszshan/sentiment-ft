@@ -33,6 +33,8 @@ MVP/tests/
 │   ├── grpo_probe_core.py          ★ GRPO 探针纯逻辑：打分入组 / rollout / k 分流
 │   ├── corpus_schema.py            ★ 行业风险二级词表 + 提示词加载 + 闭集枚举（同源再导出 schema_contract）
 │   ├── sft_template.py             ★ SFT 指令模板唯一真理源（显式输出协议段，枚举从 schema_contract 插值；训练=推理逐字一致）
+│   ├── prompt_template.py          ★ 外壳渲染唯一真理源（apply_chat_template + 手写兜底 + parity gate，训练/推理/统计/GRPO 四方同源）
+│   ├── sft_dataset.py              ★ 共用 Dataset/Collator（前缀掩码 + FIELD_W 装配；import 时零 torch，无 GPU 可 preview/stats）
 │   ├── kappa_utils.py              ★ 一致性统计纯函数（cohen_kappa / risk_key，原 build_eval_set 内嵌实现下沉）
 │   ├── llm_client.py               API 客户端（generate 的依赖）
 │   └── sft_weight_planner.py       字段权重 span 规划器（train 的依赖，勿删）
@@ -43,7 +45,9 @@ MVP/tests/
 │   ├── test_eval_metrics.py        ★ 评估指标纯函数单测 25 项
 │   ├── test_evaluate_sft.py        ★ 评测脚本纯逻辑单测 21 项（协议/指标/分桶/非法输出/证据分母/闭合率进 verdict）
 │   ├── test_rubric_check.py        ★ 离线 Rubric 单测 20 项（三判定项 + 注入 judge）
-│   └── test_release_gate.py        ★ 发布门单测 25 项（四门 PASS/FAIL/N/A + 归因）
+│   ├── test_release_gate.py        ★ 发布门单测 25 项（四门 PASS/FAIL/N/A + 归因）
+│   ├── test_prompt_template.py     ★ 外壳渲染单测（chat==手写 parity / thinking 版漂移拦截 / backend 降级）
+│   └── test_sft_dataset.py         ★ 共用 Dataset 单测（长度/掩码/权重三不变量 + parity gate）
 ├── prompts/                        ← gen/anno 双端提示词（单主体隔离锁在内）
 ├── scripts/                        ← 只放 CLI 入口（可执行脚本）
 │   ├── run_probe_e2e.sh            ★ 一键串跑（5 步）
@@ -54,6 +58,7 @@ MVP/tests/
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
 │   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
+│   ├── inspect_sft_dataset.py      数据模板预览（原文→messages→渲染文本→token/权重四层；--check_parity 只跑字节比对）
 │   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；无 tokenizer 退化为字符级近似）
 │   ├── pick_hard_cases.py          难例选样（按 hard_case_type 过滤打印行号+摘要，对比样张/四档对照选样用）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
@@ -101,6 +106,7 @@ wandb login
 | `MODEL_NAME` | `Qwen/Qwen3-4B-Instruct` | 换基座（对比 7B 消融时用） |
 | `EPOCHS` | `3` | 训练轮数 |
 | `SFT_POC_STAGE` | `POC1` | **Loss 消融阶段**：`POC1`=仅前缀掩码 / `POC2`=+骨架掩码 / `POC3`=+字段加权 FIELD_W（详见 §训练 与 `sft_weight_planner.POC_STAGE`） |
+| `TRAINER_BACKEND` | `auto` | 训练器后端：`auto`=有 trl 用 `trl.SFTTrainer` 否则 `transformers.Trainer` / `trl`=强制 trl（缺库报错）/ `hf`=强制 HF Trainer（同一份 compute_loss 覆写，加权口径一致） |
 | `FORCE=1` | `0` | 忽略已有产物强制重跑 |
 
 ```bash
@@ -207,7 +213,7 @@ python3 scripts/train_sft_lora.py \
     --output_dir output/probe_lora \
     --num_train_epochs 3 \
     --per_device_train_batch_size 2 --gradient_accumulation_steps 4 \
-    --learning_rate 2e-5 --lr_scheduler_type cosine \
+    --learning_rate 1e-4 --lr_scheduler_type cosine \
     --bf16 \
     --logging_steps 1 \
     --eval_steps 5 \
@@ -231,7 +237,7 @@ python3 scripts/train_sft_lora.py \
 
   > **探针口径提醒**：`data/coig_cqia_anchor.jsonl` 未下载时，`data/mixed/` 是 `train_synth_81_aligned.jsonl` 直切的 73/8（9:1 锚点尚未混入）；跑完步骤1+2 才是 81/9 的标准探针集。两档步数差 3 步，选哪个看前置条件。
 
-  **不做早停**——SOP §训练纪律是「epoch 受控 + lr 2e-5 cosine 退火到 0」，靠 `eval_loss` 反弹**由人判定**过拟合，不让 Trainer 自动掐停。**探针的任务是冒烟验证**：按当前 `SFT_POC_STAGE` 对应的掩码/加权组合没写崩、loss 能压下去、adapter 能出盘，3 epoch（30~33 步）足够；它**不承担「定正式轮数」的职责**——正式轮数 SOP 已定死 1 Epoch。
+  **不做早停**——SOP §训练纪律是「epoch 受控 + lr 1e-4（LoRA 口径）cosine 退火到 0」，靠 `eval_loss` 反弹**由人判定**过拟合，不让 Trainer 自动掐停。**探针的任务是冒烟验证**：按当前 `SFT_POC_STAGE` 对应的掩码/加权组合没写崩、loss 能压下去、adapter 能出盘，3 epoch（30~33 步）足够；它**不承担「定正式轮数」的职责**——正式轮数 SOP 已定死 1 Epoch。
   `--val_file` 会自动开 `eval_strategy=steps`，`eval_loss` 走同一套（同 POC 阶段）加权口径，训练结束会复测一次并存进 `train_metrics.json`。
 - **无 GPU 时**先验证加权逻辑：`python3 scripts/train_sft_lora.py --dry_run --train_file data/train_synth_81_aligned.jsonl`
   会打印当前 POC 阶段、每个字段的 token 区间与权重。**各阶段该看到什么**：
@@ -397,7 +403,7 @@ GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 先冒烟再
 | 生成组数 G | 4 | 组内要有方差，4 是最小偶数组 |
 | **有效 batch** | **32 条轨迹/步 = 8 题 × G=4** | 手册 §1.3 定稿 |
 | 采样温度 T | 0.7 | T=0 时 4 份采样相同 → std=0 → RL 退化成更贵的 SFT |
-| 学习率 lr | 2e-6 | RL 叠在 SFT 已收敛策略上，比 SFT 的 2e-5 低一个量级 |
+| 学习率 lr | 2e-6 | RL 叠在 SFT 已收敛策略上，比 SFT 的 1e-4 低约两个量级（1e-6~5e-6 区间中值） |
 | KL 系数 β | 0.04 | 三闸①：常数 KL 管分布漂移，长度由 R_length 管，两者正交 |
 | 输出预算 | 200 | **CoT≤120 + JSON 骨架~70 + 余量**（见下方陷阱） |
 | 51 题 × epoch=1 | 7 步 | ceil(51/8)，正式 3000 题 × epoch=1 → 375 步 |

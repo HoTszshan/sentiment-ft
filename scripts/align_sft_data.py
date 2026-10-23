@@ -88,9 +88,6 @@ def render_output(row: dict, gold: dict) -> Tuple[str, bool]:
     src_output = (row.get("output") or "").strip()
     has_cot = sc.THOUGHT_BEGIN in src_output
     if src_output:
-        cot, result = src_output.split(sc.THOUGHT_END, 1) if has_cot else ("", src_output)
-        if len(cot) > 0 and result[0] != "\n":
-            src_output = cot + sc.THOUGHT_END + "\n" + result
         return src_output, has_cot
     return json.dumps(gold, ensure_ascii=False, separators=(",", ":")), False
 

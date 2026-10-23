@@ -6,10 +6,10 @@
 作用: 加载 SFT 后的 LoRA Adapter，在验证集/隔离探针集上批量生成，
       产出可直接喂给 evaluate_sft.py 「模式 B」的预测文件 (pred.jsonl)。
 
-生成 prompt 与训练侧逐字一致 (train_sft_lora.SFTWeightedDataset):
-    <|im_start|>system\n{instruction}<|im_end|>\n
-    <|im_start|>user\n{input}<|im_end|>\n
-    <|im_start|>assistant\n
+生成 prompt 与训练侧同源 (lib/prompt_template.py):
+    train_sft_lora.SFTConversationDataset → prompt_template.render_full()
+    probe_infer                            → prompt_template.render_prompt()
+两者走同一个渲染函数，且 Dataset 初始化时会做逐字节 parity 校验。
 
 用法:
     python probe_infer.py \
@@ -24,16 +24,16 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
-PROMPT_TMPL = (
-    "<|im_start|>system\n{instruction}<|im_end|>\n"
-    "<|im_start|>user\n{input}<|im_end|>\n"
-    "<|im_start|>assistant\n"
-)
+# 外壳渲染唯一真理源：与训练侧 prompt_template 同源。
+# 训练/推理的 prompt 一旦分叉，loss 降了而推理格式崩 —— 这种故障从曲线上看不出来。
+import prompt_template as pt  # noqa: E402
 
 
 def main():
@@ -92,8 +92,11 @@ def main():
     n_tag = n_json = n_ev = 0
     with open(out_path, "w", encoding="utf-8") as f:
         for i, row in enumerate(rows, 1):
-            prompt = PROMPT_TMPL.format(instruction=row["instruction"], input=row["input"])
-            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            prompt = pt.render_prompt(tokenizer, row.get("instruction", "") or "",
+                                      row.get("input", "") or "")
+            # add_special_tokens=False: 模板首字符就是 <|im_start|>，再补 BOS 会与训练侧分叉
+            inputs = tokenizer(prompt, return_tensors="pt",
+                               add_special_tokens=False).to(model.device)
 
             with torch.no_grad():
                 gen = model.generate(
