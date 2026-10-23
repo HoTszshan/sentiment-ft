@@ -11,3 +11,4 @@ data/coig_cqia_anchor.jsonl
 results
 wandb/
 .DS_Store
+data/align_report.json

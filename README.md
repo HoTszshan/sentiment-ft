@@ -14,6 +14,7 @@ MVP/tests/
 ├── README.md                       ← 本文件
 ├── data/
 │   ├── train_synth_81.jsonl        ← 真实金标语料 81 条（异族打标 + 四查全过）
+│   ├── train_synth_81_aligned.jsonl ← 上者经 align 重写 instruction（显式输出协议版，当前探针用）
 │   ├── grpo_probe_pool.jsonl       ← GRPO 新生成语料池 51 条（种子 777+888，与 SFT 集去重）
 │   ├── grpo/grpo_prompts_probe.jsonl ← GRPO 探针数据 51 条：只有 {prompt, gold}
 │   ├── train_golden_sample_100.jsonl  Mock 训练桩（CI 用，不可用于真实训练）
@@ -31,11 +32,12 @@ MVP/tests/
 │   ├── grpo_common.py              ★ GRPO 共享层：数据展平 / k 分桶 / 训练预算（零依赖）
 │   ├── grpo_probe_core.py          ★ GRPO 探针纯逻辑：打分入组 / rollout / k 分流
 │   ├── corpus_schema.py            ★ 行业风险二级词表 + 提示词加载 + 闭集枚举（同源再导出 schema_contract）
+│   ├── sft_template.py             ★ SFT 指令模板唯一真理源（显式输出协议段，枚举从 schema_contract 插值；训练=推理逐字一致）
+│   ├── kappa_utils.py              ★ 一致性统计纯函数（cohen_kappa / risk_key，原 build_eval_set 内嵌实现下沉）
 │   ├── llm_client.py               API 客户端（generate 的依赖）
 │   └── sft_weight_planner.py       字段权重 span 规划器（train 的依赖，勿删）
 ├── unit/                           ← 离线单测（零外部依赖，任何机器都能跑）
 │   ├── test_reward_fns.py          ★ 打分器单测 40 项
-│   ├── test_build_eval_set.py      ★ 金标构建器纯逻辑单测
 │   ├── test_weight_planner.py      ★ SFT 权重 span 规划器单测 12 项
 │   ├── test_grpo_probe.py          ★ GRPO 链路单测 48 项
 │   ├── test_eval_metrics.py        ★ 评估指标纯函数单测 25 项
@@ -47,6 +49,7 @@ MVP/tests/
 │   ├── run_probe_e2e.sh            ★ 一键串跑（5 步）
 │   ├── run_grpo_train.sh           ★ GRPO 后台启动（nohup + 时间戳日志 + PID + 拓扑选择）
 │   ├── download_assets.py          1 下载：COIG-CQIA Anchor + 基座模型
+│   ├── align_sft_data.py           1.5 对齐：原文+meta → {instruction(显式输出协议), input, output} + 质检（纯规则零 LLM，模板唯一源 lib/sft_template.py）
 │   ├── mix_sft_dataset.py          2 混合：9:1 + 分层切分 train/val
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
 │   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
@@ -55,8 +58,6 @@ MVP/tests/
 │   ├── pick_hard_cases.py          难例选样（按 hard_case_type 过滤打印行号+摘要，对比样张/四档对照选样用）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
-│   ├── generate_corpus.py          语料量产（生成+异族打标+四查）
-│   ├── build_eval_set.py           ★ 三方异族一致性 → 金标评测集（κ ≥ 0.7 门禁）
 │   ├── build_grpo_probe.py         ★ 语料池 → {prompt, gold} 契约转换
 │   ├── run_grpo_probe.py           ★ 同题 G=4 采样 → 四维打分 → k∈{0..4} 分流
 │   └── train_grpo.py               ★ TRL GRPOTrainer 训练主脚本（LoRA + 四维规则 Reward）
@@ -153,11 +154,32 @@ python3 scripts/download_assets.py --model Qwen/Qwen3-4B-Instruct \
 
 > 联网拉取 COIG-CQIA 失败时，脚本会**自动落盘内置的高质量通用问答兜底包**，不会卡住流程。
 
+### 步骤 1.5 · 对齐器：原文+meta → SFT 训练格式
+
+> 训练/探针用的 `data/train_synth_81_aligned.jsonl` 就是由本步产出；换新数据源时重跑即可。
+
+```bash
+python3 scripts/align_sft_data.py \
+    --src data/train_synth_81.jsonl \        # 源: 原文+meta（或已带 output 的成品行，两种形态都吃）
+    --out data/train_synth_81_aligned.jsonl \
+    --report data/align_report.json          # 质检报告: total/kept/drop_reasons/cot_source
+```
+
+对齐器做什么（纯规则，零 LLM 调用）：
+
+| 项 | 规则 |
+|---|---|
+| `instruction` | `lib/sft_template.build_instruction(industry)` —— 角色+任务目标+行业风险体系+输出协议（枚举从 schema_contract 插值；**同行业逐字一致**） |
+| `input` | user 侧题面 = `【目标主体】{subject}` + `【输入文本】{原文}`（subject 取 output gold，兜底 target_subject） |
+| `output` | **CoT 只继承不生成**：源行自带 `<think>…</think>+JSON` 则逐字沿用；否则只拼裸 JSON。永不编造 CoT（模板化 CoT 会被死记并刷穿 GRPO rubric） |
+| 质检（不过即剔除并计数） | schema 闭集 / evidence 是原文连续子串 4~80 字 / subject_hit（源行提供时）/ 行业越界 / 空或超长（>2000 字） |
+| `meta` | 源字段全透传（provenance/hard_case_type/sentiment 供 mix 分层），补 `aligned_by` / `cot_source` 血缘 |
+
 ### 步骤 2 · 领域数据 : 公开数据 = 9 : 1 混合
 
 ```bash
 python3 scripts/mix_sft_dataset.py \
-    --domain_file data/train_synth_81.jsonl \
+    --domain_file data/train_synth_81_aligned.jsonl \
     --anchor_file data/coig_cqia_anchor.jsonl \
     --out_dir data/mixed \
     --anchor_ratio 0.1 --val_ratio 0.1 --seed 42
@@ -207,11 +229,11 @@ python3 scripts/train_sft_lora.py \
 | **探针 B · 已下 Anchor**（**82** 条 × 3 epoch = 73 领域 train + 9 anchor；先跑 `download`+`mix` 才有 9:1 混入） | 2 | 4 | **8** | 82 | 11 | **33** |
 | **正式**（2912 条 × 1 epoch，即 2880 领域×0.9 + 320 Anchor） | 4 | 2 | **8** | 2912 | 364 | **≈364** |
 
-  > **探针口径提醒**：`data/coig_cqia_anchor.jsonl` 未下载时，`data/mixed/` 是 `train_synth_81.jsonl` 直切的 73/8（9:1 锚点尚未混入）；跑完步骤1+2 才是 81/9 的标准探针集。两档步数差 3 步，选哪个看前置条件。
+  > **探针口径提醒**：`data/coig_cqia_anchor.jsonl` 未下载时，`data/mixed/` 是 `train_synth_81_aligned.jsonl` 直切的 73/8（9:1 锚点尚未混入）；跑完步骤1+2 才是 81/9 的标准探针集。两档步数差 3 步，选哪个看前置条件。
 
   **不做早停**——SOP §训练纪律是「epoch 受控 + lr 2e-5 cosine 退火到 0」，靠 `eval_loss` 反弹**由人判定**过拟合，不让 Trainer 自动掐停。**探针的任务是冒烟验证**：按当前 `SFT_POC_STAGE` 对应的掩码/加权组合没写崩、loss 能压下去、adapter 能出盘，3 epoch（30~33 步）足够；它**不承担「定正式轮数」的职责**——正式轮数 SOP 已定死 1 Epoch。
   `--val_file` 会自动开 `eval_strategy=steps`，`eval_loss` 走同一套（同 POC 阶段）加权口径，训练结束会复测一次并存进 `train_metrics.json`。
-- **无 GPU 时**先验证加权逻辑：`python3 scripts/train_sft_lora.py --dry_run --train_file data/train_synth_81.jsonl`
+- **无 GPU 时**先验证加权逻辑：`python3 scripts/train_sft_lora.py --dry_run --train_file data/train_synth_81_aligned.jsonl`
   会打印当前 POC 阶段、每个字段的 token 区间与权重。**各阶段该看到什么**：
 
   | 阶段 | 字段权重 | 骨架 | 有效 token 与 Σw |
@@ -257,7 +279,7 @@ python3 scripts/stat_seq_len.py \
     --tokenizer models/Qwen3-4B-Instruct-2507 --top_n 5
 
 # 无 tokenizer 环境：字符级近似（1 汉字 ≈ 1.4 token）
-python3 scripts/stat_seq_len.py --train_file data/train_synth_81.jsonl
+python3 scripts/stat_seq_len.py --train_file data/train_synth_81_aligned.jsonl
 ```
 
 输出 domain / anchor 两桶各自的 prompt / output / total 的 p50/p95/p99/max，
@@ -291,7 +313,7 @@ python3 scripts/stat_seq_len.py --train_file data/train_synth_81.jsonl
 ```
 
 - **不带 completion 是设计**：CoT 由策略 On-Policy 现场采样，算完组内优势即弃；攒着会被误拿去当 SFT 语料。
-- `gold` 只有 5 个字段（**没有 `subject`**），但 `R_format` 要求模型回显 `subject` —— rollout 时从 prompt 的 `目标主体：【…】` 补上。
+- `gold` 只有 5 个字段（**没有 `subject`**），但 `R_format` 要求模型回显 `subject` —— rollout 时从 prompt 的 user 侧 `【目标主体】` 行补上（兼容旧格式）。
 - `evidence` 原文可用 `reward_fns.extract_input_text(prompt)` 反解，**两字段自洽**（40/40 已验证）。
 
 **当前分布**：难点 `explicit 13 · counterfactual 8 · comparative 8 · metaphor 6 · multi_subject 6 · fact_implicit 6 · irony 4`；极性 `negative 29 / positive 16 / neutral 6`；语篇 `core 46 · passing 3 · foil 2`；六行业全覆盖。（短板已补：fact_implicit 2→6、neutral 3→6；positive 未下采样，占比 40%→31%）
@@ -339,15 +361,9 @@ python3 scripts/build_grpo_probe.py \
 # 结果: 51 条入池，0 条丢弃（gold 5 字段齐 + evidence 全是原文合法子串）
 ```
 
-要**新生成一批**语料池（需要 dashscope key，走真实 API）：
-
-```bash
-python3 scripts/generate_corpus.py --n 60 --seed 777 --concurrency 6 \
-    --gen_provider dashscope --gen_model qwen-max \
-    --anno_provider dashscope --anno_model deepseek-v4-pro \
-    --out data/grpo_probe_pool.jsonl --append \
-    --cross_dedup data/train_synth_81.jsonl    # ← 与 SFT 训练集隔离
-```
+**补充语料池**：`generate_corpus.py` 已归档（LLM 生成不再需要）。新语料由标注流水线
+（`../../scripts/`）产出「原文+meta」jsonl，再走 `align_sft_data.py` 纯规则对齐入库，
+与 SFT 训练集的隔离由源数据分层保证。
 
 ### 3.4 还缺什么
 
@@ -423,33 +439,16 @@ python3 scripts/run_grpo_probe.py \
 
 产出：`kstats.json`（k 直方图 + 训练池规模 + 逐难点/极性分布）+ `kstats.rows.jsonl`（逐题明细）。**这就是正式池三阶段筛题的第 3 步**——探针阶段用它验证打分器与 rollout 链路，正式阶段用它把 3000 题筛成真正可训练的子集。
 
-### 3.7 金标评测集：`build_eval_set.py`（三方异族一致性，κ ≥ 0.7 门禁）
+### 3.7 金标评测集（已归档 `build_eval_set.py`，κ ≥ 0.7 门禁由 `human_recheck_kappa.py` 承接）
 
-语料池里现成的打标只有一家的判断，**不能直接当金标**。本脚本对同一条原文做三次**异族**打标，
-按分歧程度分三档处置（`materials/DataPipeline_SOP_v4.md` §3.2/§3.3）：
+原「三方异族一致性 → 金标评测集」脚本已归档至 `scripts/archive/build_eval_set.py`
+（LLM 裁决不再需要；κ 计算下沉为 `lib/kappa_utils.py` 单一判定源）。
+金标构建改为：标注流水线产出「原文+meta」→ `align_sft_data.py` 纯规则对齐 + 质检 →
+人工复核走 `human_recheck_kappa.py`（κ ≥ 0.74 放行门槛不变）。
 
-| 档 | 条件 | 处置 |
-|---|---|---|
-| `gold` | A(DeepSeek) = B(第三方1) = C(第三方2) 全字段一致 | 入 `eval_gold_probe.jsonl`，可直接喂 `evaluate_sft` |
-| `boundary` | 仅 `hard_case_type` 分歧 | 入 `eval_boundary.jsonl`，**不当金标**，留给 DPO / 难例复盘 |
-| `drop` | `sentiment` / `relevance` / `risk_categories` 分歧 | 丢弃（真歧义，进训练只会教错） |
-
-> **异族铁律**：生成端（Qwen-Max）是写手，**不参与裁决**；judge 必须与被测样本的打标模型异族。
-
-```bash
-# 先只摸底 20 条
-python3 scripts/build_eval_set.py \
-    --src output/corpus/eval_probe_pool.jsonl \
-    --out_dir output/eval --limit 20 --concurrency 4 \
-    --third1_provider openai --third1_model claude-opus-5.5 \
-    --third2_provider openai --third2_model gpt-6-luna
-
-# 铺量 80 条（--limit 80）
-```
-
-产出：`eval_gold_probe.jsonl`（金标）+ `eval_boundary.jsonl`（边界样本）+ `eval_agreement_report.json`
-（逐字段、逐模型对的 κ 与一致率 + `PASS / BOUNDARY / FAIL` 裁决）。
-
+> **历史背景（已归档流程，供回溯）**：原脚本对同一条原文做三次**异族**打标，按分歧分三档：
+> `gold`（全字段一致→金标）/ `boundary`（仅 hard_case_type 分歧→留 DPO）/ `drop`（sentiment/
+> relevance/risk 分歧→丢弃）。**异族铁律**（生成端不参与裁决）仍然适用于任何 LLM 打标环节。
 > ⚠️ **κ < 0.6 说明是标注法典本身有歧义**（不是模型差异），必须回炉重写标注规范，
 > 不得靠「再跑几遍」蒙混过关。
 
@@ -479,8 +478,8 @@ python3 scripts/build_eval_set.py \
 
 ```bash
 cd MVP/tests
-python3 -m unittest unit.test_reward_fns unit.test_build_eval_set unit.test_weight_planner unit.test_grpo_probe unit.test_eval_metrics unit.test_evaluate_sft unit.test_rubric_check unit.test_release_gate
-# 212 tests · OK
+python3 -m unittest unit.test_reward_fns unit.test_weight_planner unit.test_grpo_probe unit.test_eval_metrics unit.test_evaluate_sft unit.test_rubric_check unit.test_release_gate unit.test_align_sft_data
+# （test_build_eval_set 已随脚本归档；test_align_sft_data 为对齐器单测）
 ```
 
 ### 5.1 评测与发布门（评估手册缺口 1~5、11~18 已落地）
@@ -501,7 +500,7 @@ python3 scripts/release_gate.py --gold data/test_golden_sample_50.jsonl \
                                 --baseline_json output/report_prev.json \
                                 --out output/gate.json
 
-# 四档控制变量对照（T1 基座 / T2 公平提示词 / T3 SFT / T4 GRPO；缺档自动 N/A）
+# 四档控制变量对照（T1 基座 / T2 提示词加固 / T3 SFT / T4 GRPO；缺档自动 N/A）
 python3 scripts/eval_four_tier.py --gold data/test_golden_sample_50.jsonl \
     --pred_base output/pred_t1.jsonl --pred_prompt output/pred_t2.jsonl \
     --pred_sft output/pred_t3.jsonl --pred_grpo output/pred_t4.jsonl \

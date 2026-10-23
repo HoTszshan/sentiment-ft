@@ -25,9 +25,15 @@ GRPO 探针数据构建：把「新生成的语料池」转成 GRPO 落盘契约
 
 import argparse
 import json
+import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+
+from sft_template import SUBJECT_RE  # noqa: E402
 
 GOLD_FIELDS = ["sentiment", "relevance", "hard_case_type", "risk_categories", "evidence"]
 
@@ -36,7 +42,9 @@ def extract_gold(row: dict) -> dict:
     """从语料行解析出 5 字段 gold。优先取 output 内的 JSON，回退 meta。"""
     out = row.get("output", "")
     tail = ""
-    if "<|end_of_thought|>" in out:
+    if "</think>" in out:
+        tail = out.split("</think>")[-1].strip()
+    elif "<|end_of_thought|>" in out:
         tail = out.split("<|end_of_thought|>")[-1].strip()
     elif out.strip().startswith("{"):
         tail = out.strip()
@@ -50,7 +58,14 @@ def extract_gold(row: dict) -> dict:
         parsed = {}
 
     meta = row.get("meta", {})
+    # subject: 同优先级取 output JSON，回退 user 侧【目标主体】行 / target_subject 字段
+    ui = row.get("input") or ""
+    m = re.search(SUBJECT_RE, ui)
+    subject = (parsed.get("subject")
+               or (m.group(1).strip() if m else None)
+               or row.get("target_subject"))
     gold = {
+        "subject": subject,
         "sentiment": parsed.get("sentiment") or meta.get("sentiment"),
         "relevance": parsed.get("relevance") or meta.get("relevance"),
         "hard_case_type": parsed.get("hard_case_type") or meta.get("hard_case_type"),

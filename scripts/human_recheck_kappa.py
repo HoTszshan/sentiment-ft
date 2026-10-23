@@ -4,7 +4,7 @@
 人工复标 κ 验收（评估手册 TODO 5.10 · 模块一 ①「人工复标」）
 
 为什么单独成脚本:
-  三方模型互评（build_eval_set.py）只能证明「三个模型口径一致」，
+  三方模型互评（已归档的 build_eval_set.py）只能证明「三个模型口径一致」，
   不能证明「模型口径 = 人的口径」。所以还要抽一批样本由人独立重标，
   与模型标注算 Cohen's κ —— **人与模型 κ ≥ 0.74 才放行**，
   不达标退回重打标，分歧样本由专家按裁决链终审。
@@ -13,7 +13,7 @@
   - 抽样约 200 条，**背对背盲复标**（复标人看不到模型标签）；
   - 比对字段: sentiment / relevance / hard_case_type / risk_categories
     （与三方互评的 JUDGE_FIELDS 同一套，risk 多标签展开成集合比对）;
-  - κ 计算复用 build_eval_set.cohen_kappa（**谁都不许再写一份 κ**）;
+  - κ 计算复用 lib/kappa_utils.cohen_kappa（**谁都不许再写一份 κ**）;
   - 分母不足（某对齐字段有效样本 < 5）→ 该字段 κ 记 None 并记账，不假装通过。
 
 输入文件格式（复标结果 jsonl，每行一条）:
@@ -44,15 +44,15 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 
-from corpus_schema import load_prompts  # noqa: E402  (保持与 build_eval_set 同一加载路径; 未直接用)
+from corpus_schema import load_prompts  # noqa: E402  (与历史标注链路同一加载路径; 未直接用)
 from schema_contract import (  # noqa: E402
     VALID_HARD_CASE,
     VALID_RELEVANCE,
     VALID_SENTIMENT,
 )
 
-# κ 计算直接复用三方互评的同一份实现（单一判定源）
-from build_eval_set import JUDGE_FIELDS, cohen_kappa, risk_key  # noqa: E402
+# κ 计算复用 lib 单一判定源（build_eval_set 已归档，实现下沉到 kappa_utils）
+from kappa_utils import JUDGE_FIELDS, cohen_kappa, risk_key  # noqa: E402
 
 # 人工复标放行门槛（评估手册模块一 ①: κ ≥ 0.74）
 THRESH_HUMAN_KAPPA = 0.74
@@ -64,11 +64,16 @@ MIN_KAPPA_N = 5
 
 def _field_pairs(rows: List[Dict[str, Any]], field: str
                  ) -> List[Tuple[Any, Any]]:
-    """取某字段 (human, model) 的有效对齐样本。缺字段 / 缺侧的样本跳过。"""
+    """取某字段 (human, model) 的有效对齐样本。缺字段 / 缺侧的样本跳过。
+
+    输入行里的键名是 risk_categories（见模块 docstring 输入格式），
+    报告字段名是 risk —— 此处做键名映射。
+    """
+    key = "risk_categories" if field == "risk" else field
     pairs: List[Tuple[Any, Any]] = []
     for r in rows:
-        h = (r.get("human") or {}).get(field)
-        m = (r.get("model") or {}).get(field)
+        h = (r.get("human") or {}).get(key)
+        m = (r.get("model") or {}).get(key)
         if h is None or m is None:
             continue
         if field == "risk":

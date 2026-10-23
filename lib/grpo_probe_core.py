@@ -20,6 +20,8 @@ k = 同一 prompt 采 G 份，其中「判对 且 evidence 溯源过门禁」的
 import json
 import os
 import re
+
+from sft_template import SUBJECT_RE
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -117,16 +119,21 @@ def run_probe(records: Sequence[Dict[str, Any]], sampler: Sampler,
 def oracle_sampler(gold: Dict[str, Any]) -> Sampler:
     """
     干跑用的假采样器: 直接拿 gold 反构一条「标准答案」completion (重复 G 次)。
-    subject 从 prompt 的 目标主体：【…】 反解（gold 契约里没有 subject 字段）。
+    subject 优先读 gold["subject"]（build_grpo_probe 已落盘），缺了再从
+    prompt 的 user 侧【目标主体】行反解（兼容旧格式「目标主体：【…】」）。
     """
 
-    def _prompt_subject(prompt: str) -> str:
-        m = re.search(r"目标主体[：:]\s*【(.+?)】", prompt or "")
-        return m.group(1) if m else ""
+    def _prompt_subject(prompt: str, gold: Dict[str, Any]) -> str:
+        got = gold.get("subject")
+        if got:
+            return str(got)
+        m = (re.search(SUBJECT_RE, prompt or "")
+             or re.search(r"目标主体[：:]\s*【(.+?)】", prompt or ""))
+        return m.group(1).strip() if m else ""
 
     def _sampler(prompt: str, g: int) -> List[str]:
         body = {
-            "subject": _prompt_subject(prompt),
+            "subject": _prompt_subject(prompt, gold),
             "relevance": gold.get("relevance"),
             "sentiment": gold.get("sentiment"),
             "hard_case_type": gold.get("hard_case_type"),

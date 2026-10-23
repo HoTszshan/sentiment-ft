@@ -6,12 +6,13 @@
 为什么单独成脚本:
   只报「微调前 vs 微调后」两档，说不清提升是哪一步带来的。
   四档控制变量对照把「提升归因到某一步」变成可计算项:
-    T1 裸基座       —— 模型出厂状态（线上模板，无格式说明）
-    T2 公平提示词   —— 同 T1 + 写全 schema 的提示词（证伪档: 提示词写好能救回多少）
+    T1 裸基座       —— 模型出厂状态（线上模板 = 完整输出协议模板）
+    T2 提示词加固   —— 同 T1 + few-shot / 自一致性等提示词工程加强（可选档）
     T3 SFT          —— + SFT LoRA（线上模板）
     T4 GRPO         —— + RL LoRA（线上模板）
   单变量差值才有归因资格: T3−T1 = SFT 净增益; T4−T3 = GRPO 净增益;
-  T2−T1 = 提示词上限（证伪）; T3−T2 / T4−T2 是合计量，**只展示、不进归因**。
+  T2−T1 = 提示词工程增益; T3−T2 / T4−T2 是合计量，**只展示、不进归因**。
+  注: T1 已带完整输出协议（线上模板=训练模板），故「纯提示词上限」由 T1 本身承担。
 
 用法:
   python scripts/eval_four_tier.py \
@@ -60,7 +61,7 @@ from schema_contract import (  # noqa: E402
 TIER_KEYS = ("base", "prompt", "sft", "grpo")
 TIER_LABELS = {
     "base": "T1 裸基座",
-    "prompt": "T2 公平提示词",
+    "prompt": "T2 提示词加固",
     "sft": "T3 SFT",
     "grpo": "T4 GRPO",
 }
@@ -69,7 +70,7 @@ TIER_LABELS = {
 SINGLE_VAR_PAIRS = (
     ("base", "sft", "SFT 净增益（单变量: 只差权重）"),
     ("sft", "grpo", "GRPO 净增益（单变量: 只差 RL 权重）"),
-    ("base", "prompt", "提示词上限（单变量: 只差提示词，证伪档）"),
+    ("base", "prompt", "提示词工程增益（单变量: 只差提示词加固）"),
 )
 CONFOUNDED_PAIRS = (
     ("prompt", "sft", "SFT vs 提示词天花板（合计量，含权重+提示词两变量）"),
@@ -171,10 +172,10 @@ def _dump(report: Dict[str, Any], out_path: str) -> None:
 # ============================================================
 
 def main():
-    ap = argparse.ArgumentParser(description="四档阶梯一键对照（T1 基座 / T2 公平提示词 / T3 SFT / T4 GRPO）")
+    ap = argparse.ArgumentParser(description="四档阶梯一键对照（T1 基座 / T2 提示词加固 / T3 SFT / T4 GRPO）")
     ap.add_argument("--gold", required=True, help="金标文件（jsonl，四档共用同一份）")
     ap.add_argument("--pred_base", help="T1 裸基座预测文件")
-    ap.add_argument("--pred_prompt", help="T2 公平提示词预测文件")
+    ap.add_argument("--pred_prompt", help="T2 提示词加固档预测文件（可选）")
     ap.add_argument("--pred_sft", help="T3 SFT 预测文件")
     ap.add_argument("--pred_grpo", help="T4 GRPO 预测文件")
     ap.add_argument("--out", default="output/tier_report.json",

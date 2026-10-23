@@ -51,7 +51,7 @@
 - [ ] **2.1** 9:1 混合 + 分层切分（新增统计日志与四查落盘）：
   ```bash
   python3 scripts/mix_sft_dataset.py \
-      --domain_file data/train_synth_81.jsonl \
+      --domain_file data/train_synth_81_aligned.jsonl \
       --anchor_file /root/autodl-tmp/datasets/coig_cqia_anchor.jsonl \
       --out_dir /root/autodl-tmp/datasets/mixed --anchor_ratio 0.1 --val_ratio 0.1 --seed 42
   ```
@@ -140,7 +140,7 @@
   | POC2 → POC3 | 核心标签（hard_case/sentiment/relevance）宏 F1 有没有涨、evidence 溯源有没有掉 | 涨且不掉 |
   | 全程 | `eval_loss` 反弹 | 无反弹 |
 - [ ] **4.4**（可选加分）四档对照起步：裸基座 pred 即 T1 档输入；`scripts/eval_four_tier.py` 汇总
-  （T2 公平提示词档需另造 instruction 变体数据，探针阶段可缓）
+  （T1 已用完整协议模板，本身即「纯提示词上限」基准；T2 提示词加固档为可选，探针阶段可缓）
 
 ### 4.5 直观前后对比（难例样张，强烈建议做）
 
@@ -150,10 +150,10 @@
   ```bash
   python3 scripts/pick_hard_cases.py --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl
   # 命中太少可从全量领域集挑（用同一段原文临时构造输入）:
-  python3 scripts/pick_hard_cases.py --data_file data/train_synth_81.jsonl --n 5
+  python3 scripts/pick_hard_cases.py --data_file data/train_synth_81_aligned.jsonl --n 5
   # 自定义类型: --types irony,metaphor
   ```
-  > 记下选中的行号（8 条 val 若无难例，就从 `data/train_synth_81.jsonl` 全量里挑，用同一段原文临时构造输入）。
+  > 记下选中的行号（8 条 val 若无难例，就从 `data/train_synth_81_aligned.jsonl` 全量里挑，用同一段原文临时构造输入）。
 - [ ] **4.5.2** 分别跑两版推理（同一份输入、同一解码配置）：
   ```bash
   # T1 · 裸基座

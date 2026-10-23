@@ -88,6 +88,28 @@ INDUSTRY_SCHEMAS = {
     },
 }
 
+# 行业英文名 → 中文名（【行业风险体系】标题用）
+INDUSTRY_CN = {
+    "automotive": "汽车",
+    "electronics_3c": "电子3C",
+    "finance_insurance": "金融保险",
+    "beauty_cosmetics": "美妆个护",
+    "fmcg": "快消",
+    "real_estate": "房地产",
+}
+
+# 风险大类英文 Key → 中文语义（渲染行业风险体系列表行）
+RISK_KEY_CN = {
+    "product": "产品/质量",
+    "service": "服务/售后",
+    "marketing": "营销/宣传",
+    "compliance": "合规/监管",
+    "governance": "治理/高管",
+    "finance": "财务/经营",
+    "general_negative": "一般负面(兜底吐槽，不构成危机)",
+}
+
+
 SUBJECTS = {
     "automotive": ["理想 L9", "蔚来 ET5", "小鹏 X9", "极氪 001", "问界 M7",
                    "小米 SU7", "比亚迪汉", "特斯拉 Model Y", "智己 LS6", "阿维塔 12"],
@@ -127,28 +149,39 @@ LENGTH_HINTS = ["短（30~80字）", "中（80~150字）", "中长（150~250字�
 HARD_CASES = ["explicit", "fact_implicit", "irony", "metaphor",
               "comparative", "counterfactual", "multi_subject"]
 
-# ---- 难点类型 × 目标极性 兼容矩阵（防止 plan_specs 乱配出语义不成立的组合）----
-# 不在白名单内的组合会被 plan_specs 直接跳过，避免生成端写了也写不像、
-# 打标端必然判分歧的"注定失败规格"。
+# ---- 难点类型 × 目标极性 兼容矩阵（**唯一权威源**）----
+# ⚠️ 2026-10-21 用户裁决：**全面放开**。
+#   7 难点 × 3 极性 = 21 格全部允许。理由：
+#   1) 真实舆情里「irony 中性」是存在的（正话正说的行业黑话式客观描述）；
+#      「fact_implicit 正面」也存在（纯客观参数披露 + 客观陈述好评事实）；
+#   2) 之前的限制来自 v3.0 的经验推定，不是语义的硬约束；
+#   3) 既然改成「按种子铺开 + 下采样控配比」，就没必要在矩阵层提前砍格。
 HC_SENT_ALLOWED: Dict[str, set] = {
-    "explicit":       {"negative", "positive", "neutral"},   # 直白褒贬，三态皆可
-    "fact_implicit":  {"negative", "neutral"},               # 纯客观事实，极少正面
-    "irony":          {"negative", "positive"},              # 极性必反转，不可能 neutral
-    "metaphor":       {"negative", "positive"},              # 隐喻必带褒贬倾向
-    "comparative":    {"negative", "positive"},              # 对比必有优劣结论
-    "counterfactual": {"negative", "positive"},              # 虚惊/幸免，非中性
-    "multi_subject":  {"negative", "positive"},              # 并列盘点各有褒贬
+    "explicit":       {"negative", "positive", "neutral"},
+    "fact_implicit":  {"negative", "positive", "neutral"},
+    "irony":          {"negative", "positive", "neutral"},
+    "metaphor":       {"negative", "positive", "neutral"},
+    "comparative":    {"negative", "positive", "neutral"},
+    "counterfactual": {"negative", "positive", "neutral"},
+    "multi_subject":  {"negative", "positive", "neutral"},
 }
 
-# ---- 难点类型 × 语篇地位 兼容矩阵 ----
+# ---- 难点类型 × 语篇地位 兼容矩阵（**唯一权威源**）----
+# 层级语义：
+#   本矩阵 = **法典层**（难点类型在语义上允许哪些语篇地位）。
+#   sample_specs_v2.LEGAL_RELS = **实测收敛层**（由本矩阵派生，砍掉实测会被
+#   打标端判成别的难点的格子，如 explicit×passing → 实测必判 fact_implicit）。
+#   两者是「法典允许 ⊇ 实测可用」的包含关系，不是两份互相漂移的副本。
+# ⚠️ 2026-10-21：统一为单份权威源，sample_specs_v2 / sample_specs_v3 一律 import 本处，
+#    杜绝双份定义漂移（2026-10-21 教训：HC_SENT_ALLOWED 本地副本忘了放开 neutral）。
 HC_REL_ALLOWED: Dict[str, set] = {
-    "explicit":       {"core", "passing"},
-    "fact_implicit":  {"core", "passing"},
-    "irony":          {"core"},
-    "metaphor":       {"core"},
-    "comparative":    {"core", "foil"},                      # comparative 常把参照物放 foil
-    "counterfactual": {"core"},
-    "multi_subject":  {"core", "passing"},
+    "explicit":       {"core", "passing", "foil"},
+    "fact_implicit":  {"core", "passing", "foil"},
+    "irony":          {"core", "passing", "foil"},
+    "metaphor":       {"core", "passing", "foil"},
+    "comparative":    {"core", "passing", "foil"},
+    "counterfactual": {"core", "passing", "foil"},
+    "multi_subject":  {"core", "passing", "foil"},
 }
 
 def _extract_code_block(md_text: str, heading: str) -> str:
