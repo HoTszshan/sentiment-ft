@@ -21,7 +21,7 @@ provenance 等全部 meta 字段透传 (mix_sft_dataset 靠 provenance 判 ancho
 用法:
     python3 scripts/align_sft_data.py \
         --src ../output/corpus/synth_300_stageA.dedup.jsonl \
-        --out data/train_synth_aligned.jsonl \
+        --out data/train_synth_81_aligned.jsonl \
         --report data/align_report.json
 """
 
@@ -127,7 +127,9 @@ def check_row(row: dict):
 def main():
     ap = argparse.ArgumentParser(description="SFT 数据格式对齐器 (纯规则, 零 LLM)")
     ap.add_argument("--src", required=True, help="原文+meta 源 jsonl")
-    ap.add_argument("--out", default="data/train_synth_aligned.jsonl")
+    ap.add_argument("--out", default="data/train_synth_81_aligned.jsonl",
+                    help="对齐产物路径（默认与 mix_sft_dataset --domain_file 的默认值衔接，"
+                         "两处默认必须指向同一文件，否则流水线默认口径断链）")
     ap.add_argument("--report", default="", help="质检报告 json 路径 (留空则打印)")
     args = ap.parse_args()
 

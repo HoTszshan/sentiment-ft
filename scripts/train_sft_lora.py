@@ -367,7 +367,7 @@ def _sft_trainer_extra_kwargs(TrainerBase, tokenizer, backend_name: str) -> dict
     return kwargs
 
 
-def _build_training_components(max_seq_length: int, trainer_backend: str = "auto"):
+def _build_training_components(trainer_backend: str = "auto"):
     """
     惰性导入训练栈并构建 (Trainer 类, 后端名, torch, tokenizer 依赖)。
     重型依赖缺失时给出明确安装指引而非晦涩的 ImportError。
@@ -501,7 +501,7 @@ def main():
      torch, AutoModelForCausalLM, AutoTokenizer, TrainingArguments,
      HfArgumentParser, LoraConfig, get_peft_model, TaskType) = \
         _build_training_components(
-            max_seq_length=2560, trainer_backend=extra.get("trainer_backend", "auto"))
+            trainer_backend=extra.get("trainer_backend", "auto"))
 
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()

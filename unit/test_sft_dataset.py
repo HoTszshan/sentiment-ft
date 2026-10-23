@@ -73,6 +73,7 @@ class TestInvariants(unittest.TestCase):
         self.ds.tokenizer = TOKENIZER_STUB
         self.ds.max_len = 2560
         self.ds.uses_chat = True
+        self.ds.strict_parity = True
         self.ds.samples = [row()]
         self.ds.parity = None
         # 桩 tokenizer 的 encode 是字符级（1 字符 = 1 token），与 char_level_encode 同构
@@ -128,6 +129,7 @@ class TestSameSource(unittest.TestCase):
         ds.tokenizer = TOKENIZER_STUB
         ds.max_len = 2560
         ds.uses_chat = True
+        ds.strict_parity = True
         ds._encode = lambda t: [ord(c) for c in t]
         r = row()
         item = ds.build_item(r)
@@ -141,6 +143,7 @@ class TestSameSource(unittest.TestCase):
         ds.tokenizer = TOKENIZER_STUB
         ds.max_len = 2560
         ds.uses_chat = True
+        ds.strict_parity = True
         ds._encode = lambda t: [ord(c) for c in t]
         r = row()
         item = ds.build_item(r)
@@ -152,6 +155,7 @@ class TestSameSource(unittest.TestCase):
         ds.tokenizer = None
         ds.max_len = 2560
         ds.uses_chat = False
+        ds.strict_parity = True
         ds._encode = lambda t: [ord(c) for c in t]
         r = row()
         item = ds.build_item(r)
@@ -170,6 +174,7 @@ class TestWeights(unittest.TestCase):
         ds.tokenizer = None          # 字符级，span→token 映射为恒等
         ds.max_len = 10000
         ds.uses_chat = False
+        ds.strict_parity = True
         ds._encode = swp.char_level_encode
         return ds.build_item(row())
 

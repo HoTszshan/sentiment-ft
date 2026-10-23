@@ -284,9 +284,13 @@ class SFTConversationDataset:
         if show_ignored:
             out.append("\n  不参与 loss 的区段（前缀掩码 + 骨架）:")
             out.append(f"    [0,{item['prompt_len']}) → prompt（label=-100, w=0）")
-            zero_w = [i for i, w in enumerate(item["loss_weights"]) if w == 0.0]
-            if zero_w:
-                out.append(f"    输出侧 w=0 的 token 共 {len(zero_w)} 个（骨架掩码）")
+            # 只统计「输出侧」的 w=0（骨架掩码），prompt 段的 w=0 不算 ——
+            # 否则 prompt ~1800 个 0 会把骨架的真实计数（~30）淹没 60 倍
+            sk = sum(1 for w in item["loss_weights"][item["prompt_len"]:] if w == 0.0)
+            if sk:
+                out.append(f"    输出侧 w=0 的 token 共 {sk} 个（骨架掩码）")
+            else:
+                out.append("    输出侧无 w=0 token（POC1 未启用骨架掩码，属预期）")
 
         out.append(bar)
         return "\n".join(out)
