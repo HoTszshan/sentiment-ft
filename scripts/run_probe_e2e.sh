@@ -8,6 +8,11 @@
 #   ./scripts/run_probe_e2e.sh mix          # 只跑混合
 #   ./scripts/run_probe_e2e.sh train        # 只跑训练
 #   ./scripts/run_probe_e2e.sh test         # 只跑推理+评测
+#   ./scripts/run_probe_e2e.sh traintest    # 只跑训练+推理+评测 (复用已有混合数据与基座模型)
+#
+# traintest 说明: 数据(公开 Anchor + 领域数据混合产物)与基座模型都不重复下载/重复混合,
+#                 直接读 $DATA_DIR/mixed/sft_{train,val}.jsonl 与 $MODEL_DIR 下的本地基座。
+#                 缺产物时给出明确报错(用 mix / download 补齐), 不自动触发下载。
 #
 # 开关 (环境变量):
 #   SYNC_WANDB=1       探针默认不上传 wandb (只落本地日志)；正式跑设此开关才同步
@@ -107,6 +112,30 @@ check_deps() {
     log "wandb: SYNC_WANDB=1 但未登录，降级为本地日志 (wandb login 或设 WANDB_API_KEY)"
     WANDB_FLAG="--no_wandb"
   fi
+}
+
+# ---------------------------------------------------------------- 0.5 复用产物自检
+# traintest 模式专用: 确认"已混合数据 + 本地基座"就位, 缺失则直接报错退出,
+# 不触发任何下载或混合 (那两步由 download / mix 单独负责)。
+check_reuse_assets() {
+  miss_data=""
+  miss_model=""
+  if [ ! -f "$MIXED_DIR/sft_train.jsonl" ] || [ ! -f "$MIXED_DIR/sft_val.jsonl" ]; then
+    miss_data="1"
+  fi
+  if [ ! -d "$MODEL_DIR/$(basename "$MODEL_NAME")" ]; then
+    miss_model="1"
+  fi
+  if [ -n "$miss_data" ] || [ -n "$miss_model" ]; then
+    log "❌ 缺少可复用产物:"
+    [ -n "$miss_data" ]  && log "   混合数据缺失 ($MIXED_DIR/sft_train.jsonl, sft_val.jsonl) → 先跑: ./scripts/run_probe_e2e.sh mix"
+    [ -n "$miss_model" ] && log "   基座模型缺失 ($MODEL_DIR/$(basename "$MODEL_NAME"))            → 先跑: ./scripts/run_probe_e2e.sh download"
+    log "   (也可用 DATA_DIR / MODEL_DIR / MODEL_NAME 指定现有产物位置)"
+    # 自检失败即退出：清掉本次创建的空 run 目录，避免留下无用产物
+    rm -rf "$RUN_DIR"
+    exit 1
+  fi
+  log "复用资产自检通过: 混合数据=$MIXED_DIR  基座=$MODEL_DIR/$(basename "$MODEL_NAME")"
 }
 
 # ---------------------------------------------------------------- 1. 下载
@@ -261,8 +290,9 @@ case "$STEP" in
   mix)      step_mix ;;
   train)    step_train ;;
   test)     step_infer; step_eval ;;
+  traintest) check_reuse_assets; step_train; step_infer; step_eval ;;
   all)      step_download; step_mix; step_train; step_infer; step_eval ;;
-  *) echo "未知步骤: $STEP (可选 download|mix|train|test|all)"; exit 2 ;;
+  *) echo "未知步骤: $STEP (可选 download|mix|train|test|traintest|all)"; exit 2 ;;
 esac
 
 log "本轮探针结束 · 总日志: $RUN_LOG"

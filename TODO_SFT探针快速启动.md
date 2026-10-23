@@ -99,6 +99,11 @@
   SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh train
   ```
   > 每档 adapter 目录带时间戳自动区分；回填时用 `cat output/latest_adapter_path.txt` 找到当前档，或直接取各时间戳目录。
+  > 不想分步跑训练+推理+评测时，可用一键模式（**复用已有混合数据与本地基座，不重复下载/混合**）：
+  > ```bash
+  > SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh traintest
+  > ```
+  > 前置条件：`$DATA_DIR/mixed/sft_{train,val}.jsonl` 与 `$MODEL_DIR/<基座>` 均已存在（缺任一项会直接报错并提示先跑 `mix` / `download`）。
 - [ ] **3.4 每档训练中盯防**（本地 `logs/train_probe*.log`；要看曲线就 `SYNC_WANDB=1` 重跑同步 wandb，项目 `sentiment-sft-probe`）：
   - [ ] loss 能压下去、无 NaN（NaN = 整轮作废，查毒样本）
   - [ ] `grad_norm` 无连续 >10 暴跳

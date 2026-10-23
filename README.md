@@ -89,6 +89,7 @@ wandb login
 ./scripts/run_probe_e2e.sh mix        # 步骤2
 ./scripts/run_probe_e2e.sh train      # 步骤3
 ./scripts/run_probe_e2e.sh test       # 步骤4+5（推理+评测）
+./scripts/run_probe_e2e.sh traintest  # 步骤3+4+5（只训练+评测；复用已有混合数据与本地基座，不重复下载/混合）
 ```
 
 可用环境变量：
