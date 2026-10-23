@@ -25,6 +25,9 @@
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
+#   BG=1                  后台执行: nohup + PID 文件 + 日志重定向, 断 SSH 不死
+#                         (正式训练 3~6 小时必用; 探针 2~3 分钟可前台直跑)
+#                         三件套: tail -f <nohup日志> / ps -p $(cat <pid文件>) / kill $(cat <pid文件>)
 # ==============================================================================
 
 set -e
@@ -282,6 +285,24 @@ step_eval() {
 
 # ---------------------------------------------------------------- 入口
 STEP="${1:-all}"
+
+# ---- BG=1: 自我转后台 (nohup + PID 文件 + 日志重定向), 断 SSH 不死 ----
+# 正式训练 3~6 小时必用; 探针 2~3 分钟可前台直跑。实现: 递归调用自身一次,
+# 子进程经 nohup 脱离终端, 父进程打印三件套用法后立即退出。
+if [ "${BG:-0}" = "1" ] && [ -z "${BG_CHILD:-}" ]; then
+  BG_TS=$(date +"%Y%m%d_%H%M%S")
+  BG_LOG="nohup_${STEP}_${BG_TS}.log"
+  BG_PID="train_${BG_TS}.pid"
+  nohup env BG_CHILD=1 "$0" "$@" > "$BG_LOG" 2>&1 &
+  echo $! > "$BG_PID"
+  echo "[BG] 已转后台执行: $*"
+  echo "[BG] 看进度 : tail -f $BG_LOG"
+  echo "[BG] 确认活着: ps -p \$(cat $BG_PID) && echo 还在跑 || echo 已结束"
+  echo "[BG] 停止   : kill \$(cat $BG_PID)"
+  echo "[BG] 总控日志与产物仍按内部路径落盘 (OUTPUT_DIR/run_<TS>/logs/)"
+  exit 0
+fi
+
 check_deps
 log "执行模式: $STEP"
 

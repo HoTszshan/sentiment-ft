@@ -458,8 +458,13 @@ def _build_training_components(max_seq_length: int):
             # 我们的 compute_loss 返回的是加权 mean 口径 → 8 个 micro-batch 的梯度直接相加，
             # 等效学习率放大 8 倍、logged train_loss 虚高 8 倍 (探针实测 20~27, ÷8 后 2.5~3.4
             # 与 eval_loss 2.15~3.0 完全吻合 —— 本 bug 的数值铁证)。
-            # 修法: 返回前除以 grad_accum，把口径还原为"每 micro-batch 份额"。
-            if num_items_in_batch is not None:
+            # 修法: 训练态返回前除以 grad_accum，把口径还原为"每 micro-batch 份额"。
+            #
+            # ⚠️ 仅训练模式下才除以梯度累积步数：
+            # prediction_step（eval）同样会传入 num_items_in_batch，但评估阶段不做梯度累积。
+            # 如果也除以 grad_accum，eval_loss 会被错误缩小（实测：显示0.59，×4≈2.4才是真实loss）。
+            # 判断依据：training_step 执行时 model.train()，prediction_step 为 model.eval()，以此区分两路逻辑。
+            if num_items_in_batch is not None and model.training:
                 loss = loss / max(int(self.args.gradient_accumulation_steps), 1)
             return (loss, outputs) if return_outputs else loss
 
@@ -637,6 +642,7 @@ def main():
     print(f"  每 epoch 优化器步数 : {steps_per_epoch}")
     print(f"  合计优化器步数      : {total_steps}  ({float(training_args.num_train_epochs)} epoch)")
     print(f"  学习率              : {training_args.learning_rate} / {training_args.lr_scheduler_type}")
+    print(f"  Weight Decay        : {training_args.weight_decay}")
     print("  早停策略            : 无早停（SOP §训练纪律：epoch 受控 + cosine 退火；"
           "靠 eval_loss 反弹判定过拟合，不自动掐停）\n")
 

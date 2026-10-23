@@ -109,6 +109,11 @@
   - [ ] `grad_norm` 无连续 >10 暴跳
   - [ ] `eval_loss`（每 5 步一采）是否反弹 → **人判**，不自动早停；反弹则记录拐点（这正是「多轮过拟合 → 支撑正式轮锁 1 epoch」的证据）
 
+### 3.5 后台执行（正式训练必用；探针可前台直跑）
+
+> **分场景**：探针 33 步只跑 2~3 分钟，前台直跑即可（挂了重跑成本低）；**正式训练 3~6 小时，SSH 断线 = SIGHUP 杀进程 = 白跑**，必须后台。
+> 脚本已内置：`BG=1 ./scripts/run_probe_e2e.sh train` 一行转后台，自动 nohup + PID 文件 + 日志重定向。
+
 ## Step 4 · 推理与评估（每档都要跑）
 
 > 以下 `<MODEL>` = `/root/autodl-tmp/models/Qwen3-4B-Instruct-2507`，`<MIXED>` = `/root/autodl-tmp/datasets/mixed`，`<ADAPTER>` = 对应 POC 档的 `output/probe_lora_<时间戳>`。
