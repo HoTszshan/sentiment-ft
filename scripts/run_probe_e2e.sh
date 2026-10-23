@@ -243,7 +243,7 @@ step_train() {
     --remove_unused_columns false \
     --trainer_backend "${TRAINER_BACKEND:-auto}" \
     --log_file "$TRAIN_LOG" \
-    --wandb_project sentiment-sft-probe2 \
+    --wandb_project sentiment-sft-probe3 \
     --wandb_run_name "$RUN_NAME" \
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
   train_rc=${PIPESTATUS[0]}

@@ -311,28 +311,34 @@ def _resolve_trainer_base(backend: str):
     """选训练器基类。
 
     backend:
-      auto → 有 trl 用 trl.SFTTrainer，否则退 transformers.Trainer
+      auto → 优先 transformers.Trainer（见下），无回归路径
       trl  → 强制 trl.SFTTrainer（缺库直接报错，不静默降级）
       hf   → 强制 transformers.Trainer
 
-    返回 (base_class, backend_name)。FieldWeightedTrainer 继承 base_class，
-    两条路共用同一份 compute_loss 覆写（加权 CE + 动态分母），行为一致。
+    ⚠️ auto 不再优先 trl：trl1.x SFTTrainer强校验必须是HF Dataset，
+        我们的SFTConversationDataset为自定义鸭子类型，trl侧需显式转换；
+        auto 直接用原生HF Trainer更稳。两者复用同一compute_loss，行为对齐。
     """
     backend = (backend or "auto").strip().lower()
     if backend not in ("auto", "trl", "hf"):
         raise SystemExit(f"[FATAL] 未知 --trainer_backend {backend!r}，可选 auto/trl/hf")
 
-    if backend in ("auto", "trl"):
+    if backend == "trl":
         try:
             from trl import SFTTrainer
             return SFTTrainer, "trl.SFTTrainer"
         except ImportError:
-            if backend == "trl":
-                raise SystemExit(
-                    "[FATAL] --trainer_backend trl 但未安装 trl："
-                    "pip install 'trl>=0.19'（或改 --trainer_backend hf）")
+            raise SystemExit(
+                "[FATAL] --trainer_backend trl 但未安装 trl："
+                "pip install 'trl>=0.19'（或改 --trainer_backend hf）")
     from transformers import Trainer
     return Trainer, "transformers.Trainer"
+
+
+def _to_hf_dataset(ds) -> "Dataset":
+    """把 SFTConversationDataset 物化成 HF datasets.Dataset（trl 1.x 硬性要求）。"""
+    from datasets import Dataset as HFDataset
+    return HFDataset.from_list([ds[i] for i in range(len(ds))])
 
 
 def _sft_trainer_extra_kwargs(TrainerBase, tokenizer, backend_name: str) -> dict:
@@ -343,13 +349,9 @@ def _sft_trainer_extra_kwargs(TrainerBase, tokenizer, backend_name: str) -> dict
       必须让 SFTTrainer 跳过它自带的 _prepare_dataset（分词/截断/packing），
       否则会对已编码数据二次处理。
 
-    ⚠️ skip_prepare_dataset 是 **SFTConfig 字段不是 __init__ 参数**（trl>=0.19）：
-       SFTTrainer(model=..., args=SFTConfig(skip_prepare_dataset=True), ...)。
-       这里探测不到 __init__ 签名里的它，属于预期——放行由 TrainingArguments
-       侧透传（HfArgumentParser 解析 TrainingArguments 后，SFTConfig 的额外
-       字段走 default），真正的保险闸是下面的「样本形态自检」：
-       若 SFTTrainer 仍对非 HF-Dataset 对象做 prepare，会在构造期就炸出
-       AttributeError（.map/.column_names 不存在），而不是静默错码。
+    ⚠️ skip_prepare_dataset 是 trl>=0.19 的 SFTConfig 字段，不是 __init__ 参数：
+        需在 SFTConfig 里传入，无法从函数签名检测，由参数解析透传。
+        下方样本自检兜底：避免SFTTrainer对自定义数据集执行prepare，提前抛出异常而非静默出错。
     HF Trainer 路径不需要这些，返回空 dict。
     """
     if not backend_name.startswith("trl"):
@@ -697,6 +699,25 @@ def main():
     # 跳过它对已 tokenize 数据的二次处理；HF Trainer 不需要。
     _extra_kwargs = _sft_trainer_extra_kwargs(
         FieldWeightedTrainer, tokenizer, trainer_backend_name)
+
+    if trainer_backend_name.startswith("trl"):
+        # trl 1.x 构造期硬性 isinstance(train_dataset, datasets.Dataset)，
+        # 且 skip_prepare_dataset 只认 args.dataset_kwargs（SFTConfig 字段）。
+        # ⚠️ 不能在 TrainingArguments 上直接 setattr：SFTTrainer.__init__ 检测到
+        # args 不是 SFTConfig 时会用 args.to_dict() 重建一个新 SFTConfig，
+        # setattr 上去的 dataset_kwargs 会被这次重建静默丢掉（prepare 照跑、
+        # 按 SFTConfig 默认 max_length=1024 截断 → collator stack 长度不齐炸掉）。
+        # 所以这里必须我们自己先把 args 重建为 SFTConfig 并带上 dataset_kwargs。
+        _fields = {f: getattr(training_args, f)
+                   for f in training_args.__class__.__dataclass_fields__}
+        from trl import SFTConfig
+        training_args = SFTConfig(
+            dataset_kwargs={"skip_prepare_dataset": True}, **_fields)
+        train_dataset = _to_hf_dataset(train_dataset)
+        if eval_dataset is not None:
+            eval_dataset = _to_hf_dataset(eval_dataset)
+        print(f"[TRL] 数据已物化为 HF Dataset (skip_prepare_dataset=True)；"
+              f"collator 走 WeightedDataCollator")
 
     trainer = FieldWeightedTrainer(
         model=model,
