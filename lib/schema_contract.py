@@ -57,6 +57,24 @@ THOUGHT_END = "</think>"    # Qwen3 词表原生标签 (id 151668)
 _THOUGHT_RE = re.compile(re.escape(THOUGHT_BEGIN) + r"(.*?)" + re.escape(THOUGHT_END),
                          re.DOTALL)
 
+# 终句标记：属于本轮对话的收尾符，不是模型"多写了话"。
+# 生成侧 stop token 与 decode(skip_special_tokens=False) 组合会让每条输出都带它，
+# 若计入尾赘，尾赘率恒为 100%，是纯测量噪声。
+TERMINAL_MARKERS = ("<|im_end|>", "<|endoftext|>")
+
+
+def strip_terminal_markers(text: str) -> str:
+    """剥掉末尾的对话收尾符（可叠多个，中间允许空白）。"""
+    out = text.rstrip()
+    changed = True
+    while changed:
+        changed = False
+        for mk in TERMINAL_MARKERS:
+            if out.endswith(mk):
+                out = out[: -len(mk)].rstrip()
+                changed = True
+    return out
+
 
 # ============================================================
 # 契约校验
@@ -129,6 +147,10 @@ def parse_output(output_str: Any) -> Tuple[Optional[str], Optional[dict], Dict[s
     flags = _new_flags()
     if not isinstance(output_str, str):
         return None, None, flags
+
+    # 收尾符先剥掉再解析：它是解码的 stop token，不是模型多写的正文。
+    # 不剥的话 JSON 段后面永远挂着 <|im_end|>，尾赘率恒为 100%。
+    output_str = strip_terminal_markers(output_str)
 
     m = _THOUGHT_RE.search(output_str)
     if not m:

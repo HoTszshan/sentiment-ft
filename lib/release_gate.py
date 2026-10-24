@@ -231,6 +231,15 @@ def evaluate_gates(gold: Sequence[Dict[str, Any]],
                                 "reason": f"普通字段退化超容差：{cur_v:.2f} vs 在役 {base_v:.2f}"
                                           f"（容差 {THRESH_GATE2_ORDINARY_DROP}pp）"})
     gate2 = "PASS" if gate2_ok else "FAIL"
+    # 预测全部不可解析时，门 2 的四项指标虽能算出数字（如 recall=0.0），但那是
+    # "没有输出"的产物，不是"判错了"。此时报 PASS 会让格式全崩的版本看起来安全字段过关。
+    # 与门 1 / 门 3 同语义：无可判定输入即 N/A，不假装 PASS。
+    n_usable = sum(1 for p in pred if p and p.get("valid_json", True))
+    if pred and n_usable == 0:
+        gate2 = "N/A"
+        details["gate2"]["reason"] = "预测全部不可解析，安全字段无从判定"
+        details["gate2"]["skipped"].append("预测可用数为 0 → 门 2 记 N/A，不参与发布判定")
+    details["gate2"]["n_usable_pred"] = n_usable
     details["gate2"]["status"] = gate2
 
     # ---------------- 门 3 · 全链路安全底线 ----------------

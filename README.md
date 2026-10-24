@@ -12,6 +12,10 @@
 ```
 MVP/tests/
 ├── README.md                       ← 本文件
+├── docs/
+│   ├── OPTIMIZATION_BACKLOG.md     ★ 落地改造清单：确定要做的改造 + 防回退清单
+│   ├── AutoDL上常用指令.md
+│   └── experiments/                ← 实验报告与实验待办
 ├── data/
 │   ├── train_synth_81.jsonl        ← 真实金标语料 81 条（异族打标 + 四查全过）
 │   ├── train_synth_81_aligned.jsonl ← 上者经 align 重写 instruction（显式输出协议版，当前探针用）
@@ -35,6 +39,7 @@ MVP/tests/
 │   ├── sft_template.py             ★ SFT 指令模板唯一真理源（显式输出协议段，枚举从 schema_contract 插值；训练=推理逐字一致）
 │   ├── prompt_template.py          ★ 外壳渲染唯一真理源（apply_chat_template + 手写兜底 + parity gate，训练/推理/统计/GRPO 四方同源）
 │   ├── sft_dataset.py              ★ 共用 Dataset/Collator（前缀掩码 + FIELD_W 装配；import 时零 torch，无 GPU 可 preview/stats）
+│   ├── format_canary.py            ★ 格式自检：协议 token id 解析 + teacher-forced 概率 + 贪心合规判定（训练回调与独立脚本共用）
 │   ├── kappa_utils.py              ★ 一致性统计纯函数（cohen_kappa / risk_key，原 build_eval_set 内嵌实现下沉）
 │   ├── llm_client.py               API 客户端（generate 的依赖）
 │   └── sft_weight_planner.py       字段权重 span 规划器（train 的依赖，勿删）
@@ -57,6 +62,7 @@ MVP/tests/
 │   ├── mix_sft_dataset.py          2 混合：9:1 + 分层切分 train/val
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
 │   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
+│   ├── check_format.py             格式 canary 独立检查（不启动训练，测任意「基座+adapter」组合）
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
 │   ├── inspect_sft_dataset.py      数据模板预览（原文→messages→渲染文本→token/权重四层；--check_parity 只跑字节比对）
 │   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；无 tokenizer 退化为字符级近似）
@@ -107,6 +113,14 @@ wandb login
 | `EPOCHS` | `3` | 训练轮数 |
 | `SFT_POC_STAGE` | `POC1` | **Loss 消融阶段**：`POC1`=仅前缀掩码 / `POC2`=+骨架掩码 / `POC3`=+字段加权 FIELD_W（详见 §训练 与 `sft_weight_planner.POC_STAGE`） |
 | `TRAINER_BACKEND` | `auto` | 训练器后端：`auto`=有 trl 用 `trl.SFTTrainer` 否则 `transformers.Trainer` / `trl`=强制 trl（缺库报错）/ `hf`=强制 HF Trainer（同一份 compute_loss 覆写，加权口径一致） |
+| `UNFREEZE_PROTOCOL_TOKENS` | `1` | **协议 token 解冻**：给 `<think>` / `</think>` 两行 embedding 挂可训练偏移（约 10 KB，随 adapter 落盘）。设 `0` 关闭，用于消融对照。详见「步骤 3c」 |
+| `THINK_PREFIX` | `0` | **前缀预置**：把 `<think>\n` 写进 assistant 前缀。默认关（已证实无额外收益，且会让 adapter 依赖推理端复现同一前缀）。设 `1` 开启 |
+| `CANARY_EVERY` | `30` | 格式 canary 检测间隔（优化步）；`0` 关闭 |
+| `CANARY_N` | `3` | canary 用几条验证样本 |
+| `CANARY_MAX_NEW` | `400` | canary 贪心生成的 token 上限 |
+| `NPROC` | 自动探测 | 卡数。显式指定可固定启动方式（`1`=python3 直启，`>1`=accelerate DDP），避免换机器后数值漂移 |
+| `PER_DEV_BATCH` | `2` | 单卡 batch。有效 batch 恒为 8，梯度累积自动折算 |
+| `MAX_LEN` | `2560` | 最大序列长度 |
 | `FORCE=1` | `0` | 忽略已有产物强制重跑 |
 
 ```bash
@@ -251,6 +265,75 @@ python3 scripts/train_sft_lora.py \
   > `--dry_run` 用字符级伪编码（1 字符 = 1 token）做近似，**骨架遮蔽占比是字符级近似值、不是真实 token 占比**，真值需上真 tokenizer 才算数。
   >
   > **空表 `[]` 是例外**：`risk_categories: []` 的两个方括号单独登记 span、拿 `risk_categories` 的权重（POC2 `1.0` / POC3 `2.0`），不随骨架置 0——否则该字段在空表样本上无任何梯度，模型学不会「该空就空」。`subject` 回显值则相反：未登记 → 被骨架遮掉，属**主动不监督**。
+
+### 步骤 3b · 格式 canary（训练期格式自检）
+训练时定期在验证集观测格式学习情况("模型现在会不会输出规定格式")，上报日志/WandB，**不参与梯度更新**。
+> loss 不能反映格式能力：存在 loss 接近、但格式合规率天差地别的情况，用于提前发现格式崩溃。
+
+**检测项 [CANARY]**
+| 指标 | 含义 |
+|---|---|
+| `p(</think>)` | 在该闭合的位置，模型对 `</think>` 的概率（teacher-forced，非生成） |
+| `p(next\|after</think>)` | `</think>` 之后第一个 token 的概率（正确做法是读真实 token id，Qwen 把 `{"` 合成一个 token） |
+| `p(<\|im_end\|>)` | 序列末尾对停笔 token 的概率 |
+| `greedy_ok` | 贪心生成 M 条，格式全合规的条数 |
+
+**参数（CLI，不读环境变量，代码：`lib/format_canary.py`）**
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--canary_every N` | 30 | 每N步检测，0=关闭 |
+| `--canary_n M` | 3 | 验证样本数 |
+| `--canary_max_new K` | 400 | 生成token上限 |
+
+**开销&建议**：主要耗时来自贪心生成。正式训练：`--canary_every 60` 或关闭；**探针实验开启**，验证格式可学性。
+
+**独立校验脚本**
+```bash
+python3 scripts/check_format.py \
+    --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter_path output/probe_lora \
+    --data_file data/mixed/sft_val.jsonl
+```
+
+**判读**
+
+| 观测 | 结论 |
+|---|---|
+| `p(</think>)` 上升 | 闭合在学，正常 |
+| `greedy_ok` 里生成文本以 `<think>` 开头 | 起始标签也学会了 |
+| `p(</think>)` 涨但开头不是 `<think>` | 起始标签没学会 |
+| `p(</think>)` 恒 ≈0 | 协议 token 不可学，检查是否误加了 `UNFREEZE_PROTOCOL_TOKENS=0` |
+
+### 步骤 3c · 协议 token 解冻（默认开启）
+
+
+**功能**：仅给 `<think>` 和 `</think>` 两行 embedding 添加可训练增量参数 `(2, hidden)`（约10KB），随adapter保存；其余token embedding冻结。
+
+**背景**：Qwen3-4B-Instruct-2507 为非思考型基座，词表虽包含这两个token，但从未训练：
+
+| 事实 | 数值 |
+|---|---|
+| `<think>` / `</think>` 的行范数 | 0.367 / 0.370（普通词中位数 **1.106**） |
+| 与 `</tool_call>` 的余弦相似度 | 0.9914 / 0.9187 —— **几乎是同一个方向** |
+| 模型的 `p(</think>)` | 5.5e-4，排名 **112~149** |
+
+开启权重绑定 `tie_word_embeddings=True` 时，它们同时是 `lm_head` 输出行；普通 LoRA 只更新 Attention / MLP，无法修改输出向量，模型会持续错输出 `</tool_call>`。
+
+**POC 效果**
+
+| 配置 | `p(</think>)` @60 步 | 贪心合规 | 格式门 |
+|---|---|---|---|
+| 解冻**关** | 0.001 | 0/3 | 0% |
+| 解冻**开** | **0.829** | **3/3** | **100%** |
+
+
+**使用方式**：默认开启。消融实验可关闭：
+
+```
+UNFREEZE_PROTOCOL_TOKENS=0 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_probe_e2e.sh traintest
+```
+
+token id 通过 tokenizer（`format_canary.resolve_protocol_ids`）动态解析、无硬编码；基座词表缺失对应token会直接报错。
 
 ### 步骤 4 · 推理
 

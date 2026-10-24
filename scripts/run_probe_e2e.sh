@@ -224,6 +224,10 @@ step_train() {
   #   若仍 OOM 就 MAX_LEN=1536/1024 再压, 或直接显式 --max_seq_length。
   MAX_LEN="${MAX_LEN:-2560}"
 
+  # 协议 token 解冻：默认开；设置 UNFREEZE_PROTOCOL_TOKENS=0 可关（消融对照用）
+  UNFREEZE_ARG=""
+  [ "${UNFREEZE_PROTOCOL_TOKENS:-1}" = "0" ] && UNFREEZE_ARG="--no_unfreeze_protocol_tokens"
+
   "${LAUNCH_CMD[@]}" scripts/train_sft_lora.py \
     --model_name_or_path "${LOCAL_MODEL:-$MODEL_NAME}" \
     --train_file "$MIXED_DIR/sft_train.jsonl" \
@@ -242,8 +246,13 @@ step_train() {
     --save_strategy no \
     --remove_unused_columns false \
     --trainer_backend "${TRAINER_BACKEND:-auto}" \
+    --think_prefix "${THINK_PREFIX:-0}" \
+    ${UNFREEZE_ARG} \
+    --canary_every "${CANARY_EVERY:-30}" \
+    --canary_n "${CANARY_N:-3}" \
+    --canary_max_new "${CANARY_MAX_NEW:-400}" \
     --log_file "$TRAIN_LOG" \
-    --wandb_project sentiment-sft-probe3 \
+    --wandb_project sentiment-sft-probe4 \
     --wandb_run_name "$RUN_NAME" \
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
   train_rc=${PIPESTATUS[0]}
@@ -263,11 +272,16 @@ step_infer() {
   resolve_local_model
   ADAPTER_DIR="$(cat "$OUTPUT_DIR/latest_adapter_path.txt" 2>/dev/null || echo "")"
   log "步骤 4/5 · 加载 Adapter 在内部 val 上批量推理"
+  # 渲染协议必须与训练侧一致：THINK_PREFIX=1 时训练把 <think>\n 写进了前缀，
+  # 推理侧不加同一 flag 就会「训练有前缀、推理没前缀」，格式立刻崩。
+  THINK_PREFIX_ARG=""
+  [ "${THINK_PREFIX:-0}" = "1" ] && THINK_PREFIX_ARG="--think_prefix"
   python3 scripts/probe_infer.py \
     --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
     --adapter_path "$ADAPTER_DIR" \
     --data_file "$MIXED_DIR/sft_val.jsonl" \
-    --out "$RUN_DIR/pred_val.jsonl" 2>&1 | tee -a "$RUN_LOG"
+    --out "$RUN_DIR/pred_val.jsonl" \
+    $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
   echo "$RUN_DIR/pred_val.jsonl" > "$OUTPUT_DIR/latest_pred_path.txt"
 }
 

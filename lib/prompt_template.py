@@ -1,33 +1,24 @@
-#!/usr/bin/env python3
+788#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 SFT Prompt 外壳层 · 唯一真理源
 
-只干一件事：把 instruction / input / output 三元组套进 Qwen 的 ChatML 模板，
-拼出模型真正看到的文本。
+把 instruction / input / output 套进 Qwen ChatML 模板，拼出模型真正看到的文本。
 
-  render_prompt(tokenizer, instruction, input)            → 问题那一半（推理也喂这个）
-  render_full(tokenizer, instruction, input, output)      → 问题+答案（训练喂这个）
-  assert_parity(tokenizer, rows)                          → 批量校验拼写无漂移
+  render_prompt(tokenizer, instruction, input)       → 生成前缀（训练掩码区 = 推理输入）
+  render_full(tokenizer, instruction, input, output) → 完整训练序列
+  assert_parity(tokenizer, rows)                     → 批量校验 chat 渲染无漂移
 
-为什么优先 tokenizer.apply_chat_template：
-  模板是「模型出厂协议」，该由 tokenizer 说了算；手写字符串把 ChatML 细节
-  硬编码进我们的代码，换基座时无人提醒。但 blindly 信任它也不行 ——
-  所以每次渲染都验一条字节等式：
+优先用 tokenizer.apply_chat_template（模板由模型出厂决定），但每次渲染都验字节等式
+`full == prompt + output + "<|im_end|>"`。等式一破说明训练序列与推理前缀分叉，
+当场报错，而不是训完看指标全零再猜。
 
-      full == prompt + output + "<|im_end|>"
-
-  等式一破（典型：thinking 版 Qwen3 会在 assistant 段插空思维块），
-  训练序列与推理前缀就分叉了，当场报错，而不是训完才发现格式崩了。
-
-不依赖 torch / transformers：tokenizer 按鸭子类型注入（有 chat_template 属性 +
-apply_chat_template 方法即可），无 GPU 机器也能跑单测与预览。
+不依赖 torch / transformers：tokenizer 按鸭子类型注入，无 GPU 也能跑单测。
 """
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-# 历史手写模板：parity 的字节基准 + tokenizer 无模板时的兜底。
-# 与 Qwen2.5 / Qwen3 ChatML 逐字节相同（已验证）。
+# 与 Qwen2.5 / Qwen3 ChatML 逐字节相同。用作 parity 基准 + 无 chat 模板时兜底。
 LEGACY_PROMPT_TMPL = (
     "<|im_start|>system\n{instruction}<|im_end|>\n"
     "<|im_start|>user\n{input}<|im_end|>\n"
@@ -35,6 +26,23 @@ LEGACY_PROMPT_TMPL = (
 )
 
 ASSISTANT_SUFFIX = "<|im_end|>"
+
+# ---- 前缀预置（think prefix seeding）----
+# 开启后把 "<think>\n" 写进 assistant 前缀：训练侧落在掩码区（不计 loss），
+# 推理侧落在生成前缀（不占解码预算）。模型不必学"第一个 token 吐什么"。
+#
+# 默认关闭。实验三组对照已证明：解冻 <think>/</think>之后，
+# 模型 40 步内能自己学会吐 <think>，本开关无额外收益；且开启后模型
+# 依赖推理端复现同一前缀，adapter 不再自包含。保留开关仅用于复现该对照。
+THINK_PREFIX = "<think>\n"
+USE_THINK_PREFIX: bool = False
+
+
+def set_think_prefix(enabled: bool) -> bool:
+    """设置前缀预置开关。必须在构造 Dataset 之前调用，训练与推理须取同一值。"""
+    global USE_THINK_PREFIX
+    USE_THINK_PREFIX = bool(enabled)
+    return USE_THINK_PREFIX
 
 
 class TemplateParityError(RuntimeError):
@@ -60,9 +68,8 @@ def _chat(tokenizer: Any, messages: List[Dict[str, str]],
         raise TypeError(
             f"apply_chat_template(tokenize=False) 应返回 str，实际 {type(out).__name__}")
     if not add_generation_prompt:
-        # 完整序列：模板在 <|im_end|> 后补的换行是「轮次分隔」，不是监督目标；
-        # 剥掉它 full == prompt + output + <|im_end|> 的等式才成立。
-        # 生成前缀路径不剥 —— 前缀必须以 <|im_start|>assistant\n 结尾。
+        # 训练完整样本时：<|im_end|>后自动追加的换行仅作轮次分隔，不属于监督目标，需要剔除；
+        # 生成前缀分支（add_generation_prompt=True）保留末尾换行，维持chat模板协议。
         out = out[:-1] if out.endswith("\n") else out
     return out
 
@@ -77,38 +84,48 @@ def _messages(instruction: str, input_text: str,
 
 
 def render_prompt(tokenizer: Any, instruction: str, input_text: str) -> str:
-    """渲染「生成前缀」：到 <|im_start|>assistant\\n 为止。
-
-    训练侧的前缀掩码区、推理侧的模型输入，两侧必须用本函数同一来源。
-    """
+    """渲染 生成前缀（训练掩码区 = 推理输入），止于 `<|im_start|>assistant\n`。训练与推理必须同源调用。"""
     if tokenizer is not None and has_chat_template(tokenizer):
-        return _chat(tokenizer, _messages(instruction, input_text),
-                     add_generation_prompt=True)
-    return _legacy_prompt(instruction, input_text)
+        prompt = _chat(tokenizer, _messages(instruction, input_text),
+                       add_generation_prompt=True)
+    else:
+        prompt = _legacy_prompt(instruction, input_text)
+    if USE_THINK_PREFIX:
+        prompt += THINK_PREFIX
+    return prompt
+
+
+def _strip_think_prefix(output: str) -> str:
+    """裁掉 output 开头的 "<think>\n"（已由前缀预置提供，不能重复出现）。"""
+    if USE_THINK_PREFIX and output.startswith(THINK_PREFIX):
+        return output[len(THINK_PREFIX):]
+    return output
+
+
+def _assistant_content(output_body: str) -> str:
+    """assistant 段内容：开启预置时补回前缀，供 chat 渲染与手写基准对齐。"""
+    return (THINK_PREFIX + output_body) if USE_THINK_PREFIX else output_body
 
 
 def render_full(tokenizer: Any, instruction: str, input_text: str,
                 output: str) -> Tuple[str, str]:
-    """渲染「完整训练序列」，返回 (prompt_text, full_text)。
+    """渲染完整训练序列，返回 (prompt_text, full_text)。
 
-    契约：full_text 逐字节等于 prompt_text + output + "<|im_end|>"。
-    chat 渲染结果若不满足该等式，直接抛 TemplateParityError。
+    契约：`full_text == prompt_text + output_body + "<|im_end|>"`，chat 渲染不符即抛错。
 
-    ⚠️ 禁用 thinking 版基座（如 Qwen3-4B-Thinking），必须用 Instruct 版：
-       thinking 版的模板会强制在 assistant 段开头插一个「空思维块」
-       <think>\\n\\n</think>\\n\\n。我们的 output 自带有内容的
-       <think>推理…</think>，叠上去训练序列变成「空壳 + 一份推理」双层嵌套，
-       模型学会先吐空壳再吐正文；推理时 schema_contract 按 </think> 切 JSON，
-       切到的是空壳或残片，JSON 合法率 / evidence 命中全部报废。
-       Instruct 版模板对 assistant 内容原样透传，无此问题。
-       本函数的等式检查正是为此：开训前就拦下，而不是训完看指标全零再猜。
+    ⚠️ 必须用 Instruct 版基座。thinking 版（如 Qwen3-4B-Thinking）会在 assistant 段
+    强制插空思维块 `<think>\n\n</think>\n\n`，与本项目 output 自带的 CoT 叠成双层：
+    模型学会先吐空壳，推理时按 `</think>` 切 JSON 切到残片，格式指标全废。
     """
+    output_body = _strip_think_prefix(output)
     prompt_text = render_prompt(tokenizer, instruction, input_text)
-    expected = prompt_text + output + ASSISTANT_SUFFIX
+    expected = prompt_text + output_body + ASSISTANT_SUFFIX
 
     if tokenizer is not None and has_chat_template(tokenizer):
-        rendered = _chat(tokenizer, _messages(instruction, input_text, output),
-                         add_generation_prompt=False)
+        rendered = _chat(
+            tokenizer,
+            _messages(instruction, input_text, _assistant_content(output_body)),
+            add_generation_prompt=False)
         if rendered != expected:
             raise TemplateParityError(
                 "chat 模板渲染与手写拼接不一致，训练序列会与推理前缀分叉。\n"
@@ -122,10 +139,9 @@ def render_full(tokenizer: Any, instruction: str, input_text: str,
 
 def assert_parity(tokenizer: Any, rows: Iterable[Dict[str, Any]],
                   limit: int = 32) -> Dict[str, Any]:
-    """批量校验：抽 limit 条，逐条比 chat 渲染与手写基准。
+    """抽 limit 条，逐条比对 chat 渲染与手写基准；不一致抛 TemplateParityError。
 
-    无 chat 模板时无事可校验，如实返回 N/A 而非假装 PASS。
-    不一致抛 TemplateParityError（供 Dataset 初始化 / --check_parity 调用）。
+    无 chat 模板时如实返回 N/A，不假装 PASS。
     """
     if tokenizer is None or not has_chat_template(tokenizer):
         return {"ok": True, "checked": 0,
@@ -136,14 +152,12 @@ def assert_parity(tokenizer: Any, rows: Iterable[Dict[str, Any]],
     for idx, row in enumerate(rows):
         ins = row.get("instruction", "") or ""
         inp = row.get("input", "") or ""
-        out = row.get("output", "") or ""
-        want = _legacy_prompt(ins, inp) + out + ASSISTANT_SUFFIX
+        out = _strip_think_prefix(row.get("output", "") or "")
+        want = _legacy_prompt(ins, inp) + _assistant_content(out) + ASSISTANT_SUFFIX
         try:
             _, got = render_full(tokenizer, ins, inp, out)
         except TemplateParityError as e:
-            # render_full 的详细报错（含 thinking 版成因）别吞掉，直接上抛
-            raise TemplateParityError(
-                f"样本 #{idx}：{e}") from e
+            raise TemplateParityError(f"样本 #{idx}：{e}") from e
         if got != want:
             mismatches.append(idx)
     if mismatches:

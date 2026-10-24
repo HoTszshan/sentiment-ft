@@ -46,7 +46,13 @@ def main():
                     help="CoT~300 + JSON~150 + buffer；SOP 口径单次解码 65~105 tokens 之外给足余量")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 条，0=全量")
+    ap.add_argument("--think_prefix", action="store_true",
+                    help="前缀预置：在 assistant 前缀尾部追加 '<think>\\n'。"
+                         "必须与训练侧一致（训练默认关；训练开过才加此 flag）")
     args = ap.parse_args()
+
+    # 渲染协议开关：与训练侧同源（prompt_template.set_think_prefix）
+    pt.set_think_prefix(args.think_prefix)
 
     try:
         import torch
@@ -110,6 +116,10 @@ def main():
 
             text = tokenizer.decode(gen[0][inputs["input_ids"].shape[1]:],
                                     skip_special_tokens=False)
+            # 预置的 "<think>\n" 在 prompt 里、不在生成段里；不补回则预测文件
+            # 永不含 <think>，闭合率恒为 0%（测量 bug，非模型问题）
+            if pt.USE_THINK_PREFIX:
+                text = pt.THINK_PREFIX + text
 
             # 静态合规指标（四查的①②在推理侧可提前观测）
             if "<think>" in text and "</think>" in text:

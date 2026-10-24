@@ -64,6 +64,7 @@ from sft_weight_planner import (
 )
 # 外壳渲染（ChatML）唯一真理源：与 probe_infer / stat_seq_len / GRPO 构建同源。
 import prompt_template as pt
+import format_canary
 from sft_dataset import SFTConversationDataset, WeightedDataCollator
 
 
@@ -137,7 +138,8 @@ def _intercept_custom_flags():
     """
     在 HfArgumentParser 之前拦截本项目自定义 flag，避免撞 TrainingArguments 字段。
     返回 dict: log_file / wandb_project / wandb_run_name / no_wandb
-              / strict_parity
+              / strict_parity / trainer_backend
+              / think_prefix / unfreeze_protocol_tokens / canary_*
     """
     opts = {
         "log_file": None,
@@ -148,31 +150,60 @@ def _intercept_custom_flags():
         "strict_parity": True,
         # 训练器后端：auto=有 trl 用 SFTTrainer 否则 HF Trainer / trl / hf 显式指定
         "trainer_backend": "auto",
+        # 前缀预置：把 "<think>\n" 写进 assistant 前缀（默认关，理由见 prompt_template）
+        "think_prefix": False,
+        # 协议 token 解冻：给 <think>/</think> 的输出行挂可训练偏移（默认开）
+        "unfreeze_protocol_tokens": True,
+        # 格式 canary：每 N 步 × M 条 val，N=0 关闭
+        "canary_every": 30,
+        "canary_n": 3,
+        "canary_max_new": 400,
+    }
+    # 带取值的 flag → opts key（统一 int 转换的在下面 VALUE_CAST 里声明）
+    key_map = {
+        "--log_file": "log_file",
+        "--wandb_project": "wandb_project",
+        "--wandb_run_name": "wandb_run_name",
+        "--trainer_backend": "trainer_backend",
+        "--think_prefix": "think_prefix",
+        "--canary_every": "canary_every",
+        "--canary_n": "canary_n",
+        "--canary_max_new": "canary_max_new",
+    }
+    def _as_bool(raw: str) -> bool:
+        s = str(raw).strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off", ""):
+            return False
+        raise SystemExit(f"[FATAL] --think_prefix 需为 0/1/true/false，收到 {raw!r}")
+
+    value_cast = {
+        "canary_every": int, "canary_n": int, "canary_max_new": int,
+        "think_prefix": _as_bool,
+    }
+    bool_map = {
+        "--no_wandb": ("no_wandb", False),
+        "--no_strict_parity": ("strict_parity", False),
+        "--no_unfreeze_protocol_tokens": ("unfreeze_protocol_tokens", False),
     }
     argv = list(sys.argv)
     out = []
     i = 0
     while i < len(argv):
         a = argv[i]
-        key_map = {
-            "--log_file": "log_file",
-            "--wandb_project": "wandb_project",
-            "--wandb_run_name": "wandb_run_name",
-            "--trainer_backend": "trainer_backend",
-        }
         if a in key_map:
             if i + 1 < len(argv):
-                opts[key_map[a]] = argv[i + 1]
+                raw = argv[i + 1]
+                key = key_map[a]
+                # value_cast 以 opts key 为索引（不是 "--flag" 字符串），这里必须用 key
+                opts[key] = value_cast[key](raw) if key in value_cast else raw
                 i += 2
-            else:
-                raise SystemExit(f"[FATAL] {a} 缺少取值")
-            continue
-        if a == "--no_wandb":
-            opts["no_wandb"] = True
-            i += 1
-            continue
-        if a == "--no_strict_parity":
-            opts["strict_parity"] = False
+                continue
+            raise SystemExit(f"[FATAL] {a} 缺少取值")
+        if a in bool_map:
+            key, val = bool_map[a]
+            opts[key] = val
             i += 1
             continue
         out.append(a)
@@ -254,8 +285,10 @@ def dry_run_inspect(data_file: str, n: int = 2):
         # dry-run 与真实训练必须同一个渲染源，否则「离线验证通过」不构成证据。
         prompt_t = pt.render_prompt(None, d.get("instruction", "") or "",
                                     d.get("input", "") or "")
+        # 与 Dataset.build_item 同口径：开播种时 output 的 "<think>\n" 已移入 prompt
+        output_body = pt._strip_think_prefix(d["output"])
 
-        plan = plan_token_weights(prompt_t, d["output"], encode=char_level_encode)
+        plan = plan_token_weights(prompt_t, output_body, encode=char_level_encode)
 
         print(f"\n--- 样本 #{i} ---")
         print(f"  prompt 长度 : {plan['prompt_len']} tokens  (全部置 -100 且权重 0)")
@@ -263,7 +296,7 @@ def dry_run_inspect(data_file: str, n: int = 2):
         print(f"\n  {'字段区间':<18}{'token 区间':<16}{'权重':<8}覆盖文本")
         print(f"  {'-' * 18}{'-' * 16}{'-' * 8}{'-' * 28}")
 
-        full_text = prompt_t + d["output"]
+        full_text = prompt_t + output_body
         for t_s, t_e, key, w in plan["spans"]:
             snippet = full_text[t_s:t_e].replace("\n", "\\n")
             if len(snippet) > 32:
@@ -459,8 +492,15 @@ def _build_training_components(trainer_backend: str = "auto"):
             # prediction_step（eval）同样会传入 num_items_in_batch，但评估阶段不做梯度累积。
             # 如果也除以 grad_accum，eval_loss 会被错误缩小（实测：显示0.59，×4≈2.4才是真实loss）。
             # 判断依据：training_step 执行时 model.train()，prediction_step 为 model.eval()，以此区分两路逻辑。
+            #
+            # ⚠️ 除数取当前窗口实际累积步数，不用固定GAS：
+            # 样本无法整除时，末尾累积窗口是零头；硬除GAS会低估loss、梯度失真。
+            # current_gradient_accumulation_steps 记录本窗实际步数；eval靠model.training区分。
             if num_items_in_batch is not None and model.training:
-                loss = loss / max(int(self.args.gradient_accumulation_steps), 1)
+                window_gas = max(int(getattr(
+                    self, "current_gradient_accumulation_steps",
+                    self.args.gradient_accumulation_steps)), 1)
+                loss = loss / window_gas
             return (loss, outputs) if return_outputs else loss
 
     return (FieldWeightedTrainer, backend_name,
@@ -478,6 +518,13 @@ def main():
     if dry_run:
         sys.argv = [a for a in sys.argv if a != "--dry_run"]
     extra = _intercept_custom_flags()
+
+    # 1.5 把「渲染协议」开关落到 prompt_template（训练/推理两侧同源唯一真理源）。
+    #     必须在构造 Dataset 之前设置 —— 之后的 render_prompt 全部读这个值。
+    _pfx = pt.set_think_prefix(extra["think_prefix"])
+    _unfreeze = bool(extra["unfreeze_protocol_tokens"])
+    print(f"[PROTO] 前缀预置={'开' if _pfx else '关'}  |  "
+          f"协议token解冻={'开' if _unfreeze else '关'}")
 
     # 2. 尽早装上 tee，保证 dry_run / 训练 / 报错信息都能落盘。
     #    DDP 多 rank 会各自执行 main()，只有 rank0 装 tee 写 log_file，
@@ -606,6 +653,13 @@ def main():
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
 
+    # ---- 协议 token 解冻：id 从 tokenizer 解析，不硬编码 ----
+    # 词表里没有这两 token 时直接报错（静默退化成 unk 会让格式永远学不会）。
+    _proto_ids: List[int] = []
+    if _unfreeze:
+        _ids = format_canary.resolve_protocol_ids(tokenizer)
+        _proto_ids = [_ids["open"], _ids["close"]]
+
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=model_args.lora_r,
@@ -615,6 +669,12 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
         bias="none",
+        # ---- 协议 token 解冻 ----
+        # 诊断：基座未学习 <think>/</think> ，embedding范数偏低、和 </tool_call> 高度相似；
+        # 冻结lm_head时logits无法区分二者，greedy生成会错输出 </tool_call>。
+        # 仅为这两个token新增delta参数，其余embedding冻结，只写入adapter；
+        # token id 通过 format_canary 解析，不硬编码。
+        trainable_token_indices=_proto_ids or None,
     )
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
@@ -701,13 +761,9 @@ def main():
         FieldWeightedTrainer, tokenizer, trainer_backend_name)
 
     if trainer_backend_name.startswith("trl"):
-        # trl 1.x 构造期硬性 isinstance(train_dataset, datasets.Dataset)，
-        # 且 skip_prepare_dataset 只认 args.dataset_kwargs（SFTConfig 字段）。
-        # ⚠️ 不能在 TrainingArguments 上直接 setattr：SFTTrainer.__init__ 检测到
-        # args 不是 SFTConfig 时会用 args.to_dict() 重建一个新 SFTConfig，
-        # setattr 上去的 dataset_kwargs 会被这次重建静默丢掉（prepare 照跑、
-        # 按 SFTConfig 默认 max_length=1024 截断 → collator stack 长度不齐炸掉）。
-        # 所以这里必须我们自己先把 args 重建为 SFTConfig 并带上 dataset_kwargs。
+        # trl 1.x 强校验 train_dataset 类型，skip_prepare_dataset 归属 SFTConfig。
+        # ⚠️ 直接 setattr 到 TrainingArguments 会在SFTConfig重建时丢失，
+        # 导致 prepare 继续执行、截断异常。需要预先构造带 dataset_kwargs 的 SFTConfig。
         _fields = {f: getattr(training_args, f)
                    for f in training_args.__class__.__dataclass_fields__}
         from trl import SFTConfig
@@ -727,6 +783,26 @@ def main():
         data_collator=collator,
         **_extra_kwargs,
     )
+
+    # ---- 格式 canary：有 val 就挂上（实现在 lib/format_canary.py）----
+    # 基座/tokenizer 直接用训练侧的，不再额外指定；协议 token 由 tokenizer 解析。
+    if eval_dataset is not None and extra["canary_every"] > 0:
+        try:
+            _val_rows = [json.loads(l) for l in open(data_args.val_file, encoding="utf-8")
+                         if l.strip()]
+            _canary = format_canary.build_callback(
+                torch, tokenizer, _val_rows,
+                every=extra["canary_every"],
+                n=extra["canary_n"],
+                max_new=extra["canary_max_new"],
+            )
+            _canary.trainer = trainer
+            trainer.add_callback(_canary)
+            print(f"[CANARY] 已挂载: 每 {extra['canary_every']} 步 × "
+                  f"{min(extra['canary_n'], len(_val_rows))} 条 val "
+                  f"(--canary_every 0 可关)，测 p(</think>) / p(next) / p(<|im_end|>) / greedy_ok")
+        except Exception as e:
+            print(f"[WARN] canary 挂载失败(不影响训练): {e}")
 
     print(f">>> 启动训练 (样本 {len(train_dataset)} 条, Epochs={training_args.num_train_epochs}) <<<")
     t_start = time.time()

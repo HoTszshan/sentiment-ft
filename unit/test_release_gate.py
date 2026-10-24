@@ -204,5 +204,34 @@ class TestOverallVerdict(unittest.TestCase):
         self.assertEqual(THRESH_GATE2_ORDINARY_DROP, 1.0)
 
 
+class TestGate2UnparseablePreds(unittest.TestCase):
+    """预测全部不可解析时，门 2 必须记 N/A —— 不许因初始值 True 报 PASS。"""
+
+    def test_all_unparseable_is_na_not_pass(self):
+        gold = [_gold(i) for i in range(6)]
+        pred = [{"valid_json": False} for _ in range(6)]
+        g = evaluate_gates(gold, pred)
+        self.assertEqual(g["gate2"], "N/A")
+        self.assertEqual(g["details"]["gate2"]["n_usable_pred"], 0)
+        self.assertTrue(g["details"]["gate2"].get("reason"))
+
+    def test_partial_unparseable_still_judged(self):
+        """只要有可用预测就必须实际判定，不能退化成 N/A。"""
+        gold = [_gold(i) for i in range(6)]
+        pred = [_pred_ok(i) for i in range(6)]
+        pred[0] = {"valid_json": False}
+        g = evaluate_gates(gold, pred)
+        self.assertIn(g["gate2"], ("PASS", "FAIL"))
+        self.assertEqual(g["details"]["gate2"]["n_usable_pred"], 5)
+
+    def test_na_gate2_does_not_block_release(self):
+        """N/A 不阻断（与门 1/门 3 同语义）；真正拦截的是门 4。"""
+        gold = [_gold(i) for i in range(6)]
+        pred = [{"valid_json": False} for _ in range(6)]
+        g = evaluate_gates(gold, pred)
+        self.assertEqual(g["gate4"], "FAIL")
+        self.assertEqual(overall_verdict(g), "FAIL")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

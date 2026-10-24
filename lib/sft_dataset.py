@@ -129,7 +129,11 @@ class SFTConversationDataset:
             # 逃生门路径（--no_strict_parity）：明知模板漂移也要取样本。
             # 统一走手写基准 —— 序列形态与训练基准一致，可看可导出，只是没有 chat 校验。
             prompt_text = pt.render_prompt(None, instruction, input_text)
-            full_text = prompt_text + output_text + pt.ASSISTANT_SUFFIX
+            full_text = prompt_text + pt._strip_think_prefix(output_text) + pt.ASSISTANT_SUFFIX
+
+        # 预置开启时 output 的 "<think>\n" 已在 prompt 掩码区，权重 span 必须
+        # 基于同一份 output_body，否则 span 与 token 序列错位。
+        output_body = pt._strip_think_prefix(output_text)
 
         encode = self._encode if self.tokenizer is not None else char_level_encode
 
@@ -148,7 +152,7 @@ class SFTConversationDataset:
 
         plan = plan_token_weights(
             prompt_text=prompt_text,
-            output_text=output_text,
+            output_text=output_body,
             encode=encode,
             max_len=self.max_len,
         )
