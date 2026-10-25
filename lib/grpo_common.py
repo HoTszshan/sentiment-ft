@@ -173,14 +173,14 @@ class GrpoHyper:
     """GRPO 特有超参。✅=手册标定 / [设计值]=有推导未跑。"""
     num_generations: int = 4                 # G ✅ 手册 1.3
     temperature: float = 0.7                 # T ✅ 手册 1.3
-    lr: float = 2e-6                         # [设计值] 1e-6~5e-6 区间中值，比 SFT 1e-4（LoRA 口径）低约两个量级
+    lr: float = 2e-5                         # [设计值] LoRA 口径：≈ SFT 1e-4 的 1/5；全参 RLHF 的 1e-6~5e-6 不适用
     beta_kl: float = 0.04                    # β ✅ 手册 1.3 常数 KL
     per_device: int = 4                      # 一步内同时进来的 prompt 数
     grad_accum: int = 2                      # → 8 题/步 × G=4 = 32 条轨迹/步 ✅
     num_train_epochs: float = 1.0
     warmup_ratio: float = 0.03
-    max_prompt_length: int = 1024            # 含行业风险词表，实测可能到 700~900
-    max_completion_length: int = 200         # 见下方 budget_note()
+    max_prompt_length: int = 2048            # 2560(SFT max_seq) - 512(completion)；实测 max=774，2.6× 余量
+    max_completion_length: int = 512         # 实测整段输出 max=383；见下方 budget_note()
     seed: int = 42
 
     @property
@@ -217,14 +217,41 @@ class GrpoHyper:
 
 def budget_note(h: GrpoHyper) -> str:
     """
-    为什么 max_completion_length=200 而不是手册 65~105:
-      手册 1.3 那一格写的是**CoT 档位**（R_length 只量 CoT，40/65/120 三档），
-      不是整段输出预算。整段 = CoT(≤120) + JSON 骨架(~70 固定开销) + 余量。
-      若按 105 硬截 → 每条都砍在 JSON 中间 → R_format 全池 -2.5 短路 → 训练废掉。
-      CoT 本身超长由 R_length 自然罚到 0，不需要靠截断来治。
+    输出预算怎么定的（实测数据，不是拍脑袋）:
+      SFT 73 条真分词：整段输出 p50 263 / p95 335 / p99 383 / max 383 tokens。
+      整段 = CoT + JSON。其中 JSON 段约 170 字符 ≈ 81 tokens（落在 65~105 口径内），
+      CoT 段 p50 约 177 / max 约 257 tokens。
+
+      ⚠️ 两个曾经踩过的坑：
+      1. 把手册「65~105 tokens」当成整段预算 → 按 105 或 200 截 → **99% 的样本被砍在
+         CoT 或 JSON 中间** → json.loads 失败 → R_format 全池 -2.5 短路 → 训练废掉。
+         那一格说的是**扁平 JSON 段**的长度，不含 CoT。
+      2. 以为「CoT ≤120」→ 实际 CoT p50 已 177。奖励阈值另议，但截断线必须按实测定。
+
+      现任 512 = 实测 max 383 × 1.34，留出生成抖动余量；生成遇 EOS 即停，
+      放大上限对短输出零成本，只抬高长尾的天花板。
     """
-    return (f"输出预算 {h.max_completion_length} = CoT 上限 120 + JSON 骨架 ~70 + 余量；"
-            f"CoT 超长由 R_length 治理（≥120 归 0），不靠截断")
+    return (f"输出预算 {h.max_completion_length}（实测整段 max 383 = CoT ~257 + JSON ~81，留余量）；"
+            f"65~105 是 JSON 段口径，不是整段")
+
+
+def should_fuse(baseline: Optional[float], current: Optional[float],
+                threshold: float = 0.02) -> bool:
+    """
+    对齐税熔断判定（评估手册模块一④ / GRPO 手册模块 3 闸②）。
+
+    eval 基线集 reward 均值相对首次 eval 的跌幅超过 threshold（默认 2%）→ 熔断。
+    None 的语义：baseline 未建立（首轮 eval）或当前 eval 缺数 → 不熔断，
+    缺数据不能当成退化，也不能当成健康，只能不动作。
+    """
+    if baseline is None or current is None:
+        return False
+    drop = baseline - current
+    if baseline <= 0:
+        # 基线非正（比如全在罚分区）时跌幅比率无意义，退化为绝对差判定
+        return drop > threshold
+    # 浮点噪声容差：跌幅恰在阈值 ±1e-9 内不熔断
+    return drop / abs(baseline) > threshold + 1e-9
 
 
 def assert_zam_equivalence() -> bool:

@@ -26,6 +26,7 @@ from grpo_common import (  # noqa: E402
     GrpoHyper, bucket_label, build_dataset_rows, flatten_gold, group_totals,
     k_of, rebuild_gold, score_one, summarize_buckets, assert_zam_equivalence,
     budget_note, validate_generation_shape,
+    should_fuse,
 )
 from grpo_probe_core import (  # noqa: E402
     extract_completion_text, oracle_sampler, run_probe, score_group,
@@ -426,3 +427,27 @@ class TestScoreOneIsSingleSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestShouldFuse(unittest.TestCase):
+    """对齐税熔断判定（GRPO 手册模块 3 闸② / TODO 5.19）。"""
+
+    def test_fuse_when_drop_exceeds_threshold(self):
+        self.assertTrue(should_fuse(1.5, 1.5 * 0.96))          # 跌 4%
+
+    def test_no_fuse_when_drop_within_threshold(self):
+        self.assertFalse(should_fuse(1.5, 1.5 * 0.99))         # 跌 1%
+
+    def test_none_baseline_means_no_fuse(self):
+        self.assertFalse(should_fuse(None, 1.0))               # 首轮 eval，无基线
+
+    def test_none_current_means_no_fuse(self):
+        self.assertFalse(should_fuse(1.0, None))               # 缺数据不是退化
+
+    def test_nonpositive_baseline_uses_abs_diff(self):
+        self.assertTrue(should_fuse(-2.0, -2.1, 0.02))         # 绝对差 0.1 > 0.02
+        self.assertFalse(should_fuse(-2.0, -1.9, 0.02))
+
+    def test_exactly_threshold_does_not_fuse(self):
+        self.assertFalse(should_fuse(1.0, 0.98))               # 恰 2%：严格大于才熔断
+        self.assertTrue(should_fuse(1.0, 0.979))               # 2.1% 熔断

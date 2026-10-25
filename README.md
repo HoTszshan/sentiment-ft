@@ -19,14 +19,10 @@ MVP/tests/
 ├── data/
 │   ├── train_synth_81.jsonl        ← 真实金标语料 81 条（异族打标 + 四查全过）
 │   ├── train_synth_81_aligned.jsonl ← 上者经 align 重写 instruction（显式输出协议版，当前探针用）
-│   ├── grpo_probe_pool.jsonl       ← GRPO 新生成语料池 51 条（种子 777+888，与 SFT 集去重）
-│   ├── grpo/grpo_prompts_probe.jsonl ← GRPO 探针数据 51 条：只有 {prompt, gold}
-│   ├── train_golden_sample_100.jsonl  Mock 训练桩（CI 用，不可用于真实训练）
-│   ├── test_golden_sample_50.jsonl    Mock 测试桩（单测用）
-│   ├── coig_cqia_anchor.jsonl      ← 运行 step 1 后生成（公开通用 Anchor）
-│   └── mixed/                      ← 运行 step 2 后生成
-│       ├── sft_train.jsonl         分层切分后的训练集（含 9:1 Anchor）
-│       └── sft_val.jsonl           分层切分后的内部验证集
+│   ├── grpo_prompts_probe.jsonl    ← GRPO 探针数据 50 条：{prompt, gold, input_text, meta}
+│   └── test_golden_sample_50.jsonl    Mock 测试桩（evaluate_sft.py 默认 --test_file，CI 用）
+│   # 运行后生成（不入库）：coig_cqia_anchor.jsonl（step 1）/ mixed/（step 2）/
+│   # align_report.json（align）/ 对齐税基线集（从 prompts_probe 抽取，正式换 k=4 封存集）
 ├── lib/                            ← 共享层：被 scripts/ 与 unit/ 共同 import
 │   ├── reward_fns.py               ★ GRPO 四维规则打分器（零外部依赖；枚举与 validate_schema 已下沉 schema_contract，本文件再导出保持兼容）
 │   ├── schema_contract.py          ★ 输出协议唯一判定源：闭集枚举 + validate_schema + parse_output（训练/评测/质检三侧同源）
@@ -36,7 +32,7 @@ MVP/tests/
 │   ├── grpo_common.py              ★ GRPO 共享层：数据展平 / k 分桶 / 训练预算（零依赖）
 │   ├── grpo_probe_core.py          ★ GRPO 探针纯逻辑：打分入组 / rollout / k 分流
 │   ├── corpus_schema.py            ★ 行业风险二级词表 + 提示词加载 + 闭集枚举（同源再导出 schema_contract）
-│   ├── sft_template.py             ★ SFT 指令模板唯一真理源（显式输出协议段，枚举从 schema_contract 插值；训练=推理逐字一致）
+│   ├── sft_template.py             ★ 指令模板唯一真理源（显式输出协议段，枚举从 schema_contract 插值；SFT/GRPO 两阶段共用——GRPO 的主体回显 SUBJECT_RE 也从这里取）
 │   ├── prompt_template.py          ★ 外壳渲染唯一真理源（apply_chat_template + 手写兜底 + parity gate，训练/推理/统计/GRPO 四方同源）
 │   ├── sft_dataset.py              ★ 共用 Dataset/Collator（前缀掩码 + FIELD_W 装配；import 时零 torch，无 GPU 可 preview/stats）
 │   ├── format_canary.py            ★ 格式自检：协议 token id 解析 + teacher-forced 概率 + 贪心合规判定（训练回调与独立脚本共用）
@@ -71,6 +67,7 @@ MVP/tests/
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
 │   ├── build_grpo_probe.py         ★ 语料池 → {prompt, gold} 契约转换
 │   ├── run_grpo_probe.py           ★ 同题 G=4 采样 → 四维打分 → k∈{0..4} 分流
+│   ├── merge_sft_adapter.py        ★ SFT adapter 合并（base + ΔSFT → 单一模型目录，GRPO 起点）
 │   └── train_grpo.py               ★ TRL GRPOTrainer 训练主脚本（LoRA + 四维规则 Reward）
 ├── output/                         训练产物 / 预测文件 / 指标 JSON
 └── logs/                           全流程日志（按时间戳）
@@ -383,29 +380,33 @@ python3 scripts/stat_seq_len.py --train_file data/train_synth_81_aligned.jsonl
 > 真理源：`MVP/notes/舆情负面精判_GRPO数据准备实战手册.md` §0.2 落盘契约 + §五 四维 Reward 契约。
 > 最终交付三样：`grpo_prompts_*.jsonl` + `reward_fns.py` + **零离线 completion**。
 
-### 3.1 数据：只有 `{prompt, gold}`，不带解题过程
+### 3.1 数据：题面 + 判卷标准，不带解题过程
 
-`data/grpo/grpo_prompts_probe.jsonl` — **51 条**（种子 777+888 两批生成，与 SFT 81 条跨文件去重，实测最大 Jaccard 0.095、0 重复）
+`data/grpo_prompts_probe.jsonl` — **50 条**（300 条构造池按 (hard_case_type × sentiment) 21 桶分层抽样，与 SFT 81 条 event_id / 原文零重叠，见 §3.3）
 
 ```json
 {
-  "prompt": "<|im_start|>system\n你是舆情负面精判模型…风险词表…<|im_end|>\n<|im_start|>user\n<待判原文><|im_end|>\n<|im_start|>assistant\n",
+  "prompt": "<|im_start|>system\n你是专业且客观严谨的舆情分析专家…【行业风险体系：汽车(automotive)】…【输出规范】…<|im_end|>\n<|im_start|>user\n【目标主体】极氪\n【输入文本】\n<待判原文><|im_end|>\n<|im_start|>assistant\n",
   "gold": {
-    "sentiment": "positive",
+    "subject": "极氪",
+    "sentiment": "negative",
     "relevance": "core",
-    "hard_case_type": "counterfactual",
-    "risk_categories": [],
-    "evidence": "幸亏审计部门及时发现并制止"
+    "hard_case_type": "comparative",
+    "risk_categories": ["product"],
+    "evidence": "这次车机升级简直是灾难，黑屏、死机、智驾幽灵刹车全来了"
   },
-  "meta": {"industry": "finance_insurance", "provenance": "synthetic"}
+  "input_text": "<待判原文，裸文本、不含题面壳>",
+  "meta": {"industry": "automotive", "hard_case_type": "comparative",
+           "sentiment": "negative", "relevance": "core", "provenance": "synthetic"}
 }
 ```
 
 - **不带 completion 是设计**：CoT 由策略 On-Policy 现场采样，算完组内优势即弃；攒着会被误拿去当 SFT 语料。
-- `gold` 只有 5 个字段（**没有 `subject`**），但 `R_format` 要求模型回显 `subject` —— rollout 时从 prompt 的 user 侧 `【目标主体】` 行补上（兼容旧格式）。
-- `evidence` 原文可用 `reward_fns.extract_input_text(prompt)` 反解，**两字段自洽**（40/40 已验证）。
+- **prompt 和SFT模板同源**：system 由 `lib/sft_template.build_instruction(industry)` 生成，user = 目标主体+输入文本，统一用 `lib/prompt_template.render_prompt` 渲染；instruction 和训练样本 `train_synth_81_aligned.jsonl` 逐字对齐。
+- **gold 6字段包含subject**：优先从输出JSON读取，兜底取prompt里的目标主体；供 `R_format` 做主体校验，rollout阶段无需解析prompt。
+- **input_text 存原始文本**：给 `R_grounding` 做证据归属校验；包装后的prompt放在input，裸原文存 `meta.input_raw`。`--two_field` 模式可省略，由 `reward_fns.extract_input_text` 反向解析兜底。
 
-**当前分布**：难点 `explicit 13 · counterfactual 8 · comparative 8 · metaphor 6 · multi_subject 6 · fact_implicit 6 · irony 4`；极性 `negative 29 / positive 16 / neutral 6`；语篇 `core 46 · passing 3 · foil 2`；六行业全覆盖。（短板已补：fact_implicit 2→6、neutral 3→6；positive 未下采样，占比 40%→31%）
+**当前分布（50 条）**：难点 `explicit 13 · comparative 8 · fact_implicit 8 · irony 6 · metaphor 6 · counterfactual 5 · multi_subject 4`；极性 `neutral 20 / negative 17 / positive 13`；语篇 `core 33 · passing 14 · foil 3`；行业 `finance_insurance 14 · automotive 12 · fmcg 7 · real_estate 7 · electronics_3c 6 · beauty_cosmetics 4`。覆盖 `hard_case_type × sentiment` 全部 21 桶。
 
 ### 3.2 打分器：4 条纯 Python 规则
 
@@ -442,17 +443,31 @@ python3 unit/test_reward_fns.py
 
 ### 3.3 语料 → GRPO 契约转换
 
+探针数据来源：**300 条构造池**（与 81 条 SFT 训练集 event_id / 原文均零重叠），
+先对齐到当前指令模板，再转成 GRPO `{prompt, gold}` 契约，最后按 21 桶分层抽样 50 条。
+
 ```bash
+# ① 对齐（当前指令模板 → instruction / user 侧题面 / output）
+python3 scripts/align_sft_data.py \
+    --src ../../output/corpus/synth_300_stageA.dedup.jsonl \
+    --out data/pool300_aligned.jsonl \
+    --report data/pool300_align_report.json
+# → 292 条入池（剔 8 条：subject_hit=false 6 / evidence 非子串 2）
+
+# ② 转 GRPO 契约 + 分层抽样
 python3 scripts/build_grpo_probe.py \
-    --src data/grpo_probe_pool.jsonl \
-    --out data/grpo/grpo_prompts_probe.jsonl \
-    --with_meta
-# 结果: 51 条入池，0 条丢弃（gold 5 字段齐 + evidence 全是原文合法子串）
+    --src data/pool300_aligned.jsonl \
+    --out data/grpo_prompts_probe.jsonl \
+    --with_meta --sample 50
+# → 50 条，覆盖 (hard_case_type × sentiment) 全部 21 桶
 ```
 
-**补充语料池**：`generate_corpus.py` 已归档（LLM 生成不再需要）。新语料由标注流水线
-（`../../scripts/`）产出「原文+meta」jsonl，再走 `align_sft_data.py` 纯规则对齐入库，
-与 SFT 训练集的隔离由源数据分层保证。
+**两条硬约束**：
+
+- **`prompt` 必须与 SFT 训练同模板**：走 `lib/sft_template.py` 渲染，system=指令、user=`【目标主体】+【输入文本】`；手拼 ChatML 会导致 rollout 分布与 SFT 不匹配、reward 大面积掉底。
+- **`input_text` 必须是裸原文**：`R_grounding` 拿它做 `evidence ⊂ 原文` 硬断言。对齐后 `input` 已包了题面壳，裸原文另存在 `meta.input_raw`，builder 优先取它。
+
+`--sample N` 为按比例分层抽样（最大余数法）：每桶保底 1 条，余下按桶大小分配，避免 explicit×neutral 这类大桶吃光预算。
 
 ### 3.4 还缺什么
 
@@ -460,22 +475,46 @@ python3 scripts/build_grpo_probe.py \
 |---|---|
 | **`run_grpo_probe.py` / `train_grpo.py`（已写，未上 GPU 实测）** | 代码与单测（48 项）齐了，`--dry_run` 已在本地跑通；真实 rollout 与训练**必须等 SFT 探针训完 + AutoDL 环境** |
 | 正式 `grpo_prompts_3000.jsonl` | 需生产日志（阶段一 A/B 双路筛题）+ 阶段二金标 + 阶段三 G=4 难度筛选，本地造不出来 |
-| `irony` / `metaphor` 偏薄 | irony 仅 4 条，是 GRPO 高价值难例；下轮可 `--filter_hard_cases irony metaphor` 再补 |
+| `irony` / `metaphor` 偏薄 | irony 6 条、metaphor 6 条，是 GRPO 高价值难例；扩样时优先加这两类（`--sample` 已是按比例分层，桶内条数受源池限制） |
 | 阿里云百炼欠费 | 生成端 4/24 报 `Arrearage` HTTP 400，**充值前不要再跑生成/打标** |
 
-> ⚠️ 这 51 条是**构造区探针数据**，与 500 条人标金标测试集是两本账，不得混着写进简历。
+> ⚠️ 这 50 条是**构造区探针数据**，与 500 条人标金标测试集是两本账，不得混着写进简历。
 
 ### 3.5 训练：`train_grpo.py`（TRL GRPOTrainer + 四维规则 Reward）
 
-**对标参考取其可用、弃其不可用**：`llm-engineering-core/12S2W10_rlhf/GRPO/train.py`（TRL 栈、契约化 reward、wandb 降级、`--limit` 冒烟）被吸收；`13S3W5_rm_r1/RM-R1/rm_r1`（verl 全参分布式）**弃用**——与「LoRA + 单卡 24GB」正面冲突。
+**数据侧不需要自定义 Dataset 类**（与 SFT 不同，备案）：SFT 要逐样本定制 `labels` / `loss_weights`（前缀掩码+字段加权），所以有 `lib/sft_dataset.py`；GRPO 的 rollout、组采样、优势计算全由 TRL `GRPOTrainer` 内部完成，数据侧只需把 `{prompt, gold…}` **展平成标量列**（`build_dataset_rows()`，dict 列在 datasets 版本间行为不稳），reward 函数经 `kwargs` 按列名取值。参考实现（gsm8k）同样是裸 `Dataset.from_list`。另外 `lib/sft_template.py` / `prompt_template.py` 虽挂 SFT 名，实际是**两阶段共用**（GRPO prompt 渲染与主体回显同源），见 §0 目录注释。
+
+**起点是一个完整模型目录，不是 adapter。** 先用 `merge_sft_adapter.py` 把 `base + ΔSFT` 合成一次：
+
+```bash
+# 0) 合并 SFT adapter（一次性操作；产出 models/Qwen3-4B-Instruct-SFT）
+python3 scripts/merge_sft_adapter.py --dry_run \
+    --base models/Qwen3-4B-Instruct \
+    --adapter output/probe_lora_<时间戳> \
+    --out models/Qwen3-4B-Instruct-SFT
+
+python3 scripts/merge_sft_adapter.py \
+    --base models/Qwen3-4B-Instruct \
+    --adapter output/probe_lora_<时间戳> \
+    --out models/Qwen3-4B-Instruct-SFT
+```
+
+**为什么必须合并，而不是在训练脚本里 `load_adapter`**：TRL 算 KL 时走 `model.disable_adapter()`，它会关掉**全部** adapter。若 SFT adapter 与待训 GRPO LoRA 叠在同一个模型上，reference 会退化成裸基座 —— KL 惩罚变成「把策略往回忘掉 SFT」，β 越大坏得越快。合并以后 reference 天然就是 base+SFT，KL 才有意义。
+
+合并脚本会做三件事：路径与基座一致性体检 → `merge_and_unload()` → **合并前后 logits 一致性校验**（argmax 必须相同、`max|Δlogit|` 在 bf16 舍入容差内，否则拒绝落盘）。产出 `merge_manifest.json` 作为血缘证据，`train_grpo.py` 会自动读取它并在 `grpo_metrics.json` 里记一笔。
+
+> LoRA 增量可加，所以「训练时先合并」与「生产时 Base → SFT-LoRA → RL-LoRA 三段挂载」数学等价，部署形态不受影响。
 
 ```bash
 # 1) 任何机器都能跑的干跑体检（数据契约 + 门禁不变量 + 训练预算 + 依赖版本）
-python3 scripts/train_grpo.py --data data/grpo/grpo_prompts_probe.jsonl --dry_run
+python3 scripts/train_grpo.py --data data/grpo_prompts_probe.jsonl --dry_run
 
 # 2) 真实训练（AutoDL，需 pip install trl）
-./scripts/run_grpo_train.sh                       # 自动按 GPU 数选拓扑
+./scripts/run_grpo_train.sh                       # 默认读 models/Qwen3-4B-Instruct-SFT
 GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 先冒烟再放量
+
+# 对照实验：从原厂基座起训（不要 SFT 底子）
+MODEL=models/Qwen3-4B-Instruct ./scripts/run_grpo_train.sh
 ```
 
 **干跑会打印这张超参表（每个数都能算出来源，不是拍的）**：
@@ -486,16 +525,18 @@ GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 先冒烟再
 | 生成组数 G | 4 | 组内要有方差，4 是最小偶数组 |
 | **有效 batch** | **32 条轨迹/步 = 8 题 × G=4** | 手册 §1.3 定稿 |
 | 采样温度 T | 0.7 | T=0 时 4 份采样相同 → std=0 → RL 退化成更贵的 SFT |
-| 学习率 lr | 2e-6 | RL 叠在 SFT 已收敛策略上，比 SFT 的 1e-4 低约两个量级（1e-6~5e-6 区间中值） |
+| 学习率 lr | 2e-5 | LoRA 口径：≈ SFT 1e-4 的 1/5。全参 RLHF 惯用的 1e-6~5e-6 不适用，低秩增量会挪不动 |
 | KL 系数 β | 0.04 | 三闸①：常数 KL 管分布漂移，长度由 R_length 管，两者正交 |
-| 输出预算 | 200 | **CoT≤120 + JSON 骨架~70 + 余量**（见下方陷阱） |
-| 51 题 × epoch=1 | 7 步 | ceil(51/8)，正式 3000 题 × epoch=1 → 375 步 |
+| 输出预算 | **512** | 实测整段 max 383（CoT ~257 + JSON ~81），留 34% 余量（见下方陷阱） |
+| 50 题 × epoch=1 | 7 步 | ceil(50/8)，正式 3000 题 × epoch=1 → 375 步 |
 
 **三个抄了就崩的坑**（脚本里都有对应注释）：
 
 1. **reward 不能拆成 4 个函数平权相加** —— 我们的门禁是**短路**语义（`R_format` 挂了，`R_accuracy`/`R_length` 归 0）。拆开相加会丢短路。所以只有一个 reward func，内部调 `compute_reward`。
-2. **`max_completion_length` 不能按手册 65~105 截** —— 那一格说的是 **CoT 档位**（`R_length` 只量 CoT），不是整段预算。按 105 硬截会把 JSON 砍在中间 → 全池 `R_format` −2.5 短路 → 训练废掉。
+2. **`max_completion_length` 不能按手册 65~105 截** —— 那一格说的是**扁平 JSON 段**（实测 ≈81 tokens），**不是整段输出**。SFT 73 条真分词：整段 p50 263 / p95 335 / max 383，CoT 占大头。按 105 或 200 截，**99% 的样本被砍在中间** → `json.loads` 失败 → 全池 `R_format` −2.5 → 训练废掉。
 3. **`loss_type` 必须是 `grpo`（均值中心化 + std 归一）** —— 与 `reward_fns.group_advantages` 公式逐字一致；新版 TRL 默认 `dr_grpo` 不做中心化，优势带非零均值即偏离契约。
+
+**eval 循环与对齐税熔断（TODO 5.19，已落盘）**：`--eval_file` 给了才开。把对齐税基线集接成 `eval_dataset`，每 `--eval_steps` 步采一次样、用同一套 reward 打分取均值；首轮均值记 baseline，此后相对跌幅超 `--fuse_threshold`（默认 2%）打 `[FUSE]` 告警（`--fuse_hard` 才真终止）。探针阶段用 8 条迷你基线集 `data/grpo/grpo_eval_probe.jsonl` 验链路；正式 3,000 条阶段换成 k=4 封存集。判定纯逻辑 `grpo_common.should_fuse`（6 项单测）。启动脚本传 `EVAL_FILE=data/grpo/grpo_eval_probe.jsonl` 即开启。
 
 另有两处防御（启动时自动处理）：
 - **prompt 上限体检**：实测 prompt 最长 token 数（含行业风险词表）若超 `max_prompt_length`，**自动放宽**——截断会砍掉待判原文 → `evidence` 必然溯源失败 → 全池短路。
@@ -507,14 +548,14 @@ GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 先冒烟再
 
 ```bash
 # 干跑：用 gold 反构「标准答案」当采样结果，验数据 + 打分器 + 分桶全链路
-python3 scripts/run_grpo_probe.py --data data/grpo/grpo_prompts_probe.jsonl --dry_run
+python3 scripts/run_grpo_probe.py --data data/grpo_prompts_probe.jsonl --dry_run
 
 # 真实 rollout（SFT 探针训完后）
 python3 scripts/run_grpo_probe.py \
-    --data data/grpo/grpo_prompts_probe.jsonl \
+    --data data/grpo_prompts_probe.jsonl \
     --base_model models/Qwen3-4B-Instruct \
     --adapter output/probe_lora \
-    --g 4 --temperature 0.7 --max_new_tokens 200 \
+    --g 4 --temperature 0.7 --max_new_tokens 512 \
     --out output/grpo/grpo_probe_kstats.json
 ```
 
@@ -554,14 +595,11 @@ python3 scripts/run_grpo_probe.py \
 | 预测文件 | `output/pred_*.jsonl` | 喂给 `evaluate_sft` 模式 B |
 | 评测报告 | 终端 + `logs/probe_e2e_*.log` | 难点/行业分桶准确率 |
 | GRPO 打分器 | `lib/reward_fns.py`（40 项单测全绿） | 4 条规则 + 单调性 + 门禁不变量 |
-| GRPO 探针数据 | `data/grpo/grpo_prompts_probe.jsonl` | `{prompt, gold}` 51 条，等 SFT 模型可 rollout |
+| GRPO 探针数据 | `data/grpo_prompts_probe.jsonl` | `{prompt, gold, input_text, meta}` 50 条（21 桶全覆盖），等 SFT 模型可 rollout |
 | GRPO 难度分流 | `output/grpo/grpo_probe_kstats.json` + `.rows.jsonl` | k 直方图 + 训练池规模 + 逐题明细 |
 | GRPO 训练日志 | `logs/grpo_train_*.log`（nohup 后台，时间戳命名） | 断点回看 |
 | GRPO Adapter | `output/grpo_lora/` + `grpo_metrics.json` | SFT→GRPO 两段式终点 |
 | GRPO 单测 | `unit/test_grpo_probe.py`（48 项） | 数据契约 / k 分桶 / reward 列对齐 / 版本兼容 |
-| 金标评测集 | `output/eval/eval_gold_probe.jsonl` | 三方异族全一致的金标（`evaluate_sft` 模式 A/B 直接读） |
-| 边界样本 | `output/eval/eval_boundary.jsonl` | 仅难点类型分歧，留给 DPO / 难例复盘 |
-| 一致性报告 | `output/eval/eval_agreement_report.json` | 逐字段 κ + 一致率 + PASS/BOUNDARY/FAIL 裁决 |
 
 **全量自检一条命令**（零外部依赖，任何机器都能跑）：
 
@@ -604,7 +642,7 @@ python3 scripts/eval_four_tier.py --gold data/test_golden_sample_50.jsonl \
    简历上能写的准确率，**只能来自 500 条纯人标金标测试集**（`plan/SFT负面精判_技术评审.md` 锁死的死数字）。
 2. **这 81 条是构造区语料**（`provenance=synthetic`），与真实业务流量、BERT 时代的近 4 万条人标数据是**两本账**，严禁混着写。
 3. **分桶看结论，别看整体 F1**——决定「要不要从 4B 升到 7B」的唯一证据，是 `irony / metaphor / counterfactual` 这几个难例桶在 500 金标上的表现，不是总分。
-4. **GRPO 的 51 条探针 ≠ 训练池**——正式池是 `grpo_prompts_3000.jsonl`，必须经「生产日志筛题 → 金标 → G=4 难度筛选只留 k∈{1,2,3}」三阶段；探针这 51 条只用来**验证打分器与 rollout 链路通不通**。
+4. **GRPO 的 50 条探针 ≠ 训练池**——正式池是 `grpo_prompts_3000.jsonl`，必须经「生产日志筛题 → 金标 → G=4 难度筛选只留 k∈{1,2,3}」三阶段；探针这 50 条只用来**验证打分器与 rollout 链路通不通**。
 5. **GRPO 不切 dev 集**——RL 的失效模式是通用能力退化和 Reward Hacking，dev 集测不出这两样；等价监控是 `k=4` 基线集盯通用能力掉没掉、`k=0` 集盯难题攻克进度，500 条金标只评不训。
 6. **`run_grpo_probe.py --dry_run` 的 k=4 不是模型成绩**——干跑用 gold 反构标准答案当采样结果，只证明「数据 + 打分器 + 分桶」链路通。真实 k 分布必须等 SFT 探针训完再 rollout 才有数。同理，`train_grpo.py --dry_run` 打印的 32 轨迹/步、7 步是**预算**不是实测。
 

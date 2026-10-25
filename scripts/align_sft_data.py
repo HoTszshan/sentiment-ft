@@ -157,6 +157,8 @@ def main():
             instruction = sft_template.build_instruction(row["industry"])
             meta = {k: v for k, v in row.items()
                     if k not in ("instruction", "input", "output")}  # 大字段不进 meta（防重复膨胀）
+            # 裸原文另存：input 已包 user 侧题面壳，grounding 断言必须用裸原文
+            meta["input_raw"] = row.get("input") or ""
             meta["aligned_by"] = "align_sft_data"
             meta["cot_source"] = "inherited" if has_cot else "none"
             if not has_cot:

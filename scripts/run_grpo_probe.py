@@ -18,14 +18,14 @@ k = 同一 prompt 采 G 份，其中「判对 且 evidence 溯源过门禁」的
 
 用法:
   # 1) 先干跑自检（不加载模型，用 gold 反构「标准答案」当采样结果）
-  python3 scripts/run_grpo_probe.py --data data/grpo/grpo_prompts_probe.jsonl --dry_run
+  python3 scripts/run_grpo_probe.py --data data/grpo_prompts_probe.jsonl --dry_run
 
   # 2) 真实 rollout (需 GPU + SFT 探针训完的 adapter)
   python3 scripts/run_grpo_probe.py \
-      --data data/grpo/grpo_prompts_probe.jsonl \
+      --data data/grpo_prompts_probe.jsonl \
       --base_model models/Qwen3-4B-Instruct \
       --adapter output/probe_lora \
-      --g 4 --temperature 0.7 --max_new_tokens 200 \
+      --g 4 --temperature 0.7 --max_new_tokens 512 \
       --out output/grpo/grpo_probe_kstats.json
 """
 
@@ -139,15 +139,16 @@ def build_model_sampler(base_model: str, adapter: Optional[str], g: int,
 
 def main():
     ap = argparse.ArgumentParser(description="GRPO 探针: G=4 采样 → 四维打分 → k 分流")
-    ap.add_argument("--data", default="data/grpo/grpo_prompts_probe.jsonl")
+    ap.add_argument("--data", default="data/grpo_prompts_probe.jsonl")
     ap.add_argument("--out", default="output/grpo/grpo_probe_kstats.json")
     ap.add_argument("--rows_out", default=None, help="逐题明细 jsonl（默认与 --out 同名 .rows.jsonl）")
     ap.add_argument("--base_model", default=None, help="基座路径/名（--dry_run 时可不给）")
     ap.add_argument("--adapter", default=None, help="SFT LoRA adapter 目录；留空 = 裸基座对照")
     ap.add_argument("--g", type=int, default=4)
     ap.add_argument("--temperature", type=float, default=0.7)
-    ap.add_argument("--max_new_tokens", type=int, default=200,
-                    help="CoT≤120 + JSON 骨架~70 + 余量（别按 65~105 截，会砍在 JSON 中间）")
+    ap.add_argument("--max_new_tokens", type=int, default=512,
+                    help="实测整段输出 max 383（CoT ~257 + JSON ~81），留余量；"
+                         "65~105 是 JSON 段口径，不是整段，别按它截")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--dry_run", action="store_true",
                     help="不加载模型：用 gold 反构标准答案当采样结果，验数据+打分+分桶全链路")

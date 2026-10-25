@@ -17,6 +17,9 @@ p50 / p95 / p99 / max 分位数，定位 OOM 长样本来源。
   - prompt = <|im_start|>system...assistant\n 模板 + instruction + input（前缀掩码区）
   - output = assistant 输出（CoT + JSON）+ <|im_end|>
   - total  = prompt + output，与训练 max_seq_length 同口径（含模板，不含 padding）
+  - **cot  = output 里 <think>…</think> 之间的推理段**（不含标签、不含 JSON 骨架），
+    与 reward_fns 的 R_length 同口径（R_length 只量这一段）。带 tokenizer 跑时
+    额外打印「R_length 落档」——直接看现有阈值 40/65/120 在这批数据上是否还有效。
   - 按 meta.provenance == public_anchor 分 anchor / domain 两桶，直接回答
     「长 token 是领域样本还是锚点带来的」
 """
@@ -24,6 +27,7 @@ p50 / p95 / p99 / max 分位数，定位 OOM 长样本来源。
 import argparse
 import json
 import os
+import re
 import statistics as st
 import sys
 from pathlib import Path
@@ -32,6 +36,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 # 外壳与训练/推理同源；长度口径必须与实际喂进模型的序列一致，否则 p99 定的 max_len 是假的
 import prompt_template as pt  # noqa: E402
+
+# CoT 段的切分与 R_length 阈值同源：统计口径必须与奖励口径一致，否则「按统计结果定阈值」
+# 定出来的是另一个任务的长度
+from schema_contract import THOUGHT_BEGIN, THOUGHT_END  # noqa: E402
+from reward_fns import COT_DEAD, COT_IDEAL_HI, COT_SHORT  # noqa: E402
+
+_COT_RE = re.compile(re.escape(THOUGHT_BEGIN) + r"(.*?)" + re.escape(THOUGHT_END),
+                     re.DOTALL)
+
+
+def split_cot(output: str):
+    """拆出 (cot 段, json 段)。无 <think> 标签时 cot 记空串（与 parse_output 同语义）。"""
+    m = _COT_RE.search(output or "")
+    if not m:
+        return "", output or ""
+    return m.group(1).strip(), output[m.end():].strip()
 
 
 def _pct(sorted_vals, p):
@@ -49,7 +69,7 @@ def _bucket(row):
     return "domain"
 
 
-def _report(tag, totals, prompts, outputs, unit, top_rows, top_n):
+def _report(tag, totals, prompts, outputs, unit, top_rows, top_n, cots=None):
     t = sorted(totals)
     p = sorted(prompts)
     o = sorted(outputs)
@@ -57,6 +77,10 @@ def _report(tag, totals, prompts, outputs, unit, top_rows, top_n):
     print(f"  {'':8s}{'p50':>8s}{'p95':>8s}{'p99':>8s}{'max':>8s}")
     for name, v in (("prompt", p), ("output", o), ("total", t)):
         print(f"  {name:8s}{_pct(v,50):>8d}{_pct(v,95):>8d}{_pct(v,99):>8d}{v[-1]:>8d}")
+    if cots:
+        c = sorted(cots)
+        print(f"  {'cot':8s}{_pct(c,50):>8d}{_pct(c,95):>8d}{_pct(c,99):>8d}{c[-1]:>8d}"
+              f"   ← R_length 只量这一段")
     if top_rows:
         top_sorted = sorted(top_rows, key=lambda x: -x[0])
         print(f"  Top{top_n} 最长样本:")
@@ -65,6 +89,54 @@ def _report(tag, totals, prompts, outputs, unit, top_rows, top_n):
             src = meta.get("source", meta.get("provenance", "?"))
             print(f"    #{idx} {bucket:6s} {tok_n:>6d} {unit}  "
                   f"hard_case={hc}  source={src}")
+
+
+def _report_cot_buckets(cots, unit):
+    """
+    CoT 落在 R_length 哪一档 —— 直接回答「40/65/120 这组阈值还适用吗」。
+
+    ⚠️ 阈值是在 **token 空间**定义的（reward_fns 用 tokenizer 计数）。字符级近似
+    模式下这些数字没有可比性 —— 此时只报分位、不做落档判定，免得把「370 字符」
+    拿去和「120 tokens」比大小得出错误结论。
+
+    判定式与 reward_fns.r_length 逐条一致：
+      n < COT_SHORT               → 过短罚  (n/40 − 1, −1.0~0)
+      COT_SHORT ≤ n ≤ COT_IDEAL_HI → 满分 +1.0
+      COT_IDEAL_HI < n < COT_DEAD  → 线性衰减 (1 − (n−65)/55, 1.0~0)
+      n ≥ COT_DEAD                 → 归 0
+    若「过短罚」与「满分」两档都为 0 条（全部挤在衰减/归 0），说明这组阈值对当前数据失效。
+    """
+    if not cots:
+        return
+    if unit != "token":
+        c = sorted(cots)
+        print(f"\n--- CoT 分位（单位=char；阈值是 token 口径，此处不做落档判定）---")
+        print(f"  p50={_pct(c,50)}  p95={_pct(c,95)}  p99={_pct(c,99)}  max={c[-1]} 字符")
+        print("  带 --tokenizer 重跑才会输出 R_length 落档判定。")
+        return
+
+    n_all = len(cots)
+    short = sum(1 for n in cots if n < COT_SHORT)
+    ideal = sum(1 for n in cots if COT_SHORT <= n <= COT_IDEAL_HI)
+    decay = sum(1 for n in cots if COT_IDEAL_HI < n < COT_DEAD)
+    dead = sum(1 for n in cots if n >= COT_DEAD)
+
+    print(f"\n--- R_length 落档 (阈值 {COT_SHORT}/{COT_IDEAL_HI}/{COT_DEAD} {unit}) ---")
+    for name, cnt, note in (
+        (f"过短罚 <{COT_SHORT}", short, "n/40 − 1，越短越负"),
+        (f"满分 {COT_SHORT}~{COT_IDEAL_HI}", ideal, "+1.0"),
+        (f"衰减 {COT_IDEAL_HI}~{COT_DEAD}", decay, "线性 1 → 0"),
+        (f"归零 ≥{COT_DEAD}", dead, "0"),
+    ):
+        bar = "█" * int(round(cnt / max(1, n_all) * 30))
+        print(f"  {name:14s} {cnt:>4} ({cnt / n_all:>5.1%})  {bar}  {note}")
+
+    if ideal == 0:
+        print(f"  ⚠️ 理想带一条都没有：这组阈值与本批数据不匹配。")
+        print(f"     当前 CoT 中位数 {_pct(sorted(cots), 50)} {unit}，"
+              f"建议把「理想带」对准 p50 附近重设三档。")
+        if dead == n_all:
+            print("     R_length 本批数据上恒为 0 —— 该维暂时没有塑形效果（不影响判别正确性）。")
 
 
 def main():
@@ -101,11 +173,13 @@ def main():
                                   r.get("instruction", ""),
                                   r.get("input", ""))
         output = (r.get("output", "") or "") + pt.ASSISTANT_SUFFIX
-        d = buckets.setdefault(b, {"p": [], "o": [], "t": [], "top": []})
+        cot_text, _json_text = split_cot(r.get("output", "") or "")
+        d = buckets.setdefault(b, {"p": [], "o": [], "t": [], "c": [], "top": []})
         np_, no, nt = encode(prompt), encode(output), encode(prompt + output)
         d["p"].append(np_)
         d["o"].append(no)
         d["t"].append(nt)
+        d["c"].append(encode(cot_text))
         d["top"].append((nt, i, b, r.get("meta") or {}))
 
     # total 降序拿 Top-N（按 token 实测或字符近似均可）
@@ -115,7 +189,14 @@ def main():
     for b in ("domain", "anchor"):
         if b in buckets:
             d = buckets[b]
-            _report(f"{b}", d["t"], d["p"], d["o"], unit, d["top"], args.top_n)
+            _report(f"{b}", d["t"], d["p"], d["o"], unit, d["top"], args.top_n, d["c"])
+
+    # CoT 长度分位 + 现有 R_length 阈值是否还适用（只对有 CoT 标签的样本判定）
+    all_cots = [c for d in buckets.values() for c in d["c"] if c > 0]
+    if all_cots:
+        _report_cot_buckets(all_cots, unit)
+    else:
+        print("\n⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。")
 
     if "domain" in buckets and "anchor" in buckets:
         dd, da = buckets["domain"], buckets["anchor"]
@@ -131,10 +212,12 @@ def main():
             [t for d in buckets.values() for t in d["t"]],
             [x for d in buckets.values() for x in d["p"]],
             [x for d in buckets.values() for x in d["o"]],
-            unit, top_all, args.top_n)
+            unit, top_all, args.top_n,
+            [c for d in buckets.values() for c in d["c"]])
 
     if unit == "char":
-        print("\n⚠️ 以上为字符级近似。真 token 口径请在 AutoDL 上带 --tokenizer 重跑。")
+        print("\n⚠️ 以上为字符级近似。真 token 口径请在 AutoDL 上带 --tokenizer 重跑。"
+              "\n   CoT 分位也依赖真分词 —— 定 R_length 阈值必须用 token 口径。")
 
 
 if __name__ == "__main__":

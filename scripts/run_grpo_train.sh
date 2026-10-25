@@ -8,10 +8,12 @@
 #   DRY=1 ./scripts/run_grpo_train.sh                  # 只跑 --dry_run 体检（无 GPU 可跑）
 #
 # 环境变量:
-#   DATA           默认 data/grpo/grpo_prompts_probe.jsonl
-#   MODEL          默认 models/Qwen3-4B-Instruct
-#   RESUME_LORA    默认 output/probe_lora (SFT 探针产出的 adapter 起点；留空=裸基座)
+#   DATA           默认 data/grpo_prompts_probe.jsonl
+#   MODEL          默认 models/Qwen3-4B-Instruct-SFT (先跑 merge_sft_adapter.py 产出)
+#                  指向原厂基座 = 未挂 SFT 起训，只用于对照实验
 #   OUTPUT_DIR     默认 output/grpo_lora
+#   EVAL_FILE      对齐税基线集 jsonl；给了才开 eval 循环 + 熔断（TODO 5.19）
+#   FUSE_HARD      =1 时熔断真终止训练（默认只告警）
 #   WANDB_API_KEY  设了就同步 wandb
 #   GRPO_ARGS      透传给 train_grpo.py 的额外参数
 #
@@ -27,10 +29,10 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BASE_DIR"
 echo "工作目录: $BASE_DIR"
 
-DATA="${DATA:-data/grpo/grpo_prompts_probe.jsonl}"
-MODEL="${MODEL:-models/Qwen3-4B-Instruct}"
-RESUME_LORA="${RESUME_LORA:-output/probe_lora}"
+DATA="${DATA:-data/grpo_prompts_probe.jsonl}"
+MODEL="${MODEL:-models/Qwen3-4B-Instruct-SFT}"
 OUTPUT_DIR="${OUTPUT_DIR:-output/grpo_lora}"
+EVAL_FILE="${EVAL_FILE:-}"            # 对齐税基线集；给了才开 eval 循环（TODO 5.19）
 GRPO_ARGS="${GRPO_ARGS:-}"
 DRY="${DRY:-0}"
 
@@ -94,23 +96,38 @@ else
   log "wandb: 已检测到 WANDB_API_KEY，指标将同步在线"
 fi
 
-# SFT adapter 起点（探针默认从它起，探针没跑就裸基座）
-LORA_ARGS=""
-if [ -n "$RESUME_LORA" ] && [ -f "$RESUME_LORA/adapter_config.json" ]; then
-  LORA_ARGS="--resume_lora $RESUME_LORA"
-  log "起点: SFT adapter $RESUME_LORA"
+# 起点体检：模型目录必须有 config.json；有 merge_manifest.json 说明挂了 SFT
+if [ ! -f "$MODEL/config.json" ]; then
+  log "起点缺失: $MODEL 不是完整模型目录"
+  log "先合并: python3 scripts/merge_sft_adapter.py \\"
+  log "        --base models/Qwen3-4B-Instruct --adapter output/probe_lora_<时间戳> \\"
+  log "        --out models/Qwen3-4B-Instruct-SFT"
+  exit 1
+fi
+if [ -f "$MODEL/merge_manifest.json" ]; then
+  log "起点: 已合并 SFT 的模型 $MODEL"
 else
-  log "起点: 裸基座 $MODEL（没找到 SFT adapter；探针建议先跑 run_probe_e2e.sh train）"
+  log "起点: $MODEL（无 merge_manifest.json → 原厂基座，未挂 SFT；确认这是有意的对照实验）"
 fi
 
 # ---------------------------------------------------------------- 3. 后台启动
 log "日志: $RUN_LOG"
+EVAL_ARGS=""
+if [ -n "$EVAL_FILE" ] && [ -f "$EVAL_FILE" ]; then
+  EVAL_ARGS="--eval_file $EVAL_FILE"
+  log "eval 循环: $EVAL_FILE（对齐税熔断已开；默认仅告警，FUSE_HARD=1 才真终止）"
+else
+  log "eval 循环: 未设 EVAL_FILE → 不开（正式 3000 条阶段接 k=4 基线集）"
+fi
+FUSE_ARGS=""
+if [ "${FUSE_HARD:-0}" = "1" ]; then FUSE_ARGS="--fuse_hard"; fi
+
 CMD=("${LAUNCH[@]}" scripts/train_grpo.py \
   --data "$DATA" \
   --model_name_or_path "$MODEL" \
   --output_dir "$OUTPUT_DIR" \
   --log_file "$RUN_LOG" \
-  $LORA_ARGS $VLLM_FLAG $WANDB_ARGS $GRPO_ARGS)
+  $EVAL_ARGS $FUSE_ARGS $VLLM_FLAG $WANDB_ARGS $GRPO_ARGS)
 
 log "启动: ${CMD[*]}"
 nohup "${CMD[@]}" >> "$RUN_LOG" 2>&1 &
