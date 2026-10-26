@@ -97,6 +97,7 @@ def run_probe(records: Sequence[Dict[str, Any]], sampler: Sampler,
     sampler 可注入（单测就塞假采样器，不碰 GPU）。
     """
     rows: List[Dict[str, Any]] = []
+    n = len(records)
     for i, rec in enumerate(records):
         prompt = rec["prompt"]
         gold = rec["gold"]
@@ -117,6 +118,9 @@ def run_probe(records: Sequence[Dict[str, Any]], sampler: Sampler,
             "totals": res["totals"],
             "flags": res["flags"],
         })
+        # 逐条回显：每题 G 份生成是最耗时的部分，无回显时像卡死
+        k = rows[-1]["k"]
+        print(f"[PROBE {i+1}/{n}] k={k} ({rows[-1]['bucket']})", flush=True)
     return rows
 
 

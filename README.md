@@ -102,6 +102,10 @@ wandb login
 ./scripts/run_probe_e2e.sh train      # 步骤3
 ./scripts/run_probe_e2e.sh test       # 步骤4+5（推理+评测）
 ./scripts/run_probe_e2e.sh traintest  # 步骤3+4+5（只训练+评测；复用已有混合数据与本地基座，不重复下载/混合）
+
+# --tag=<实验标签>：输出目录名追加后缀，便于区分消融档（位置任意，不传保持原样）
+#   例： run_20261024_180116 → run_20261024_180116_POC1_epoch6
+./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest
 ```
 
 可用环境变量：
@@ -358,6 +362,8 @@ python3 scripts/evaluate_sft.py --test_file data/mixed/sft_train.jsonl
 python3 scripts/evaluate_sft.py --gold_file data/mixed/sft_val.jsonl \
                                 --pred_file output/pred_val.jsonl
 ```
+
+> **基线（未微调）模型评测口径**：：基座输出常不符合`+JSON`规范、易截断，直接解析会语义分清零，因此失败时正则提取有效 JSON 字段计算 sentiment 等语义指标；但 JSON 合法率、标签闭合率严格判定，基线格式项 FAIL 为预期。
 
 ### 步骤 5b · 序列长度统计（OOM 排查 / 数据体检）
 

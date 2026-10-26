@@ -56,6 +56,7 @@ from schema_contract import (  # noqa: E402
     VALID_RELEVANCE,
     VALID_RISK,
     VALID_SENTIMENT,
+    extract_baseline_pred,
     load_pred_line as _load_pred_line,
     parse_lenient,
     parse_output,
@@ -90,6 +91,11 @@ def parse_model_output(output_str: Any) -> Dict[str, Any]:
     判定源统一到 `schema_contract.parse_output` —— 与训练侧 `R_format` 门禁
     **同一份判定式**（评估手册缺口 11）。旧的宽松降级（裸 JSON 也算解析成功）
     保留在 `parse_lenient` 里，但降级**不改变协议判定**：闭合率照常掉。
+
+    基线降级路径：目标格式全失败时（未微调模型原生输出对不齐 <think> +
+    裸 JSON 协议），再走 `extract_baseline_pred` 正则捕获 JSON 片段、
+    只留有效字段 —— 基线评测不做强解析，否则解析失败会把指标全量清零，
+    对基线不公平。降级不改变协议判定（valid_json 仍按强解析口径记 False）。
     """
     cot, pred, flags = parse_output(output_str)
     res = {
@@ -108,6 +114,13 @@ def parse_model_output(output_str: Any) -> Dict[str, Any]:
             res["pred"] = lenient_pred
             res["valid_json"] = True
             res["schema_error"] = lenient_flags["schema_error"]
+    if res["pred"] is None:
+        # 基线宽松提取：正则捕获 JSON 片段，只取协议内有效字段做对比
+        # （字段对比以原始提取结果为准；协议判定不放宽，valid_json 不翻真）
+        baseline_pred = extract_baseline_pred(output_str)
+        if baseline_pred:
+            res["pred"] = baseline_pred
+            res["baseline_extracted"] = True
     return res
 
 
@@ -556,6 +569,18 @@ def run_dual_file_eval(gold_file: str, pred_file: str,
 
         pred, form = load_pred_line(pline)
         form_counts[form] += 1
+        # 基线宽松提取：强解析失败时正则捕获输出里的 JSON 片段，只留协议内
+        # 有效字段参与字段对比。基线未微调，强解析会全量失败把指标清零，
+        # 对基线不公平；但 valid_json 协议口径不放宽（仍按强解析记 False），
+        # 格式门槛照实反映「基线格式不合规」这一事实。
+        baseline_extracted = False
+        if pred is None:
+            bp_text = unwrap_output_text(pline) if form == "text" else pline
+            bp = extract_baseline_pred(bp_text)
+            if bp:
+                pred = bp
+                form_counts["baseline"] += 1
+                baseline_extracted = True
         preds.append(pred)
 
         # 协议标志：文本行才有闭合率口径

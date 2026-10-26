@@ -78,3 +78,33 @@ def build_dataset_rows(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
             **flatten_gold(rec["gold"]),
         })
     return rows
+
+
+def build_eval_baseline(records: Sequence[Dict[str, Any]], n: int = 8
+                        ) -> List[Dict[str, Any]]:
+    """从训练池按 (sentiment, hard_case_type) 去重抽 n 条，作 eval 熔断基线集。
+
+    只保证类型覆盖面，不是独立泛化集——样本与训练池同源，eval 均值跌了说明训练
+    可能坏了，不跌不代表变好。不足 n 条时返回实际数量，不补造样本。
+    """
+    picked: List[Dict[str, Any]] = []
+    seen = set()
+    for row in records:
+        key = (row["gold"]["sentiment"], row["gold"]["hard_case_type"])
+        if key not in seen:
+            seen.add(key)
+            picked.append(row)
+        if len(picked) == n:
+            break
+    return picked
+
+
+def write_eval_baseline(records: Sequence[Dict[str, Any]], target: str,
+                        n: int = 8) -> int:
+    """build_eval_baseline + 落盘，返回实际条数（供入口打印回显）。"""
+    picked = build_eval_baseline(records, n)
+    out = Path(target)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as stream:
+        stream.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in picked)
+    return len(picked)

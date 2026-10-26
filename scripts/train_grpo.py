@@ -32,6 +32,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -43,7 +44,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from grpo_common import (  # noqa: E402
     GrpoHyper, assert_zam_equivalence, budget_note, validate_generation_shape,
 )
-from grpo_dataset import build_dataset_rows, load_records  # noqa: E402
+from grpo_dataset import (  # noqa: E402
+    build_dataset_rows, build_eval_baseline, load_records)
 from grpo_probe_core import extract_completion_text  # noqa: E402
 from log_tee import attach_log, detach_log  # noqa: E402
 from reward_fns import compute_reward  # noqa: E402
@@ -145,6 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--eval_file", default=None,
                         help="可选 eval jsonl；开启每 eval_steps 步的 reward 监控")
+    parser.add_argument("--eval_n", type=int, default=8,
+                        help="未传 --eval_file 时，从训练池按 (极性,难点) 去重自动抽 "
+                             "eval_n 条作基线集（0 = 不自动生成）")
     parser.add_argument("--eval_steps", type=int, default=2)
     parser.add_argument("--fuse_threshold", type=float, default=0.02)
     parser.add_argument("--fuse_hard", action="store_true",
@@ -201,6 +206,12 @@ def main():
             raise SystemExit(f"[FATAL] {error}")
         rows = build_dataset_rows(records)
         eval_rows = build_dataset_rows(load_records(args.eval_file)) if args.eval_file else None
+        if eval_rows is None and args.eval_n > 0:
+            # 未显式给 eval_file：从训练池按 (极性,难点) 去重自动抽基线集，
+            # 链路同 grpo_dataset.build_eval_baseline（与训练池同源，仅熔断冒烟口径）
+            eval_rows = build_dataset_rows(build_eval_baseline(records, args.eval_n))
+            print(f"eval 基线集: 未指定 --eval_file，已从训练池自动抽取 "
+                  f"{len(eval_rows)} 条（--eval_n 0 可关闭）")
         print(f"数据: {args.data}（{len(rows)} 条）")
         if eval_rows:
             print(f"eval 基线集: {args.eval_file}（{len(eval_rows)} 条；阈值 {args.fuse_threshold:.0%}；"
@@ -237,16 +248,19 @@ def main():
             raise SystemExit(f"[FATAL] {exc}") from exc
         print(f"prompt 长度：最长 {real_max} / 均值 {sum(lens)//len(lens)} / 上限 {h.max_prompt_length}")
         wandb_on = wandb_enabled(args)   # setup_wandb 已注入 WANDB_PROJECT/NAME
+        # TRL 1.16 的 GRPOConfig 只收 warmup_steps；按 ratio 折算成绝对步数
+        steps_per_epoch = math.ceil(len(records) / (h.per_device * h.grad_accum))
+        total_steps = args.max_steps or steps_per_epoch * h.num_train_epochs
+        warmup_steps = int(h.warmup_ratio * total_steps)
         config = GRPOConfig(
             output_dir=args.output_dir, run_name=args.wandb_run_name,
             learning_rate=h.lr, adam_beta1=0.9, adam_beta2=0.99,
-            weight_decay=0.01, warmup_ratio=h.warmup_ratio,
+            weight_decay=0.01, warmup_steps=warmup_steps,
             lr_scheduler_type="cosine", logging_steps=1,
             bf16=torch.cuda.is_available(),
             per_device_train_batch_size=h.per_device,
             gradient_accumulation_steps=h.grad_accum,
             num_generations=h.num_generations,
-            max_prompt_length=h.max_prompt_length,
             max_completion_length=h.max_completion_length,
             num_train_epochs=h.num_train_epochs, beta=h.beta_kl,
             max_grad_norm=args.max_grad_norm,
@@ -255,11 +269,13 @@ def main():
             seed=h.seed, report_to="wandb" if wandb_on else "none",
             # scale_rewards="none": 优势只减均值、不除 std——固定离散阶梯分除 std
             # 会放大噪声组（见 grpo_common.assert_zam_equivalence ③）
+            # TRL 1.16 已移除 max_prompt_length / vllm_device：prompt 截断改由数据侧保证
+            # （resolve_prompt_limit 已实测并对齐），vllm_device 由 vllm_mode 接管
             log_on_each_node=False, use_vllm=args.use_vllm,
             eval_strategy="steps" if eval_rows else "no",
             eval_steps=args.eval_steps if eval_rows else 500,
             per_device_eval_batch_size=h.per_device,
-            vllm_device="auto", vllm_gpu_memory_utilization=0.3,
+            vllm_gpu_memory_utilization=0.3,
             max_steps=args.max_steps or 0, temperature=h.temperature,
             loss_type="grpo", scale_rewards="none",
         )

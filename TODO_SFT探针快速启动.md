@@ -104,6 +104,8 @@
   > SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh traintest
   > ```
   > 前置条件：`$DATA_DIR/mixed/sft_{train,val}.jsonl` 与 `$MODEL_DIR/<基座>` 均已存在（缺任一项会直接报错并提示先跑 `mix` / `download`）。
+  > 输出目录可加实验标签区分消融档：`./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest`
+  > → 产物落在 `run_<时间戳>_POC1_epoch6/`；不传 `--tag` 保持原 `run_<时间戳>` 命名。
 - [ ] **3.4 每档训练中盯防**（本地 `logs/train_probe*.log`；要看曲线就 `SYNC_WANDB=1` 重跑同步 wandb，项目 `sentiment-sft-probe`）：
   - [ ] loss 能压下去、无 NaN（NaN = 整轮作废，查毒样本）
   - [ ] `grad_norm` 无连续 >10 暴跳
@@ -127,6 +129,7 @@
       --out output/pred_val_poc3.jsonl
   ```
   另跑一档**裸基座对照**（`--adapter_path` 留空）量化 SFT 增益
+  > **基线评测口径**：`evaluate_sft.py`在强解析失败时，正则提取 JSON 片段（支持截断），用有效字段计算语义分，防止格式问题直接判 0；JSON 合法率等格式指标严格统计。基线语义有分数、格式判 FAIL 是正常现象。
 - [ ] **4.2** 模型对照评测（模式 B）：
   ```bash
   python3 scripts/evaluate_sft.py --gold_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \

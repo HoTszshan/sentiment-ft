@@ -97,8 +97,10 @@ def build_model_sampler(base_model: str, adapter: Optional[str], g: int,
         trust_remote_code=True,
         device_map=device if device not in ("cuda", "cpu") else None,
     )
-    if device in ("cuda", "cpu") and getattr(model, "device", None) is None:
-        model.to(device)
+    # device_map=None 时权重留在 CPU；PreTrainedModel.device 是 property 恒有值，
+    # 不能用 `is None` 判断是否已上卡——显式 .to() 才保证生成走 GPU
+    model.to(device)
+    print(f"[PROBE] 模型已上卡: {next(model.parameters()).device}")
 
     if adapter:
         from peft import PeftModel

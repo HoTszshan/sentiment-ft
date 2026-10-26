@@ -92,24 +92,31 @@ def _logits(model, tok, prompt: str):
         return model(**enc).logits.float().cpu()
 
 
-def verify_parity(before, after, tol: float = 5e-2) -> dict:
+def verify_parity(before, after, tol: float = 1e-3) -> dict:
     """
     合并前（base+adapter）与合并后（merged）在同一条 prompt 上的 logits 对比。
-    bf16 加法有舍入，绝对误差看 tol；真正该对齐的是 argmax 与 top-1 概率。
+
+    bf16 下 merge（W0+BA 融合）与挂载分算（W0x + B(Ax)）舍入次序不同，
+    全词表最大绝对 Δlogit 到 1+ 都是正常舍入噪声——绝对误差只能作参考。
+    硬判据看结构等价性：argmax 一致 + top-1 概率差 < tol。
     """
     import torch
     diff = (before - after).abs()
     max_abs = float(diff.max())
     last = -1
-    argmax_same = bool((before[:, last, :].argmax(-1) == after[:, last, :].argmax(-1)).all())
-    top1_diff = float((before[:, last, :].softmax(-1).max(-1).values
-                       - after[:, last, :].softmax(-1).max(-1).values).abs().max())
+    b_last, a_last = before[:, last, :], after[:, last, :]
+    argmax_same = bool((b_last.argmax(-1) == a_last.argmax(-1)).all())
+    top1_diff = float((b_last.softmax(-1).max(-1).values
+                       - a_last.softmax(-1).max(-1).values).abs().max())
+    denom = b_last.abs().max().clamp(min=1e-6)
+    rel = float(diff.max() / denom)
     return {
         "max_abs_logit_diff": round(max_abs, 6),
+        "max_rel_logit_diff": round(rel, 6),
         "argmax_equal": argmax_same,
-        "top1_prob_diff": round(top1_diff, 6),
+        "top1_prob_diff": round(top1_diff, 8),
         "tolerance": tol,
-        "passed": argmax_same and max_abs <= tol,
+        "passed": argmax_same and top1_diff <= tol,
     }
 
 
@@ -182,8 +189,8 @@ def main():
     if not args.no_verify:
         after = _logits(model, tok, VERIFY_PROMPT)
         parity = verify_parity(before, after)
-        print(f"      max|Δlogit|={parity['max_abs_logit_diff']}  "
-              f"argmax 相同={parity['argmax_equal']}  "
+        print(f"      max|Δlogit|={parity['max_abs_logit_diff']} (rel {parity['max_rel_logit_diff']})  "
+              f"argmax 相同={parity['argmax_equal']}  top1Δp={parity['top1_prob_diff']}  "
               f"→ {'PASS' if parity['passed'] else 'FAIL'}")
         if not parity["passed"]:
             raise SystemExit("[FATAL] 合并前后不一致，拒绝落盘——请检查 adapter 基座是否匹配")

@@ -14,3 +14,5 @@ wandb/
 data/align_report.json
 .claude/settings.json
 .claude/worktrees
+.claude/tmp*
+data/grpo
