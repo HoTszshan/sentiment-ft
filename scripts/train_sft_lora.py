@@ -66,72 +66,7 @@ from sft_weight_planner import (
 import prompt_template as pt
 import format_canary
 from sft_dataset import SFTConversationDataset, WeightedDataCollator
-
-
-# ============================================================
-# 训练日志落盘 (终端 + 文件双写)
-# ============================================================
-
-class _Tee:
-    """
-    把 stdout/stderr 同时写向原终端与日志文件。
-    覆盖三类输出源: print、transformers.logging (走 StreamHandler→sys.stdout)、tqdm。
-    """
-
-    def __init__(self, stream, file_handle, orig):
-        self._stream = stream
-        self._file = file_handle
-        self._orig = orig
-
-    def write(self, data):
-        try:
-            self._orig.write(data)
-        except Exception:
-            pass
-        try:
-            self._file.write(data.replace("\r", "\n"))  # tqdm 的 \r 换成换行，避免文件里糊成一行
-            self._file.flush()
-        except Exception:
-            pass
-
-    def flush(self):
-        try:
-            self._orig.flush()
-        except Exception:
-            pass
-        try:
-            self._file.flush()
-        except Exception:
-            pass
-
-    # tqdm / print(end="") 需要的属性透传
-    @property
-    def encoding(self):
-        return getattr(self._orig, "encoding", "utf-8")
-
-    def isatty(self):
-        try:
-            return self._orig.isatty()
-        except Exception:
-            return False
-
-    def fileno(self):
-        return self._orig.fileno()
-
-
-def _install_log_file(log_file: str):
-    """创建日志目录并把 stdout/stderr 接到 tee 上；返回打开的句柄供收尾关闭。"""
-    import io
-    log_path = Path(log_file)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    # 以追加模式打开，保证同一文件可承载多次探针迭代
-    fh = io.open(log_path, "a", encoding="utf-8", buffering=1)
-    fh.write("\n" + "=" * 74 + "\n")
-    fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 训练任务启动\n")
-    fh.write("=" * 74 + "\n")
-    sys.stdout = _Tee(sys.stdout, fh, sys.stdout)
-    sys.stderr = _Tee(sys.stderr, fh, sys.stderr)
-    return fh, log_path
+from log_tee import attach_log, detach_log
 
 
 def _intercept_custom_flags():
@@ -513,26 +448,28 @@ def _build_training_components(trainer_backend: str = "auto"):
 # ============================================================
 
 def main():
-    # 1. 拦截本项目自定义 flag（在 HfArgumentParser 之前，避免与 TrainingArguments 撞字段）
+    # 拦截本项目自定义 flag（在 HfArgumentParser 之前，避免与 TrainingArguments 撞字段）
     dry_run = "--dry_run" in sys.argv
     if dry_run:
         sys.argv = [a for a in sys.argv if a != "--dry_run"]
     extra = _intercept_custom_flags()
 
-    # 1.5 把「渲染协议」开关落到 prompt_template（训练/推理两侧同源唯一真理源）。
+    # 把「渲染协议」开关落到 prompt_template（训练/推理两侧同源唯一真理源）。
     #     必须在构造 Dataset 之前设置 —— 之后的 render_prompt 全部读这个值。
     _pfx = pt.set_think_prefix(extra["think_prefix"])
     _unfreeze = bool(extra["unfreeze_protocol_tokens"])
     print(f"[PROTO] 前缀预置={'开' if _pfx else '关'}  |  "
           f"协议token解冻={'开' if _unfreeze else '关'}")
 
-    # 2. 尽早装上 tee，保证 dry_run / 训练 / 报错信息都能落盘。
+    # 尽早装上 tee，保证 dry_run / 训练 / 报错信息都能落盘。
     #    DDP 多 rank 会各自执行 main()，只有 rank0 装 tee 写 log_file，
     #    其余 rank 只打终端 —— 否则 N 个进程向同一文件追加会交错重复。
     _is_rank0 = int(os.environ.get("RANK", 0)) == 0
     log_handle, log_path = None, None
     if extra["log_file"] and _is_rank0:
-        log_handle, log_path = _install_log_file(extra["log_file"])
+        log_handle = attach_log(extra["log_file"])
+        if log_handle:
+            log_path = log_handle["log_path"]  # attach_log 内部 abspath 后的真实落盘位置
         print(f"[LOG] 训练日志同时写入: {log_path}")
 
     if dry_run:
@@ -542,8 +479,7 @@ def main():
             if a == "--train_file" and i + 1 < len(sys.argv):
                 train_file = sys.argv[i + 1]
         dry_run_inspect(train_file, n=2)
-        if log_handle:
-            log_handle.close()
+        detach_log(log_handle)
         return
 
     (FieldWeightedTrainer, trainer_backend_name,
@@ -563,34 +499,24 @@ def main():
             sys.argv.pop(i)
             break
 
+    # 0. 配置训练参数（HfArgumentParser 解析；wandb 接入走 lib/wandb_setup.py）
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # 3. wandb 接入：显式控制 report_to，避免默认 "all" 在无 wandb 环境下报错
-    wandb_mod, wandb_ready = None, False
+    # wandb 接入：显式控制 report_to，避免默认 "all" 在无 wandb 环境下报错
+    # 判定 + env 注入统一走 lib/wandb_setup.py（与 train_grpo.py 共用一套口径）
     _rt = training_args.report_to
     # transformers 5.x report_to 默认就是 "none"（4.x 是 "all"）——
     # 不能拿值判断「用户禁用」，得看命令行是否显式传了 --report_to
     _user_gave_report_to = "--report_to" in sys.argv
-    _user_disabled = extra["no_wandb"] or \
-        (_user_gave_report_to and (_rt == "none" or _rt == [] or _rt == [""]))
-    if _user_disabled:
-        training_args.report_to = []
-    else:
-        try:
-            import wandb as _wandb
-            wandb_mod, wandb_ready = _wandb, True
-        except ImportError:
-            print("[WARN] 未安装 wandb，本次跳过在线同步（pip install wandb 后重跑可恢复）")
-            training_args.report_to = []
+    from wandb_setup import setup_wandb
+    wandb_ready = setup_wandb(
+        extra["wandb_project"], extra["wandb_run_name"],
+        no_wandb=extra["no_wandb"],
+        user_report_to=_rt if _user_gave_report_to else None)
     if wandb_ready:
         # 让 Trainer 的 WandbCallback 自己 init/finish：report_to=["wandb"] 即可。
-        # 手动 wandb.init 会和 callback 的 lifecycle 打架（train 指标推不上、双 run），
-        # 自定义 config/run_name 走 env 变量 + 训练后用 wandb.run.config.update 补。
-        os.environ.setdefault("WANDB_PROJECT", extra["wandb_project"])
-        os.environ.setdefault("WANDB_NAME", extra["wandb_run_name"])
-        # 探针不上传权重，只传指标
-        os.environ.setdefault("WANDB_LOG_MODEL", "false")
+        # 手动 wandb.init 会和 callback 的 lifecycle 打架（train 指标推不上、双 run）。
         # 不覆盖用户显式传入的 --report_to；默认 "none" / "all" 一律改成只报 wandb
         if not _user_gave_report_to or _rt == "all" or _rt == ["all"]:
             training_args.report_to = ["wandb"]
@@ -598,6 +524,8 @@ def main():
         training_args.run_name = extra["wandb_run_name"]
         # 80 条小样本只跑几十步，聚合会丢曲线 —— 每步上报
         training_args.logging_steps = 1
+    else:
+        training_args.report_to = []
 
     print("=" * 66)
     print("正在初始化 Qwen3-4B SFT LoRA 训练引擎...")
@@ -613,12 +541,46 @@ def main():
     print(f"wandb      : {'同步至项目 ' + extra['wandb_project'] + ' / run ' + extra['wandb_run_name'] if wandb_ready else '已关闭'}")
     print("=" * 66)
 
+    # 1. 加载训练/验证集（lib/sft_dataset + WeightedDataCollator）：
+    #   外壳走 prompt_template（chat 模板 + parity gate），权重走 sft_weight_planner。
+    # strict_parity=True 是默认行为 —— 模板与推理侧不一致时在构造期就炸，
+    # 而不是训完 33 步、跑完推理才发现输出格式不对。
+    # 注: tokenizer 先于数据集构建 —— Dataset 构造期就要用它做分词与 parity 校验。
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path, trust_remote_code=True, padding_side="right"
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    train_dataset = SFTConversationDataset(
+        data_path=data_args.train_file,
+        tokenizer=tokenizer,
+        max_len=data_args.max_seq_length,
+        strict_parity=extra.get("strict_parity", True),
+    )
+    collator = WeightedDataCollator(tokenizer=tokenizer)
+
+    # ---- 验证集：给了才开 eval；SOP 口径不做早停，靠观察 val_loss 是否反弹 ----
+    eval_dataset = None
+    if data_args.val_file and Path(data_args.val_file).exists():
+        eval_dataset = SFTConversationDataset(
+            data_path=data_args.val_file,
+            tokenizer=tokenizer,
+            max_len=data_args.max_seq_length,
+            strict_parity=extra.get("strict_parity", True),
+        )
+        # transformers 版本差异: 4.41+ 叫 eval_strategy，更早叫 evaluation_strategy
+        if hasattr(training_args, "eval_strategy"):
+            training_args.eval_strategy = "steps"
+        else:
+            training_args.evaluation_strategy = "steps"
+        print(f"[EVAL] 验证集: {data_args.val_file} ({len(eval_dataset)} 条)；"
+              f"eval_loss 走同一套 FIELD_W 加权口径")
+    else:
+        if data_args.val_file:
+            print(f"[WARN] --val_file {data_args.val_file} 不存在，本次不启用 eval")
+
+    # 2. 加载基座模型 (bf16) + gradient checkpointing + LoRA 挂载
     # DDP 下不能用 device_map="auto"（accelerate 禁分布式自动切分）；
     # 多卡时每 rank 独占一张卡，单卡时与 device_map="auto" 等价
     _local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -689,39 +651,8 @@ def main():
             "enable_input_require_grads() 都在 get_peft_model 之前调用。")
     print(f"[OK] 可训练参数 {_n_trainable:,}（LoRA 旁路），梯度入口已验证")
 
-    # 训练/验证集共用 lib/sft_dataset.SFTConversationDataset：
-    #   外壳走 prompt_template（chat 模板 + parity gate），权重走 sft_weight_planner。
-    # strict_parity=True 是默认行为 —— 模板与推理侧不一致时在构造期就炸，
-    # 而不是训完 33 步、跑完推理才发现输出格式不对。
-    train_dataset = SFTConversationDataset(
-        data_path=data_args.train_file,
-        tokenizer=tokenizer,
-        max_len=data_args.max_seq_length,
-        strict_parity=extra.get("strict_parity", True),
-    )
-    collator = WeightedDataCollator(tokenizer=tokenizer)
-
-    # ---- 验证集：给了才开 eval；SOP 口径不做早停，靠观察 val_loss 是否反弹 ----
-    eval_dataset = None
-    if data_args.val_file and Path(data_args.val_file).exists():
-        eval_dataset = SFTConversationDataset(
-            data_path=data_args.val_file,
-            tokenizer=tokenizer,
-            max_len=data_args.max_seq_length,
-            strict_parity=extra.get("strict_parity", True),
-        )
-        # transformers 版本差异: 4.41+ 叫 eval_strategy，更早叫 evaluation_strategy
-        if hasattr(training_args, "eval_strategy"):
-            training_args.eval_strategy = "steps"
-        else:
-            training_args.evaluation_strategy = "steps"
-        print(f"[EVAL] 验证集: {data_args.val_file} ({len(eval_dataset)} 条)；"
-              f"eval_loss 走同一套 FIELD_W 加权口径")
-    else:
-        if data_args.val_file:
-            print(f"[WARN] --val_file {data_args.val_file} 不存在，本次不启用 eval")
-
     # ---- 训练规模预算（把「实际 batch / 优化器步数」直接打出来，避免口径含糊）----
+    # 3. 设置训练参数: 预算换算 + warmup 折算（5.x 无 warmup_ratio 字段，由 --warmup_ratio 手动换算）
     n = len(train_dataset)
     eff_batch = training_args.per_device_train_batch_size * \
         max(int(training_args.gradient_accumulation_steps), 1) * \
@@ -755,6 +686,7 @@ def main():
 
     # 训练规模相关的 wandb config 在 run 建立后统一补（见训练收尾段），此处不重复
 
+    # 4. 创建 Trainer（FieldWeightedTrainer 覆写 compute_loss：前缀/骨架掩码 + 字段加权）
     # 后端相关构造参数：trl.SFTTrainer 需要 processing_class/tokenizer +
     # 跳过它对已 tokenize 数据的二次处理；HF Trainer 不需要。
     _extra_kwargs = _sft_trainer_extra_kwargs(
@@ -785,6 +717,7 @@ def main():
     )
 
     # ---- 格式 canary：有 val 就挂上（实现在 lib/format_canary.py）----
+    # 4.5 训练中监控: canary 金丝雀（类比 GRPO 侧的 eval reward 熔断）
     # 基座/tokenizer 直接用训练侧的，不再额外指定；协议 token 由 tokenizer 解析。
     if eval_dataset is not None and extra["canary_every"] > 0:
         try:
@@ -805,6 +738,7 @@ def main():
             print(f"[WARN] canary 挂载失败(不影响训练): {e}")
 
     print(f">>> 启动训练 (样本 {len(train_dataset)} 条, Epochs={training_args.num_train_epochs}) <<<")
+    # 5. 开始训练；训后复测 val 留过拟合证据
     t_start = time.time()
     try:
         train_result = trainer.train()
@@ -825,6 +759,7 @@ def main():
         except Exception as e:
             print(f"[WARN] 训练后 eval 失败: {e}")
 
+    # 6. 保存模型与训练血缘: 模型/tokenizer 落盘 + 指标写 train_metrics.json + wandb 收尾
     trainer.save_model(training_args.output_dir)
     tokenizer.save_pretrained(training_args.output_dir)
 
@@ -874,8 +809,7 @@ def main():
         except Exception as e:
             print(f"[WARN] wandb 收尾同步失败: {e}")
 
-    if log_handle:
-        log_handle.close()
+    detach_log(log_handle)
 
 
 if __name__ == "__main__":

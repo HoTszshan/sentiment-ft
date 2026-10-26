@@ -23,15 +23,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
 from grpo_common import (  # noqa: E402
-    GrpoHyper, bucket_label, build_dataset_rows, flatten_gold, group_totals,
-    k_of, rebuild_gold, score_one, summarize_buckets, assert_zam_equivalence,
+    GrpoHyper, bucket_label, group_totals,
+    k_of, score_one, summarize_buckets, assert_zam_equivalence,
     budget_note, validate_generation_shape,
     should_fuse,
+)
+from grpo_dataset import (  # noqa: E402
+    build_dataset_rows, flatten_gold, rebuild_gold,
 )
 from grpo_probe_core import (  # noqa: E402
     extract_completion_text, oracle_sampler, run_probe, score_group,
 )
 import train_grpo as tg  # noqa: E402
+import grpo_eval_fuse as gef  # noqa: E402
 
 
 # ---------------------------------------------------------------
@@ -290,131 +294,109 @@ class TestRunProbe(unittest.TestCase):
 
 
 # ============================================================
-# 4. train_grpo · flag 拦截 / reward 对齐 / 版本兼容
+# 4. train_grpo · 简化 CLI / reward 按 completion 对齐
 # ============================================================
 
-class TestFlagInterception(unittest.TestCase):
-    def test_value_flags(self):
-        opts, rest = tg.intercept_custom_flags(
-            ["--data", "a.jsonl", "--log_file", "x.log", "--dry_run"])
-        self.assertEqual(opts["data"], "a.jsonl")
-        self.assertEqual(opts["log_file"], "x.log")
-        self.assertEqual(rest, ["--dry_run"])
+class TestTrainGrpoEntry(unittest.TestCase):
+    def test_prompt_length_is_raised_without_truncation(self):
+        self.assertEqual(tg.resolve_prompt_limit(1000, 500), 1058)
 
-    def test_bool_flag(self):
-        opts, rest = tg.intercept_custom_flags(["--no_wandb", "--limit", "5"])
-        self.assertTrue(opts["no_wandb"])
-        self.assertEqual(rest, ["--limit", "5"])
-        self.assertFalse(tg.intercept_custom_flags([])[0]["no_wandb"])
+    def test_prompt_over_hard_cap_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "4096"):
+            tg.resolve_prompt_limit(4097, 2048)
 
-    def test_missing_value_raises(self):
-        with self.assertRaises(SystemExit):
-            tg.intercept_custom_flags(["--data"])
+    def test_prompt_within_configured_limit_is_unchanged(self):
+        self.assertEqual(tg.resolve_prompt_limit(1000, 2048), 2048)
 
-    def test_wandb_run_name_auto_timestamp(self):
-        opts = tg.intercept_custom_flags([])[0]
-        self.assertTrue(opts["wandb_run_name"].startswith("grpo_"))
+    def test_parser_accepts_launcher_flags(self):
+        args = tg.build_parser().parse_args([
+            "--data", "a.jsonl", "--log_file", "x.log", "--dry_run", "--no_wandb"])
+        self.assertEqual(args.data, "a.jsonl")
+        self.assertEqual(args.log_file, "x.log")
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.no_wandb)
 
+    def test_eval_options_are_explicitly_supported(self):
+        args = tg.build_parser().parse_args([
+            "--eval_file", "eval.jsonl", "--eval_steps", "2",
+            "--fuse_threshold", "0.02", "--fuse_hard"])
+        self.assertEqual(args.eval_file, "eval.jsonl")
+        self.assertEqual(args.eval_steps, 2)
+        self.assertEqual(args.fuse_threshold, 0.02)
+        self.assertTrue(args.fuse_hard)
 
-class TestRewardFnColumnLayouts(unittest.TestCase):
-    """TRL 各版本对 reward 列的对齐方式不一致，三种布局必须算出同一个 gold。"""
-
-    def test_pick_layouts(self):
-        g = 4
-        # (a) 逐 completion 对齐
-        self.assertEqual(tg._pick(["a", "b", "c", "d"], 2, g), "c")
-        # (b) 逐 prompt 对齐 (列长 = n//G → 取第 i//G 题)
-        self.assertEqual(tg._pick(["p0", "p1", "p2"], 5, g), "p1")   # 5//4 = 1
-        self.assertEqual(tg._pick(["p0", "p1"], 6, g), "p1")         # 6//4 = 1
-        # (c) 标量
-        self.assertEqual(tg._pick("scalar", 3, g), "scalar")
-        # (d) 索引越界兜底
-        self.assertEqual(tg._pick(["only"], 9, g), "only")
-
-    def test_gold_risk_parsing(self):
-        self.assertEqual(tg._gold_risk('["product"]'), ["product"])
-        self.assertEqual(tg._gold_risk("[]"), [])
-        self.assertEqual(tg._gold_risk(""), [])
-        self.assertEqual(tg._gold_risk(["product"]), ["product"])
-        self.assertEqual(tg._gold_risk(None), [])
-
-    def test_reward_fn_per_prompt_layout(self):
-        fn = tg.make_reward_fn(g=4)
-        comps = [GOOD, _mk(sentiment="positive"), GOOD, BROKEN]
-        out = fn(completions=comps,
-                 input_text=[INPUT_TEXT] * 4,
-                 gold_sentiment=["negative"] * 4,
-                 gold_relevance=["core"] * 4,
-                 gold_hard_case_type=["irony"] * 4,
-                 gold_risk_json=['["product", "marketing"]'] * 4,
-                 gold_evidence=[GOLD["evidence"]] * 4)
+    def test_per_completion_reward(self):
+        completions = [GOOD, _mk(sentiment="positive"), GOOD, BROKEN]
+        out = tg.make_reward_fn(g=4)(
+            completions=completions,
+            input_text=[INPUT_TEXT] * 4,
+            gold_sentiment=["negative"] * 4,
+            gold_relevance=["core"] * 4,
+            gold_hard_case_type=["irony"] * 4,
+            gold_risk_json=['["product", "marketing"]'] * 4,
+            gold_evidence=[GOLD["evidence"]] * 4)
         self.assertEqual(len(out), 4)
-        self.assertTrue(all(-2.5 <= v <= 2.0 for v in out))
-        self.assertEqual(sum(1 for v in out if v > 0), 2)
+        self.assertEqual(sum(v > 0 for v in out), 2)
 
-    def test_reward_fn_completions_as_dicts(self):
-        fn = tg.make_reward_fn(g=1)
-        out = fn(completions=[{"content": GOOD}],
-                 input_text=[INPUT_TEXT],
-                 gold_sentiment=["negative"], gold_relevance=["core"],
-                 gold_hard_case_type=["irony"],
-                 gold_risk_json=['["product", "marketing"]'],
-                 gold_evidence=[GOLD["evidence"]])
+    def test_mismatched_gold_column_raises(self):
+        with self.assertRaisesRegex(ValueError, "gold_sentiment"):
+            tg.make_reward_fn(g=4)(
+                completions=[GOOD] * 8,
+                gold_sentiment=["negative", "positive"],
+                gold_relevance=["core"] * 8,
+                gold_hard_case_type=["irony"] * 8,
+                gold_risk_json=['["product", "marketing"]'] * 8,
+                gold_evidence=[GOLD["evidence"]] * 8,
+                input_text=[INPUT_TEXT] * 8)
+
+    def test_reward_accepts_completion_dict(self):
+        out = tg.make_reward_fn(g=1)(
+            completions=[{"content": GOOD}], input_text=[INPUT_TEXT],
+            gold_sentiment=["negative"], gold_relevance=["core"],
+            gold_hard_case_type=["irony"],
+            gold_risk_json=['["product", "marketing"]'],
+            gold_evidence=[GOLD["evidence"]])
         self.assertEqual(out, [2.0])
 
+    def test_wandb_off(self):
+        args = tg.build_parser().parse_args(["--no_wandb"])
+        self.assertFalse(tg.wandb_enabled(args))
 
-class TestCompatHelpers(unittest.TestCase):
-    def test_check_versions_no_strict(self):
-        info = tg.check_versions(strict=False)
-        self.assertIn("trl", info)
-        self.assertIn("transformers", info)
-
-    def test_is_main_process(self):
-        self.assertTrue(tg.is_main_process())
-
-    def test_decide_wandb_off(self):
-        args = type("A", (), {"report_to": "wandb"})()
-        self.assertFalse(tg.decide_wandb(args, {"no_wandb": True}))
-        self.assertFalse(tg.decide_wandb(type("A", (), {"report_to": "none"})(), {}))
-
-    def test_build_trainer_renames_processor_arg(self):
-        class _Old:                      # 旧版：只认 tokenizer=，多给就 TypeError
-            def __init__(self, tokenizer=None):
-                self.tokenizer = tokenizer
-
-        class _New:
-            def __init__(self, processing_class=None, **kw):
-                self.processing_class = processing_class
-
-        t = tg.build_trainer(_Old, processing_class="tok")
-        self.assertEqual(t.tokenizer, "tok")
-        t2 = tg.build_trainer(_New, processing_class="tok")
-        self.assertEqual(t2.processing_class, "tok")
-
-    def test_build_trainer_propagates_unrelated_typeerror(self):
-        class _Bad:
-            def __init__(self, **kw):
-                raise TypeError("其他字段不认")
-
-        with self.assertRaises(TypeError):
-            tg.build_trainer(_Bad, processing_class="tok")
-
-    def test_dry_run_inspect_runs(self):
-        """干跑体检必须能在没有 torch 的机器上跑通 (关键路径自检)。"""
+    def test_dry_run_reports_optional_eval_dataset(self):
         import tempfile
-        from grpo_common import attach_log, detach_log
+        from unittest.mock import patch
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
-                                         encoding="utf-8") as f:
-            f.write(json.dumps({"prompt": PROMPT, "gold": GOLD},
-                               ensure_ascii=False) + "\n")
-            path = f.name
+                                         encoding="utf-8") as stream:
+            stream.write(json.dumps({"prompt": PROMPT, "gold": GOLD},
+                                    ensure_ascii=False) + "\n")
+            path = stream.name
         try:
-            h = GrpoHyper()
-            tg.dry_run_inspect(path, h)          # 不应抛异常
-            self.assertGreater(len(tg.load_records(path)), 0)
+            with patch.object(sys, "argv", ["train_grpo.py", "--data", path,
+                                             "--eval_file", path, "--dry_run", "--no_wandb"]):
+                from contextlib import redirect_stdout
+                from io import StringIO
+                output = StringIO()
+                with redirect_stdout(output):
+                    tg.main()
+            self.assertIn("eval 基线集", output.getvalue())
+            self.assertIn("熔断 callback 将在真实训练时注册", output.getvalue())
         finally:
             os.unlink(path)
 
+    def test_dry_run_uses_no_training_dependencies(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
+                                         encoding="utf-8") as stream:
+            stream.write(json.dumps({"prompt": PROMPT, "gold": GOLD},
+                                    ensure_ascii=False) + "\n")
+            path = stream.name
+        try:
+            with patch.object(sys, "argv", ["train_grpo.py", "--data", path,
+                                             "--dry_run", "--no_wandb"]):
+                tg.main()
+        finally:
+            os.unlink(path)
 
 class TestScoreOneIsSingleSource(unittest.TestCase):
     def test_score_one_matches_compute_reward(self):
@@ -423,10 +405,6 @@ class TestScoreOneIsSingleSource(unittest.TestCase):
         b = compute_reward(GOOD, INPUT_TEXT, GOLD)
         self.assertEqual(a, b)
         self.assertEqual(a["total"], 2.0)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TestShouldFuse(unittest.TestCase):
@@ -451,3 +429,105 @@ class TestShouldFuse(unittest.TestCase):
     def test_exactly_threshold_does_not_fuse(self):
         self.assertFalse(should_fuse(1.0, 0.98))               # 恰 2%：严格大于才熔断
         self.assertTrue(should_fuse(1.0, 0.979))               # 2.1% 熔断
+
+
+# ============================================================
+# 5. 回归：真实训练路径的启动期崩溃（dry_run 看不出来的那类）
+# ============================================================
+
+class _FakeTrainerState:
+    """模拟 HF 递进 on_evaluate 的 TrainerState：**不可下标**。
+
+    熔断 callback 的闭包状态若与 on_evaluate 形参同名，第一次 `state["baseline"]`
+    就会抛 TypeError —— 本类专门把这种遮蔽钉死。
+    """
+
+    def __getitem__(self, key):
+        raise TypeError(f"TrainerState 不可下标（疑似闭包状态被形参遮蔽）: {key}")
+
+
+class TestFuseCallbackBuildAndFuse(unittest.TestCase):
+    """独立 eval 熔断模块的可选 callback 单测，不属于 train_grpo 主链路。"""
+
+    def setUp(self):
+        import types
+        self._orig_modules = {k: sys.modules.get(k) for k in ("transformers",)}
+        fake = types.ModuleType("transformers")
+
+        class _CB:                       # 只提供本用例用到的基类
+            pass
+
+        fake.TrainerCallback = _CB
+        sys.modules["transformers"] = fake
+        self._orig_eval = gef._eval_reward_mean
+        self._ctrl = type("C", (), {"should_training_stop": False})()
+
+    def tearDown(self):
+        gef._eval_reward_mean = self._orig_eval
+        for k, v in self._orig_modules.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    def _build(self, fuse_hard: bool, seq):
+        it = iter(seq)
+        calls = []
+
+        def eval_mean(tr, rf, g):
+            calls.append(True)
+            value = next(it)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        gef._eval_reward_mean = eval_mean
+        cb = gef.build_fuse_callback(fuse_threshold=0.02, fuse_hard=fuse_hard,
+                                    reward_fn=object(), g=4)
+        trainer = object()
+        cb._attach(trainer)
+        cb.initialize_baseline(trainer)
+        self.assertEqual(len(calls), 1, "训练前 baseline 应只生成一次")
+        return cb
+
+    def test_callback_instantiates_and_sets_pretrain_baseline(self):
+        cb = self._build(fuse_hard=True, seq=[1.0, 1.0])
+        self.assertTrue(callable(cb.on_evaluate))
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self.assertFalse(self._ctrl.should_training_stop)
+
+    def test_first_training_eval_compares_against_pretrain_baseline(self):
+        cb = self._build(fuse_hard=True, seq=[1.0, 0.90])
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self.assertTrue(self._ctrl.should_training_stop)
+
+        cb = self._build(fuse_hard=True, seq=[1.0, 0.90])       # 跌 10% > 2%
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self.assertTrue(self._ctrl.should_training_stop)
+
+    def test_soft_fuse_only_warns(self):
+        cb = self._build(fuse_hard=False, seq=[1.0, 0.90])
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self.assertFalse(self._ctrl.should_training_stop)
+
+    def test_drop_within_threshold_keeps_training(self):
+        cb = self._build(fuse_hard=True, seq=[1.0, 0.995])      # 跌 0.5%
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self.assertFalse(self._ctrl.should_training_stop)
+
+    def test_no_trainer_attached_is_noop(self):
+        gef._eval_reward_mean = lambda tr, rf, g: 0.0
+        cb = gef.build_fuse_callback(fuse_threshold=0.02, fuse_hard=True,
+                                    reward_fn=object(), g=4)
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)   # 未 _attach
+        self.assertFalse(self._ctrl.should_training_stop)
+
+    def test_eval_error_does_not_crash_training(self):
+        cb = self._build(fuse_hard=True, seq=[1.0, RuntimeError("generate 炸了")])
+        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)   # 后续 eval 异常只 WARN
+        self.assertFalse(self._ctrl.should_training_stop)
+
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

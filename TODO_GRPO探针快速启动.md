@@ -50,65 +50,81 @@
 
 - [ ] **2.1** 数据在位确认：
   ```bash
-  wc -l /root/autodl-tmp/data/grpo_prompts_probe.jsonl    # 51 条
+  wc -l /root/autodl-tmp/data/grpo_prompts_probe.jsonl    # 当前文件 50 条
   ```
-- [ ] **2.2** 干跑体检（数据契约 + 预算表 + ZAM 自检，零 GPU）：
+- [ ] **2.2** 干跑体检（数据契约 + 预算 + 优势口径自检，零 GPU）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl \
-      --eval_file /root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl --dry_run
+      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl --dry_run --no_wandb
   ```
   逐项核对：
-  - `训练规模预算` 表 11 行每个数可复算（8 题/步 × G=4 = 32 轨迹/步、51 题 → 7 步）；
-  - `input_text 反解失败: 0 条 ✅`（不为 0 = prompt 格式坏了，打分会全池短路，先修数据）；
-  - `ZAM 自检 PASS`；
-  - `eval 基线集体检: … (8 条)`（`--eval_file` 给了才打印这一行）。
-- [ ] **2.3** 造对齐税迷你基线集（8 条，从 51 条里按极性×难例分散抽；正式 3,000 条阶段换 k=4 封存集）：
+  - 数据行数为 **50 条**；每步 8 题 × G=4 = 32 轨迹/步；50 题按默认 1 epoch 预算为 **7 步**；
+  - `input_text 为空: 0 条`；
+  - `优势口径自检通过`；
+  - `[DRY RUN] 未加载模型/TRL`。
+- [ ] **2.3** 生成 8 条 eval 小基线集（只用于熔断功能链路冒烟；与训练集同源，**不代表独立泛化集或真实“对齐税”评估**）：
   ```bash
+  mkdir -p /root/autodl-tmp/data/grpo
   python3 - <<'PY'
   import json
-  rows=[json.loads(l) for l in open("/root/autodl-tmp/data/grpo_prompts_probe.jsonl",encoding="utf-8") if l.strip()]
+  source = "/root/autodl-tmp/data/grpo_prompts_probe.jsonl"
+  target = "/root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl"
+  rows = [json.loads(line) for line in open(source, encoding="utf-8") if line.strip()]
   picked, seen = [], set()
-  for r in rows:
-      key=(r["gold"]["sentiment"], r["gold"]["hard_case_type"])
-      if key not in seen: seen.add(key); picked.append(r)
-      if len(picked)>=8: break
-  with open("/root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl","w",encoding="utf-8") as f:
-      f.writelines(json.dumps(r,ensure_ascii=False)+"\n" for r in picked)
-  print("eval 基线集:", len(picked), "条")
+  for row in rows:
+      key = (row["gold"]["sentiment"], row["gold"]["hard_case_type"])
+      if key not in seen:
+          seen.add(key)
+          picked.append(row)
+      if len(picked) == 8:
+          break
+  with open(target, "w", encoding="utf-8") as stream:
+      stream.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in picked)
+  print("eval 基线集:", len(picked), "条 ->", target)
   PY
   ```
+  若样本不足 8 条，记录实际数量，不补造样本。
+
 
 ---
 
-## Step 3 · GRPO 探针训练（先冒烟后正式）
+## Step 3 · GRPO 探针训练（先冒烟，再长跑验证熔断）
 
-- [ ] **3.1** 冒烟（前台，~3 步，验证「能采样、能打分、能更新」三条腿）：
+- [ ] **3.1** 冒烟（前台，3 步，只验证「能采样、能打分、能更新」）：
   ```bash
   python3 scripts/train_grpo.py \
       --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl \
       --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
       --output_dir /root/autodl-tmp/output/grpo_smoke \
-      --eval_file /root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl \
-      --limit 8 --max_steps 3 --save_steps 2 \
+      --limit 8 --max_steps 3 --save_steps 2 --no_wandb \
       --log_file logs/grpo_smoke.log
   ```
-  冒烟验收 4 条：
-  - 启动横幅：`起点模型 … (已合并 SFT adapter · r=16 α=32 …)`；
-  - `[EVAL] baseline reward 均值 = …` 出现（eval 链路通）；
-  - 训练步里 reward 数值在 `[−2.5, +2.0]` 内、且**不全等于 −2.5**（全 −2.5 = 全池短路，回到 Step 2 查数据）；
-  - `/root/autodl-tmp/output/grpo_smoke/` 有 checkpoint（save_steps=2 → step2 一份）。
-- [ ] **3.2** 正式探针（后台，51 题 × 1 epoch = 7 步）：
+  验收：训练能启动、reward 在合法值域、模型/checkpoint 可保存。**此步不验证 eval 熔断**，因为只有 3 步且基线与训练池同源。
+- [ ] **3.2** 长跑探针（专门验证周期 eval 与熔断链路；50 题 × 4 epochs = 28 步）：
+  ```bash
+  python3 scripts/train_grpo.py \
+      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl \
+      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
+      --output_dir /root/autodl-tmp/output/grpo_fuse_smoke \
+      --eval_file /root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl \
+      --eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 \
+      --save_steps 2 --no_wandb --log_file logs/grpo_fuse_smoke.log
+  ```
+  验收：出现训练前 `[EVAL] pre-train baseline reward 均值`；之后每 2 步出现 `[EVAL]` 或 `[FUSE]`；正常下降只告警，只有加 `--fuse_hard` 才设置训练停止。若想验证硬刹车，可另跑一次 `--fuse_hard --fuse_threshold 0`（零阈值仅用于功能测试，非推荐训练阈值）。
+  > 这 8 条从同一个 50 条探针池抽出，会和训练集重叠。它只用于验证“评估→比较→告警/停止”功能，不是泛化评估；报告中要注明此限制。更多 epochs 是为了让功能有机会被触发，不代表正式训练轮数建议。
+
+  > **熔断阈值的两个已知坑（探针阶段把 `[FUSE]` 当功能信号，别当真实退化）**：
+  > 1. **`--fuse_threshold 0.02` 是相对跌幅**，仅当 baseline 为正时生效；**baseline ≤ 0 时 `should_fuse` 退化为绝对差判定**（跌超 0.02 分即触发；恰等于门槛因 1e-9 容差不触发）。在 T=0.7 单次采样下，eval reward 均值的噪声量级（粗估 >0.1）远大于 0.02，这个绝对差分支会频繁误报——探针阶段看到 `[FUSE]` 先核实是「真跌」还是「采样噪声跨过 0.02 门槛」。
+  > 2. **采样噪声的根因**：`grpo_eval_fuse._eval_reward_mean` 用 `do_sample=True + temperature=0.7` 逐条采样打分，同一样本每次得分都不同。要压低噪声，正式阶段应改 greedy（T=0）+ 更大基线集，否则 2% 相对阈值也会被噪声淹没。
+- [ ] **3.3** 正式探针训练（按当前研究设计的 1 epoch，不带熔断）：
   ```bash
   DATA=/root/autodl-tmp/data/grpo_prompts_probe.jsonl \
   MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
   OUTPUT_DIR=/root/autodl-tmp/output/grpo_lora \
-  EVAL_FILE=/root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl \
   ./scripts/run_grpo_train.sh
-  # 看进度: tail -f logs/grpo_train_*.log    停: kill $(cat train_grpo_pid.txt)
   ```
-  产物：`/root/autodl-tmp/output/grpo_lora/`（adapter + `grpo_metrics.json`）+ `logs/grpo_train_*.log`。
-- [ ] **3.3** 收尾核对 `/root/autodl-tmp/output/grpo_lora/grpo_metrics.json`：超参快照（G/T/lr/β/batch）与 Step 2.2 预算表逐项一致 → 回填 Step 5 表 A。
+  产物：`grpo_lora/`（adapter + `grpo_metrics.json`）+ 训练日志。
+- [ ] **3.4** 使用启动脚本启用熔断时，设置 `EVAL_FILE`；`FUSE_HARD=1` 才执行硬停止。训练入口直跑则显式传 `--eval_file`、`--eval_steps`、`--fuse_threshold`，需要硬停止再加 `--fuse_hard`。
 
 ---
 
@@ -125,7 +141,7 @@
   > 严格说策略起点应带 GRPO adapter（`--adapter /root/autodl-tmp/output/grpo_lora`）——本步先用合并模型跑 k 分布看 SFT 端的「摇摆度」，GRPO 训完再跑一次对比 k 分布迁移（两份 kstats 都留档）。
 - [ ] **4.2** 读 k 直方图（脚本自动打印）：
   - **健康信号**：k=1~3 占比显著非零（有梯度可学）；k=0 与 k=4 两头都有（说明筛选有意义）。
-  - **坏信号与处置**：全 k=4 → SFT 已收敛到位，GRPO 无题可训（探针 51 条上属正常，正式池要靠更难的题）；全 k=0 → 打分或数据坏了，回 Step 2 查。
+  - **坏信号与处置**：全 k=4 → SFT 已收敛到位，GRPO 无题可训（当前探针 50 条上属可能结果，正式池要靠更难的题）；全 k=0 → 打分或数据坏了，回 Step 2 查。
 - [ ] **4.3** 产物留档（把两个文件下载回本机 `tests/output/grpo/` 归档）：`grpo_probe_kstats.json`（k 直方图 + 训练池规模）+ `grpo_probe_kstats.rows.jsonl`（逐题明细）→ 回填 Step 5 表 B。
 
 ---
@@ -139,7 +155,9 @@
 | A0 | merge parity（argmax 一致 / max\|Δlogit\|） | `merge_manifest.json` |
 | A1 | reward 均值走势（训练侧） | wandb 或日志逐 step |
 | A2 | 门禁短路占比（−2.5 收场的轨迹比例） | 日志 reward 分布 |
-| A3 | eval 基线集 reward 均值（baseline → 各次 eval） | `[EVAL]` / `[FUSE]` 行 |
+| A3 | eval 基线集 reward 均值（训练前 baseline → 各次 eval；8 条同源探针集仅链路冒烟） | `[EVAL] pre-train baseline` / `[EVAL]` / `[FUSE]` 行；注明与训练集重叠 |
+
+
 | A4 | 组内 std 是否非零（有无整组清零） | 日志 |
 | A5 | 实际步数 / 耗时 / 显存峰值 | `grpo_metrics.json` + `nvidia-smi` |
 
@@ -165,8 +183,9 @@
 ### D. 防串号纪律（回填时自查）
 
 - **1066 的数字一个不进**（37%→95%、G=7、8192）；奖励区间写死 `[−2.5, +2.0]` 不许出现中间态比例；
-- reward 均值必须带「基线集 8 条」分母口径；正式换 k=4 封存集后**两批数字分开记，不合并**；
+- **eval 冒烟指标注明基线只有 8 条且与训练池同源**；该结果只证明熔断流程能跑，不能当作独立泛化/对齐税结论；
 - k 分布是「合并 SFT 模型」口径，与训完 GRPO 后的第二次 rollout 分开记。
+
 
 ---
 
@@ -180,6 +199,6 @@
 
 **留给正式 3,000 条阶段（不在本清单）**：
 
-- eval 基线集换成真 k=4 封存集；`--fuse_hard` 才启用硬终止；
+- eval 基线集换成独立留出集（若目标是测通用能力退化，应选通用指令集）；阈值需结合基线集规模与波动重新校准；**同时复审 `should_fuse` 的绝对差分支**（baseline≤0 时 0.02 门槛在采样噪声下会误报，见 Step 3.2 的坑位说明）与 `do_sample=True` 的解码噪声，必要时改 greedy 解码；
 - `eval_four_tier.py` T4 档跑四档对照归因；
 - 双卡拓扑 + vLLM 采样（`run_grpo_train.sh` 已支持，GPU 数 ≥2 自动开）。

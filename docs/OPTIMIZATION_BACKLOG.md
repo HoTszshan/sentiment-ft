@@ -64,6 +64,21 @@
   而金标 output 直接是 JSON，造出「开了口却不闭合」的畸形监督。两者不可同时开。
 - **触发条件**：正式轮。
 
+### R · r_accuracy 的 risk/hard_case 严格集相等疑过严——待探针实测后决策
+
+- **现状**：`reward_fns.r_accuracy` 中 `risk_ok = (g_rk == p_rk)` 是 set 严格相等，多打/少打一类 = 全题「普通判错 -1.0」+ `accuracy_pass=False`（连锁：r_length 置 0、不进 k）。hard_case 同理直接 -1.0。
+- **质疑依据**：打标一致性数据（`output/eval/kappa_v22/`）——仲裁稿上 risk κ 仅 0.511~0.769、hard_case 0.693~0.848，**裁判自身意见分歧大，却按零容忍罚模型**，训练信号混入裁判口味噪声；GRPO 组内常只差 risk 一项，噪声直接决定优势方向。
+- **候选改法（未实施）**：risk 改 Jaccard 部分命中——命中过半 (≥0.5) 时从「-1.0 普通判错」降为「R_CORRECT_FULL 上扣 -0.5 档」，**accuracy_pass 门票语义不动**（k/r_length 不受污染）；结构性错误（partial<0.5 / 空表错打 / 金标非空全漏）维持 -1.0。sentiment 不动（κ 0.93+）。hard_case 观察后再定（有 7 类裁决链兜底）。
+- **⚠️ 契约改动流程**：须先落真理源（`SFT负面精判_MVP设计架构.md` + 数据手册 §五）再改代码，`assert_contract_invariants` 单调链同步加档；-0.5 档位值与 0.5 阈值为设计值，待拍板。
+- **决策实验（AutoDL 上做）**：跑 50 条探针 → `summarize_buckets` 看 risk/hard_case 难例在 keep 桶的分布。risk 难例未被系统性 drop → 现状可容忍，推迟到正式 3000 条；被误杀 → 按候选改法先改文档再动代码。
+
+### P · 推理侧加速（探针 / eval 熔断）——默认不实施
+
+- **对象**：`run_probe`（逐条逐次生成，50×4≈200 条）与 `_eval_reward_mean`（训练内逐条 batch=1，每次 eval 全量重跑）。
+- **方向（按性价比序）**：① eval 降频/固定子集（最便宜，熔断 2% 阈值本就容忍噪声）；② `_eval_reward_mean` 批量生成（decoder-only 须 left padding，注意 truncation 联动）；③ 换 vLLM sampler（`run_probe` 的 sampler 是注入契约，写 `VllmSampler` 主循环零改动，3000 条正式筛题时再写）。
+- **决策口径**：探针是一次性诊断，几分钟可接受；eval 是否拖慢训练**无实测数据**——先跑通真实训练，拿「eval 占总时长」实测：**<10% 永久不做，>30% 按 ①→② 动手**，每次只改一处并单测对拍。
+- **不提前做的理由**：两段代码的价值在「简单可信」，加速引入的 padding 方向/采样语义/新依赖出错面，排查成本远超省下的分钟级时间。
+
 ---
 
 ## 三、参考

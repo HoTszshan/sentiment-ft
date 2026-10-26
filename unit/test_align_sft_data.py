@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
-import sft_template                    # noqa: E402
+import task_template                    # noqa: E402
 import schema_contract as sc           # noqa: E402
 from corpus_schema import INDUSTRY_SCHEMAS, schema_to_inline  # noqa: E402
 import align_sft_data as aligner       # noqa: E402
@@ -69,7 +69,7 @@ class TestTemplate(unittest.TestCase):
 
     def test_cot_protocol_always_described(self):
         """新模板固定含两步协议（SFT 数据均带 CoT），且枚举自契约插值。"""
-        instr = sft_template.build_instruction("finance_insurance")
+        instr = task_template.build_instruction("finance_insurance")
         self.assertIn("<think>", instr)
         self.assertIn("Step 1/Step 2/Step 3", instr)
         self.assertIn("严禁使用 ```json", instr)
@@ -82,32 +82,32 @@ class TestTemplate(unittest.TestCase):
 
     def test_priority_order_written(self):
         """hard_case 多命中时的降序优先级必须写进协议。"""
-        instr = sft_template.build_instruction("automotive")
+        instr = task_template.build_instruction("automotive")
         self.assertIn("irony > metaphor > multi_subject > comparative > "
                       "counterfactual > fact_implicit > explicit", instr)
 
     def test_evidence_rule_no_empty_string(self):
         """evidence 必须 4~80 字且禁止空串（契约 EVIDENCE_MIN/MAX 插值）。"""
-        instr = sft_template.build_instruction("fmcg")
+        instr = task_template.build_instruction("fmcg")
         self.assertIn(f"长度 {sc.EVIDENCE_MIN_LEN} 到 {sc.EVIDENCE_MAX_LEN} 字", instr)
         self.assertIn("不得填空串", instr)
 
     def test_industry_risk_system_rendered(self):
         """行业风险体系按 `大类en(大类cn): 词表` 渲染。"""
-        instr = sft_template.build_instruction("finance_insurance")
+        instr = task_template.build_instruction("finance_insurance")
         self.assertIn("金融保险(finance_insurance)", instr)
         self.assertIn("- product (产品/质量): 理财暴雷", instr)
 
     def test_instruction_is_subject_invariant(self):
         """同行业不同主体的 instruction 逐字一致（主体在 user 侧）。"""
-        self.assertEqual(sft_template.build_instruction("automotive"),
-                         sft_template.build_instruction("automotive"))
+        self.assertEqual(task_template.build_instruction("automotive"),
+                         task_template.build_instruction("automotive"))
 
     def test_user_input_subject_line(self):
         """user 侧 = 【目标主体】行 + 【输入文本】；subject 正则可反解。"""
         import re
-        ui = sft_template.build_user_input("广发证券", "才一天就亏了3000多。")
-        m = re.search(sft_template.SUBJECT_RE, ui)
+        ui = task_template.build_user_input("广发证券", "才一天就亏了3000多。")
+        m = re.search(task_template.SUBJECT_RE, ui)
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1).strip(), "广发证券")
         self.assertIn("【输入文本】", ui)

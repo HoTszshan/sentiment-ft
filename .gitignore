@@ -13,3 +13,4 @@ wandb/
 .DS_Store
 data/align_report.json
 .claude/settings.json
+.claude/worktrees

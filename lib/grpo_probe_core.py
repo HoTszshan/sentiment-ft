@@ -3,14 +3,18 @@
 """
 GRPO 探针核心 · 纯逻辑 (零 torch/trl 依赖，可独立单测)
 
-职责: 同题 G=4 采样结果 → 四维打分 → k∈{0..4} 分流。
+一句话: 训练前给候选数据「试水」——每道题让模型答 4 次，按答对次数
+筛出适合 GRPO 训练的题（半会不会的才留得下）。
+
+  答对 0 次 → 太难，扔 (全错组无梯度，白烧卡)
+  答对 1~3 次 → 留下进训练池 (有对有错才有训练信号)
+  答对 4 次 → 太简单，扔 (全对组方差为 0)
+
+入口: run_probe(records, sampler) 遍历 jsonl 全池；
+      score_group 批改单题；oracle_sampler 是免模型的联调作弊器。
+
 原为 scripts/run_grpo_probe.py 的一部分，因 train_grpo.py 复用其中的
 completion 形态兼容函数而抽出到 lib/ —— CLI 脚本不再被当成库 import。
-
-k = 同一 prompt 采 G 份，其中「判对 且 evidence 溯源过门禁」的份数。
-  k=0  全错   → RL 无米下锅 (std=0，梯度为 0)，退回 SFT 补课
-  k=1~3       → 训练池，组内有方差、有正负样本可比
-  k=4  全对   → 组内方差恒 0，花 RL 的钱跑了个更贵的 SFT
 
 真理源:
   MVP/notes/舆情负面精判_GRPO数据准备实战手册.md §四 难度分流 (只留 k∈{1,2,3})
@@ -21,7 +25,7 @@ import json
 import os
 import re
 
-from sft_template import SUBJECT_RE
+from task_template import SUBJECT_RE
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
 

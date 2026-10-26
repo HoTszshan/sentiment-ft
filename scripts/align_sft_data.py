@@ -6,7 +6,7 @@
 把标注流水线产出的「原文+meta」jsonl (如 ../output/corpus/synth_300_stageA.dedup.jsonl)
 对齐成 SFT 训练格式 {instruction, input, output, meta}：
 
-  - instruction 由 tests/lib/sft_template.build_instruction 生成（用户定稿模板：
+  - instruction 由 tests/lib/task_template.build_instruction 生成（用户定稿模板：
     角色+任务目标+行业风险体系+输出协议；目标主体与原文在 user 侧）
   - gold JSON 从 meta 纯规则映射：subject=target_subject, risk_categories=risk_keys,
     evidence=evidence_span
@@ -35,7 +35,7 @@ from typing import Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 import schema_contract as sc          # noqa: E402
-import sft_template                   # noqa: E402
+import task_template                   # noqa: E402
 from corpus_schema import INDUSTRY_SCHEMAS, schema_to_inline  # noqa: E402
 
 # 输入长度上限 (防 OOM 长尾，与 mix_sft_dataset --anchor_max_chars 逻辑呼应)
@@ -153,8 +153,8 @@ def main():
             gold = gold_of(row)
             output, has_cot = render_output(row, gold)
             # 主体来源：gold JSON 的 subject（成品行与题面行统一走 gold_of）
-            user_input = sft_template.build_user_input(gold["subject"], row.get("input") or "")
-            instruction = sft_template.build_instruction(row["industry"])
+            user_input = task_template.build_user_input(gold["subject"], row.get("input") or "")
+            instruction = task_template.build_instruction(row["industry"])
             meta = {k: v for k, v in row.items()
                     if k not in ("instruction", "input", "output")}  # 大字段不进 meta（防重复膨胀）
             # 裸原文另存：input 已包 user 侧题面壳，grounding 断言必须用裸原文

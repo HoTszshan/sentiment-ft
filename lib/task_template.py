@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SFT 指令模板 · 唯一真理源
+舆情精判任务指令模板 · SFT / GRPO 共用唯一真理源
 
-训练数据 (align_sft_data.py)、推理探针 (probe_infer.py)、未来评测统一 import 此处，
-保证「训练模板 = 推理模板逐字一致」。
+数据对齐 (align_sft_data.py) 从这里构造 system instruction 和 user 题面；
+GRPO 探针 (build_grpo_probe.py / grpo_probe_core.py) 复用主体行解析约定。
+ChatML 外壳由 prompt_template.py 渲染，不在此处重复拼接。
+保证「SFT 训练题面 = GRPO rollout 题面」在同一协议下构造。
 
 模板结构（用户定稿版，2026-10-23）：
   - system 侧 instruction = 角色 + 任务目标 + 行业风险体系 + 输出规范（含 CoT 两步协议）

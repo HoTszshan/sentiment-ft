@@ -8,6 +8,7 @@ GRPO 四维 Reward 打分器 · 单元测试
     或在 MVP/tests 目录: python3 -m unittest unit.test_reward_fns -v
 """
 
+import math
 import os
 import sys
 import unittest
@@ -227,8 +228,41 @@ class TestGroupAggregation(unittest.TestCase):
         self.assertAlmostEqual(sum(adv), 0.0, places=5)
 
     def test_uniform_group_is_masked(self):
-        # 全对 / 全错: 方差为 0 → 整组优势清零，不放大任何轨迹
+        # 全对 / 全错: 分数相同 → 整组优势清零，不放大任何轨迹
         self.assertEqual(group_advantages([2.0] * 4), [0.0] * 4)
+
+    def test_default_does_not_divide_by_std(self):
+        """默认口径：只减均值。优势直接等于偏离量，保留业务惩罚的绝对尺度。"""
+        adv = group_advantages([2.0, 1.0, -1.0, -2.0])
+        self.assertEqual(adv, [2.0, 1.0, -1.0, -2.0])
+        # 减均值后和必须为 0
+        self.assertAlmostEqual(sum(adv), 0.0, places=6)
+
+    def test_scale_by_std_is_opt_in_only(self):
+        """除 std 仅作对照实验保留；调用方不显式要求就不得生效。"""
+        plain = group_advantages([2.0, 1.0, -1.0, -2.0])
+        scaled = group_advantages([2.0, 1.0, -1.0, -2.0], scale_by_std=True)
+        self.assertNotEqual(plain, scaled)
+        self.assertAlmostEqual(scaled[0], 2.0 / math.sqrt(2.5), places=5)   # std = √2.5
+
+    def test_junk_group_must_not_dominate_real_group(self):
+        """核心口径: 只差一档的垃圾组，优势幅度必须小于真有判别信息的组。
+
+        除 std 的旧口径下这两组是反的（垃圾组 +1.73 > 真信息组 +1.26），
+        等于教模型「学垃圾里最不烂的那条」—— 见 GRPO 手册 §1.2。
+        """
+        junk = group_advantages([-2.5, -2.5, -2.5, -2.0])
+        real = group_advantages([2.0, 1.0, -1.0, -2.0])
+        self.assertLess(max(map(abs, junk)), max(map(abs, real)))
+        self.assertAlmostEqual(max(map(abs, junk)), 0.375, places=6)
+
+    def test_std_division_would_invert_the_ranking(self):
+        """把「为什么不能除 std」钉成可执行断言：文档里的数必须能复现。"""
+        junk_scaled = group_advantages([-2.5, -2.5, -2.5, -2.0], scale_by_std=True)
+        real_scaled = group_advantages([2.0, 1.0, -1.0, -2.0], scale_by_std=True)
+        self.assertAlmostEqual(max(map(abs, junk_scaled)), math.sqrt(3), places=4)   # ≈1.732
+        self.assertAlmostEqual(max(map(abs, real_scaled)), 2.0 / math.sqrt(2.5), places=4)  # ≈1.265
+        self.assertGreater(max(map(abs, junk_scaled)), max(map(abs, real_scaled)))
 
     def test_zero_advantage_masking_on_dead_group(self):
         # 全错组 (整组触顶门禁罚) 强制清零

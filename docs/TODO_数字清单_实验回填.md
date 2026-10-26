@@ -104,7 +104,7 @@
 | per_device batch | 4 × grad_accum 2 → 每步 8 题 × G4 = **32 轨迹/步** | `train_grpo.py:383-384` |
 | Epoch | 1.0；warmup_ratio 0.03；max_grad_norm 1.0 | `train_grpo.py:385-387` |
 | 优化器 | adam β1=0.9 / β2=0.99 / weight_decay=0.01 / cosine | `train_grpo.py:522-527` |
-| advantage | `loss_type="grpo"` = 组内 (r−mean)/std 归一，对齐 `group_advantages` | `train_grpo.py:550` |
+| advantage | **只减组内均值、不除 std**（`scale_rewards="none"`）；`loss_type="grpo"` 只决定 loss 分母，两者独立。推导见 GRPO 手册 §1.2 | `train_grpo.py` 文件头硬约束 3 + `_opt` |
 | 架构 | **无 Critic / 无 RM / 4 条纯 Python 规则 Reward** | `train_grpo.py` 标题 |
 | seed | 42 | `train_grpo.py:393` |
 

@@ -180,6 +180,8 @@ def r_accuracy(completion: str, gold: Dict[str, Any]) -> Tuple[float, Dict[str, 
     detail["relevance_ok"] = (g_rel == p_rel)
 
     # 定档: 漏报 vs 误报 vs 普通判错
+    # 业务不对称: 漏掉 P0 危机 > 多报一条 → -2.0 / -1.0 两档;
+    # ③④ 只算普通判错: 有裁决链兜底的细粒度偏差，不吃漏报/误报级的罚
     if g_sent == "negative" and p_sent != "negative":
         # 真实负面却没判负 = 漏报；gold 命中正式 6 类风险 → 严重危机漏报
         severe = bool(g_rk & CRISIS_RISK_KEYS)
@@ -198,9 +200,9 @@ def r_accuracy(completion: str, gold: Dict[str, Any]) -> Tuple[float, Dict[str, 
         base = R_CORRECT_FULL
         detail["accuracy_pass"] = True
 
-    # relevance 轻判 (契约 §五):
-    #   - 全中: +0.2 已含在 +1.0 封顶内**不外溢** → 判对 +1.0 / 判错 +0.8
-    #   - 判错档: 判对 -1.0 / 判错追加 -0.2 → -1.2
+    # relevance 轻判 (契约 §五): 弱主观字段只做 ±0.2 微调，不参与定档;
+    #   - 全中: 判对 +1.0 / 判错 +0.8 (已含在封顶内不外溢)
+    #   - 判错档: -1.0 / 追加 -0.2 → -1.2
     #   - 危机漏报档 (-2.0) **不叠加** → 防弱主观字段压过危机漏报
     if base == R_MISS_SEVERE:
         score = base
@@ -209,6 +211,7 @@ def r_accuracy(completion: str, gold: Dict[str, Any]) -> Tuple[float, Dict[str, 
     else:
         score = base if detail["relevance_ok"] else round(base - R_RELEVANCE_LIGHT, 4)
 
+    # accuracy_pass = 全字段口径的「判对」门票: k_of 计数、r_length 激活都只认它
     detail["accuracy_pass"] = detail["accuracy_pass"] and detail["relevance_ok"]
     return round(score, 4), detail
 
@@ -265,17 +268,29 @@ def compute_reward(completion: str, input_text: str, gold: Dict[str, Any],
             "detail": {"short_circuit": None, **adetail}}
 
 
-def group_advantages(totals: Sequence[float], eps: float = 1e-8) -> List[float]:
-    """GRPO 组内相对优势: 同题 G 份采样自比高低 (无 Critic)。"""
+def group_advantages(totals: Sequence[float], eps: float = 1e-8,
+                     scale_by_std: bool = False) -> List[float]:
+    """
+    GRPO组内相对优势：同题G份采样自对比，无Critic。
+    默认仅减均值、不除组内std，对齐GRPOConfig(scale_rewards="none")。
+    原因：奖励为固定离散阶梯分，组内分差常很小；除以std会放大噪声，让全错组内最优样本获得过高优势，诱导模型学习错误行为排序。
+    std归一化适用于尺度不稳定的学习型RM；本任务奖励尺度固定，无需二次校准。scale_by_std=True仅用于对照实验。
+    
+    std 过小 (全对 / 全错 / 同分) → 整组优势清零, 两种口径下结果相同。
+    """
     vals = list(totals)
     if not vals:
         return []
     mean = sum(vals) / len(vals)
-    var = sum((v - mean) ** 2 for v in vals) / len(vals)
-    std = math.sqrt(var)
+    centered = [v - mean for v in vals]
+    if not scale_by_std:
+        if all(abs(c) < eps for c in centered):
+            return [0.0] * len(vals)
+        return [round(c, 6) for c in centered]
+    std = math.sqrt(sum(c * c for c in centered) / len(vals))
     if std < eps:  # 全对/全错: 方差为 0 → 整组优势清零
         return [0.0] * len(vals)
-    return [round((v - mean) / std, 6) for v in vals]
+    return [round(c / std, 6) for c in centered]
 
 
 def zero_advantage_masking(totals: Sequence[float]) -> List[float]:

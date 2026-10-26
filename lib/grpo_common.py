@@ -4,11 +4,11 @@
 GRPO 共享层 · 纯 Python (零 torch/trl 依赖，可独立单测)
 
 职责:
-  1. 数据契约: {prompt, gold} → GRPOTrainer 吃的**标量列** (dict 列在不同
-     datasets 版本里行为不一致，展平成标量最稳)
-  2. k 分桶: 同题 G=4 采样 → 数出「判对且溯源过门禁」的轨迹数 k ∈ {0..4}
-  3. 训练预算: G / T / lr / β / 有效 batch / 步数的推导与打印 (手册 1.3 口径)
-  4. 日志双写 (tee)
+  1. k 分桶: 同题 G=4 采样 → 数出「判对且溯源过门禁」的轨迹数 k ∈ {0..4}
+  2. 训练预算: G / T / lr / β / 有效 batch / 步数的推导与打印 (手册 1.3 口径)
+  3. 防御自检与熔断: 优势口径回归闸 (ZAM) / 对齐税熔断 / TRL 形状约束校验
+
+数据契约 (加载/校验/展平 TRL 训练行) 已拆到 grpo_dataset.py —— 本模块不再持有。
 
 真理源:
   MVP/notes/GRPO训练实战手册.md §1.1 LoRA 旁路 / §1.3 超参 / §1.4 闭环 / §1.5 三闸
@@ -24,82 +24,15 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from reward_fns import compute_reward, zero_advantage_masking   # noqa: E402
-
-# ============================================================
-# 常量
-# ============================================================
-
-# gold 的 5 个字段（**没有 subject** —— subject 由 rollout 时从 prompt 回显）
-GOLD_FIELDS = ("sentiment", "relevance", "hard_case_type", "risk_categories", "evidence")
+from reward_fns import (
+    R_GATE_SHORT_CIRCUIT, compute_reward, zero_advantage_masking,
+)  # noqa: E402
 
 # 唯一可留进训练池的 k 桶 (数据手册 §四)
 KEEP_K = (1, 2, 3)
 
-
 # ============================================================
-# 1. 数据契约: gold → 标量列
-# ============================================================
-
-def flatten_gold(gold: Dict[str, Any]) -> Dict[str, Any]:
-    """gold dict → 标量列 (risk_categories 是 list，JSON 序列化成字符串)。"""
-    if not isinstance(gold, dict):
-        raise ValueError(f"gold 必须是 dict，拿到 {type(gold).__name__}")
-    out = {}
-    for f in GOLD_FIELDS:
-        if f not in gold:
-            raise ValueError(f"gold 缺字段 {f}")
-    out["gold_sentiment"] = str(gold["sentiment"])
-    out["gold_relevance"] = str(gold["relevance"])
-    out["gold_hard_case_type"] = str(gold["hard_case_type"])
-    out["gold_risk_json"] = json.dumps(gold["risk_categories"] or [], ensure_ascii=False)
-    out["gold_evidence"] = str(gold["evidence"])
-    return out
-
-
-def rebuild_gold(row: Dict[str, Any]) -> Dict[str, Any]:
-    """标量列 → gold dict (打分时还原)。"""
-    rk = row.get("gold_risk_json", "[]")
-    if isinstance(rk, str):
-        rk = json.loads(rk or "[]")
-    return {
-        "sentiment": row.get("gold_sentiment"),
-        "relevance": row.get("gold_relevance"),
-        "hard_case_type": row.get("gold_hard_case_type"),
-        "risk_categories": list(rk),
-        "evidence": row.get("gold_evidence"),
-    }
-
-
-def build_dataset_rows(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    grpo_prompts_*.jsonl 每行 {prompt, gold, [input_text], [meta]} → Trainer 数据行。
-    额外带 input_text 列: 打分器要拿它做 evidence ⊂ 原文 断言，
-    **不依赖 prompt 列的格式**（TRL 版本间 prompt 传 str 还是 messages 不稳定）。
-
-    原文取值优先级（评估手册缺口 16：训练侧与评测侧原文同源）:
-      ① 数据行自带的 `input_text`（build_grpo_probe 默认落盘，与评测侧同一份原文）
-      ② 反解 prompt 兜底（旧数据 / --two_field 交付的严格两字段版本）
-    """
-    from reward_fns import extract_input_text
-    rows = []
-    for i, rec in enumerate(records):
-        prompt = rec.get("prompt")
-        if not prompt:
-            raise ValueError(f"第 {i} 行缺 prompt")
-        input_text = rec.get("input_text")
-        if not isinstance(input_text, str) or not input_text.strip():
-            input_text = extract_input_text(prompt)
-        rows.append({
-            "prompt": prompt,
-            "input_text": input_text,
-            **flatten_gold(rec["gold"]),
-        })
-    return rows
-
-
-# ============================================================
-# 2. k 分桶
+# 1. k 分桶
 # ============================================================
 
 def group_totals(totals: Sequence[float], g: int) -> List[List[float]]:
@@ -165,7 +98,7 @@ def summarize_buckets(rows: Sequence[Dict[str, Any]], g: int = 4) -> Dict[str, A
 
 
 # ============================================================
-# 3. 训练预算 (手册 §1.3 的每个数都要能算出来源)
+# 2. 训练预算 (手册 §1.3 的每个数都要能算出来源)
 # ============================================================
 
 @dataclass
@@ -235,6 +168,10 @@ def budget_note(h: GrpoHyper) -> str:
             f"65~105 是 JSON 段口径，不是整段")
 
 
+# ============================================================
+# 3. 防御自检与熔断
+# ============================================================
+
 def should_fuse(baseline: Optional[float], current: Optional[float],
                 threshold: float = 0.02) -> bool:
     """
@@ -256,21 +193,42 @@ def should_fuse(baseline: Optional[float], current: Optional[float],
 
 def assert_zam_equivalence() -> bool:
     """
-    Zero-Advantage Masking 与 TRL 组内归一化的自检:
-      我们的实装条件是「整组都触顶门禁罚」→ 4 个分数完全相同 → 方差 0。
-      TRL 的 (r - mean)/std 对同分组天然返回 0（除以 eps），**语义重合**，
-      因此不需要 hack TRL 私有 API 去改 Trainer。
+    启动自检: 优势归一化约定 + Zero-Advantage Masking 的处置语义。
+
+    ⚠️ 边界说清楚: 本函数**不 import TRL**, 因此不是「与 TRL 对拍」, 它也做不到——
+    它断言的是我方口径本身。真正让 TRL 走对口径的是 `GRPOConfig(scale_rewards="none")`
+    那个显式传参；若字段缺失会由 GRPOConfig 构造直接报错，不做静默回退。
+
+    断言三件事:
+      ① 同分组 (全对 / 全错 / 任意同分) → 整组优势清零
+      ② 非同分组 → 不得清零 (否则 R_length 的部分得分区失去意义)
+      ③ 优势必须是**减均值后的原值**, 不是再除以 std 的标准化值;
+         且「只差一档」的垃圾组幅度必须小于真有判别信息的组 —— 这条是口径回归闸。
+
+    失败时抛 AssertionError (不是返回 False), 调用方不判返回值。
     """
-    assert zero_advantage_masking([-2.5] * 4) == [0.0] * 4, "全错组必须清零"
-    assert zero_advantage_masking([1.0] * 4) == [0.0] * 4, "全对组方差 0 → 清零"
-    for v in (0.0, -1.0, 2.0):
+    # ① 同分组清零 (R_GATE_SHORT_CIRCUIT 是最低分, 全错组必然是四条 -2.5)
+    for v in (R_GATE_SHORT_CIRCUIT, 1.0, 0.0, -1.0, 2.0):
         assert zero_advantage_masking([v] * 4) == [0.0] * 4, f"同分组 {v} 必须清零"
+    # ② 非同分组不得清零
     assert zero_advantage_masking([-2.5, -1.0, -2.0, 1.0]) != [0.0] * 4, "非同分组不得清零"
-    # TRL 侧等价: 同分组 mean-center 后全 0
-    grp = [-2.5] * 4
-    mean = sum(grp) / len(grp)
-    assert all(abs(v - mean) < 1e-9 for v in grp)
+
+    # ③-a 口径: 优势 == 减均值原值。若有人把默认改回「除 std」, 这里立刻红。
+    vals = [2.0, 1.0, -1.0, -2.0]
+    mean = sum(vals) / len(vals)
+    expected = [round(v - mean, 6) for v in vals]
+    got = zero_advantage_masking(vals)
+    assert got == expected, (
+        f"优势口径被改动了: 期望减均值原值 {expected}, 实际 {got}。"
+        f"若实际值是被 std 归一化过的, 说明 scale_rewards 退回默认 'group' 了")
+
+    # ③-b 反向不变量: 垃圾组(仅差一档)不得压过真信息组 —— 这正是不除 std 的目的
+    junk = zero_advantage_masking([-2.5, -2.5, -2.5, -2.0])
+    real = zero_advantage_masking(vals)
+    assert max(map(abs, junk)) < max(map(abs, real)), \
+        "垃圾组(仅差一档)的优势幅度必须小于真有判别信息的组"
     return True
+
 
 
 def validate_generation_shape(n_rows: int, num_generations: int,
@@ -287,52 +245,3 @@ def validate_generation_shape(n_rows: int, num_generations: int,
                 f"G={num_generations} 整除 → TRL 会直接抛错。改 per_device 为 "
                 f"{num_generations} 的倍数。")
     return None
-
-
-# ============================================================
-# 4. 日志双写 (与 SFT 轮 --log_file 同语义)
-# ============================================================
-
-class Tee:
-    """stdout/stderr 同时写终端与日志文件。"""
-
-    def __init__(self, *streams):
-        self._streams = [s for s in streams if s is not None]
-
-    def write(self, data):
-        for s in self._streams:
-            try:
-                s.write(data)
-                s.flush()
-            except Exception:
-                pass
-        return len(data)
-
-    def flush(self):
-        for s in self._streams:
-            try:
-                s.flush()
-            except Exception:
-                pass
-
-
-def attach_log(path: Optional[str]) -> Optional[Any]:
-    """启用日志双写，返回原 stdout（供收尾恢复）。"""
-    if not path:
-        return None
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fh = open(path, "a", encoding="utf-8")
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = Tee(old_out, fh)
-    sys.stderr = Tee(old_err, fh)
-    return (old_out, old_err)
-
-
-def detach_log(handle) -> None:
-    if not handle:
-        return
-    sys.stdout, sys.stderr = handle
-    try:
-        sys.stdout.flush()
-    except Exception:
-        pass

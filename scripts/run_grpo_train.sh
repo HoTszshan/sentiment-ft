@@ -12,13 +12,15 @@
 #   MODEL          默认 models/Qwen3-4B-Instruct-SFT (先跑 merge_sft_adapter.py 产出)
 #                  指向原厂基座 = 未挂 SFT 起训，只用于对照实验
 #   OUTPUT_DIR     默认 output/grpo_lora
-#   EVAL_FILE      对齐税基线集 jsonl；给了才开 eval 循环 + 熔断（TODO 5.19）
-#   FUSE_HARD      =1 时熔断真终止训练（默认只告警）
+#   EVAL_FILE      可选 reward 熔断基线集 jsonl；传入才启用 eval callback
+#   EVAL_STEPS     eval 间隔（默认 2 步）
+#   FUSE_THRESHOLD 相对首轮 eval reward 的跌幅阈值（默认 2%）
+#   FUSE_HARD      =1 时熔断停止训练；默认只告警
 #   WANDB_API_KEY  设了就同步 wandb
 #   GRPO_ARGS      透传给 train_grpo.py 的额外参数
 #
 # 拓扑 (TRL 0.14+ colocate vLLM，参考 12S2W10_rlhf/GRPO/run_train_2gpu.sh):
-#   1 卡  → 不启用 vLLM，rollout 走 HF generate（探针 51 题足够）
+#   1 卡  → 不启用 vLLM，rollout 走 HF generate（探针 50 题足够）
 #   2 卡  → 训练进程数 = GPU 数 - 1 = 1，vLLM 独占 cuda:1（use_vllm=auto）
 #   ⚠️ 不要在脚本里重排 CUDA_VISIBLE_DEVICES（torch 初始化后改它不生效）
 # ==============================================================================
@@ -32,7 +34,10 @@ echo "工作目录: $BASE_DIR"
 DATA="${DATA:-data/grpo_prompts_probe.jsonl}"
 MODEL="${MODEL:-models/Qwen3-4B-Instruct-SFT}"
 OUTPUT_DIR="${OUTPUT_DIR:-output/grpo_lora}"
-EVAL_FILE="${EVAL_FILE:-}"            # 对齐税基线集；给了才开 eval 循环（TODO 5.19）
+EVAL_FILE="${EVAL_FILE:-}"
+EVAL_STEPS="${EVAL_STEPS:-5}"
+FUSE_THRESHOLD="${FUSE_THRESHOLD:-0.02}"
+FUSE_HARD="${FUSE_HARD:-0}"
 GRPO_ARGS="${GRPO_ARGS:-}"
 DRY="${DRY:-0}"
 
@@ -68,7 +73,7 @@ fi
 # ---------------------------------------------------------------- 2. 拓扑选择
 N_GPU=0
 if command -v nvidia-smi >/dev/null 2>&1; then
-  N_GPU=$(nvidia-smi -L 2>/dev/null | grep -c '^GPU' || echo 0)
+  N_GPU="$(nvidia-smi -L 2>/dev/null | awk '/^GPU/{count++} END{print count+0}')"
 fi
 log "检测到 GPU 数: $N_GPU"
 
@@ -80,7 +85,7 @@ if [ "$N_GPU" -ge 2 ]; then
 elif [ "$N_GPU" = "1" ]; then
   LAUNCH=(python3)
   VLLM_FLAG=""
-  log "拓扑: 单卡，HF generate 采样 (51 题探针够用；正式 3000 题建议双卡开 vLLM)"
+  log "拓扑: 单卡，HF generate 采样 (探针 50 题够用；正式 3000 题建议双卡开 vLLM)"
 else
   log "未检测到 GPU，仍继续 (train_grpo 会自己报错)"
   LAUNCH=(python3)
@@ -112,26 +117,35 @@ fi
 
 # ---------------------------------------------------------------- 3. 后台启动
 log "日志: $RUN_LOG"
-EVAL_ARGS=""
-if [ -n "$EVAL_FILE" ] && [ -f "$EVAL_FILE" ]; then
-  EVAL_ARGS="--eval_file $EVAL_FILE"
-  log "eval 循环: $EVAL_FILE（对齐税熔断已开；默认仅告警，FUSE_HARD=1 才真终止）"
-else
-  log "eval 循环: 未设 EVAL_FILE → 不开（正式 3000 条阶段接 k=4 基线集）"
-fi
-FUSE_ARGS=""
-if [ "${FUSE_HARD:-0}" = "1" ]; then FUSE_ARGS="--fuse_hard"; fi
-
 CMD=("${LAUNCH[@]}" scripts/train_grpo.py \
   --data "$DATA" \
   --model_name_or_path "$MODEL" \
   --output_dir "$OUTPUT_DIR" \
   --log_file "$RUN_LOG" \
-  $EVAL_ARGS $FUSE_ARGS $VLLM_FLAG $WANDB_ARGS $GRPO_ARGS)
+  $VLLM_FLAG $WANDB_ARGS $GRPO_ARGS)
+if [ -n "$EVAL_FILE" ]; then
+  if [ ! -f "$EVAL_FILE" ]; then
+    log "eval 基线集不存在: $EVAL_FILE"
+    exit 1
+  fi
+  CMD+=(--eval_file "$EVAL_FILE" --eval_steps "$EVAL_STEPS"
+        --fuse_threshold "$FUSE_THRESHOLD")
+  if [ "$FUSE_HARD" = "1" ]; then CMD+=(--fuse_hard); fi
+  log "eval 熔断: $EVAL_FILE（每 $EVAL_STEPS 步；阈值 ${FUSE_THRESHOLD}；"
+  if [ "$FUSE_HARD" = "1" ]; then
+    log "达到阈值将停止训练）"
+  else
+    log "只告警，不停止训练）"
+  fi
+fi
 
 log "启动: ${CMD[*]}"
-nohup "${CMD[@]}" >> "$RUN_LOG" 2>&1 &
+# 训练日志由脚本内 --log_file 双写（不会重复）。但 attach_log 装上之前的
+# 崩溃（import 失败/参数错误）走不到 tee —— 落到 .boot 文件留证据，别扔黑洞。
+BOOT_LOG="$RUN_LOG.boot"
+nohup "${CMD[@]}" > "$BOOT_LOG" 2>&1 &
 PID=$!
+echo "$BOOT_LOG" > "$RUN_LOG.boot.path"
 echo "$PID" > "$RUN_LOG.pid"
 echo "$PID" > train_grpo_pid.txt
 

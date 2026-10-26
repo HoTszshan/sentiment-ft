@@ -34,11 +34,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
-from sft_template import SUBJECT_RE  # noqa: E402
+from task_template import SUBJECT_RE  # noqa: E402
 import prompt_template as pt         # noqa: E402
 
 GOLD_FIELDS = ["sentiment", "relevance", "hard_case_type", "risk_categories", "evidence"]
 
+# ============================================================
+# 1. 行字段工具 (兼容顶层 / meta 嵌套两种源形态)
+# ============================================================
 
 def _row_meta(row: dict) -> dict:
     """行内 meta：优先嵌套 meta，否则行本身就是扁平题面（industry 在顶层）。"""
@@ -65,6 +68,10 @@ def _raw_text(row: dict) -> str:
         return inp.split(marker, 1)[1].lstrip("\n")
     return inp
 
+
+# ============================================================
+# 2. 出题: gold 解析 + prompt 渲染
+# ============================================================
 
 def extract_gold(row: dict) -> dict:
     """从语料行解析出 5 字段 gold。优先取 output 内的 JSON，回退 meta。"""
@@ -121,6 +128,10 @@ def build_prompt(row: dict, tokenizer=None) -> str:
     )
 
 
+# ============================================================
+# 3. 分层抽样 (hard_case_type × sentiment 按比例，小桶保底)
+# ============================================================
+
 def stratified_sample(items: list, n: int, seed: int = 42) -> list:
     """
     按 (hard_case_type, sentiment) 21 桶**按比例**分层抽样（最大余数法）。
@@ -174,6 +185,10 @@ def stratified_sample(items: list, n: int, seed: int = 42) -> list:
                                 it["gold"].get("sentiment") or ""))
     return picked
 
+
+# ============================================================
+# 4. 主流程: 质检淘汰 → 组装落盘 → 统计报告
+# ============================================================
 
 def main():
     ap = argparse.ArgumentParser(description="语料池 → GRPO {prompt, gold} 契约")

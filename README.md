@@ -29,12 +29,14 @@ MVP/tests/
 │   ├── eval_metrics.py             ★ 评估指标纯函数层：宏均 / Subset Accuracy / 负向召回×误报率成对 / 分桶 / 非法标签计数
 │   ├── rubric_check.py             ★ 离线 Rubric 三判定（主体点名 / 推理无矛盾 / 证据支撑），可注入离线裁判
 │   ├── release_gate.py             ★ 发布门四道纯逻辑（历史错题 / 金标不退化 / L3 安全 / 格式合规），N/A 不假装 PASS
-│   ├── grpo_common.py              ★ GRPO 共享层：数据展平 / k 分桶 / 训练预算（零依赖）
+│   ├── grpo_common.py              ★ GRPO 共享层：k 分桶 / 训练预算（零依赖）
+│   ├── grpo_dataset.py             ★ GRPO 数据契约：JSONL 加载 / gold 校验 / 展平 TRL 标量训练行（零依赖，不做 Dataset 类）
+│   ├── log_tee.py                  ★ SFT/GRPO 共用日志双写：终端 + 文件 / tqdm 换行 / 恢复与关闭
 │   ├── grpo_probe_core.py          ★ GRPO 探针纯逻辑：打分入组 / rollout / k 分流
 │   ├── corpus_schema.py            ★ 行业风险二级词表 + 提示词加载 + 闭集枚举（同源再导出 schema_contract）
-│   ├── sft_template.py             ★ 指令模板唯一真理源（显式输出协议段，枚举从 schema_contract 插值；SFT/GRPO 两阶段共用——GRPO 的主体回显 SUBJECT_RE 也从这里取）
+│   ├── task_template.py            ★ 舆情精判任务指令/主体行协议（SFT/GRPO 共用；枚举从 schema_contract 插值）
 │   ├── prompt_template.py          ★ 外壳渲染唯一真理源（apply_chat_template + 手写兜底 + parity gate，训练/推理/统计/GRPO 四方同源）
-│   ├── sft_dataset.py              ★ 共用 Dataset/Collator（前缀掩码 + FIELD_W 装配；import 时零 torch，无 GPU 可 preview/stats）
+│   ├── sft_dataset.py              ★ SFT 专用 Dataset/Collator（前缀掩码 + FIELD_W 装配；import 时零 torch，无 GPU 可 preview/stats）
 │   ├── format_canary.py            ★ 格式自检：协议 token id 解析 + teacher-forced 概率 + 贪心合规判定（训练回调与独立脚本共用）
 │   ├── kappa_utils.py              ★ 一致性统计纯函数（cohen_kappa / risk_key，原 build_eval_set 内嵌实现下沉）
 │   ├── llm_client.py               API 客户端（generate 的依赖）
@@ -43,18 +45,19 @@ MVP/tests/
 │   ├── test_reward_fns.py          ★ 打分器单测 40 项
 │   ├── test_weight_planner.py      ★ SFT 权重 span 规划器单测 12 项
 │   ├── test_grpo_probe.py          ★ GRPO 链路单测 48 项
+│   ├── test_log_tee.py             ★ SFT/GRPO 共用日志双写单测（恢复/追加/tqdm/描述符）
 │   ├── test_eval_metrics.py        ★ 评估指标纯函数单测 25 项
 │   ├── test_evaluate_sft.py        ★ 评测脚本纯逻辑单测 21 项（协议/指标/分桶/非法输出/证据分母/闭合率进 verdict）
 │   ├── test_rubric_check.py        ★ 离线 Rubric 单测 20 项（三判定项 + 注入 judge）
 │   ├── test_release_gate.py        ★ 发布门单测 25 项（四门 PASS/FAIL/N/A + 归因）
 │   ├── test_prompt_template.py     ★ 外壳渲染单测（chat==手写 parity / thinking 版漂移拦截 / backend 降级）
-│   └── test_sft_dataset.py         ★ 共用 Dataset 单测（长度/掩码/权重三不变量 + parity gate）
+│   └── test_sft_dataset.py         ★ SFT 专用 Dataset 单测（长度/掩码/权重三不变量 + parity gate）
 ├── prompts/                        ← gen/anno 双端提示词（单主体隔离锁在内）
 ├── scripts/                        ← 只放 CLI 入口（可执行脚本）
 │   ├── run_probe_e2e.sh            ★ 一键串跑（5 步）
 │   ├── run_grpo_train.sh           ★ GRPO 后台启动（nohup + 时间戳日志 + PID + 拓扑选择）
 │   ├── download_assets.py          1 下载：COIG-CQIA Anchor + 基座模型
-│   ├── align_sft_data.py           1.5 对齐：原文+meta → {instruction(显式输出协议), input, output} + 质检（纯规则零 LLM，模板唯一源 lib/sft_template.py）
+│   ├── align_sft_data.py           1.5 对齐：原文+meta → {instruction(显式输出协议), input, output} + 质检（纯规则零 LLM，模板唯一源 lib/task_template.py）
 │   ├── mix_sft_dataset.py          2 混合：9:1 + 分层切分 train/val
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
 │   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
@@ -186,7 +189,7 @@ python3 scripts/align_sft_data.py \
 
 | 项 | 规则 |
 |---|---|
-| `instruction` | `lib/sft_template.build_instruction(industry)` —— 角色+任务目标+行业风险体系+输出协议（枚举从 schema_contract 插值；**同行业逐字一致**） |
+| `instruction` | `lib/task_template.build_instruction(industry)` —— 角色+任务目标+行业风险体系+输出协议（枚举从 schema_contract 插值；**同行业逐字一致**） |
 | `input` | user 侧题面 = `【目标主体】{subject}` + `【输入文本】{原文}`（subject 取 output gold，兜底 target_subject） |
 | `output` | **CoT 只继承不生成**：源行自带 `<think>…</think>+JSON` 则逐字沿用；否则只拼裸 JSON。永不编造 CoT（模板化 CoT 会被死记并刷穿 GRPO rubric） |
 | 质检（不过即剔除并计数） | schema 闭集 / evidence 是原文连续子串 4~80 字 / subject_hit（源行提供时）/ 行业越界 / 空或超长（>2000 字） |
@@ -402,7 +405,7 @@ python3 scripts/stat_seq_len.py --train_file data/train_synth_81_aligned.jsonl
 ```
 
 - **不带 completion 是设计**：CoT 由策略 On-Policy 现场采样，算完组内优势即弃；攒着会被误拿去当 SFT 语料。
-- **prompt 和SFT模板同源**：system 由 `lib/sft_template.build_instruction(industry)` 生成，user = 目标主体+输入文本，统一用 `lib/prompt_template.render_prompt` 渲染；instruction 和训练样本 `train_synth_81_aligned.jsonl` 逐字对齐。
+- **prompt 和SFT模板同源**：system 由 `lib/task_template.build_instruction(industry)` 生成，user = 目标主体+输入文本，统一用 `lib/prompt_template.render_prompt` 渲染；instruction 和训练样本 `train_synth_81_aligned.jsonl` 逐字对齐。
 - **gold 6字段包含subject**：优先从输出JSON读取，兜底取prompt里的目标主体；供 `R_format` 做主体校验，rollout阶段无需解析prompt。
 - **input_text 存原始文本**：给 `R_grounding` 做证据归属校验；包装后的prompt放在input，裸原文存 `meta.input_raw`。`--two_field` 模式可省略，由 `reward_fns.extract_input_text` 反向解析兜底。
 
@@ -464,7 +467,7 @@ python3 scripts/build_grpo_probe.py \
 
 **两条硬约束**：
 
-- **`prompt` 必须与 SFT 训练同模板**：走 `lib/sft_template.py` 渲染，system=指令、user=`【目标主体】+【输入文本】`；手拼 ChatML 会导致 rollout 分布与 SFT 不匹配、reward 大面积掉底。
+- **`prompt` 必须与 SFT 训练同模板**：走 `lib/task_template.py` 渲染，system=指令、user=`【目标主体】+【输入文本】`；手拼 ChatML 会导致 rollout 分布与 SFT 不匹配、reward 大面积掉底。
 - **`input_text` 必须是裸原文**：`R_grounding` 拿它做 `evidence ⊂ 原文` 硬断言。对齐后 `input` 已包了题面壳，裸原文另存在 `meta.input_raw`，builder 优先取它。
 
 `--sample N` 为按比例分层抽样（最大余数法）：每桶保底 1 条，余下按桶大小分配，避免 explicit×neutral 这类大桶吃光预算。
@@ -482,7 +485,7 @@ python3 scripts/build_grpo_probe.py \
 
 ### 3.5 训练：`train_grpo.py`（TRL GRPOTrainer + 四维规则 Reward）
 
-**数据侧不需要自定义 Dataset 类**（与 SFT 不同，备案）：SFT 要逐样本定制 `labels` / `loss_weights`（前缀掩码+字段加权），所以有 `lib/sft_dataset.py`；GRPO 的 rollout、组采样、优势计算全由 TRL `GRPOTrainer` 内部完成，数据侧只需把 `{prompt, gold…}` **展平成标量列**（`build_dataset_rows()`，dict 列在 datasets 版本间行为不稳），reward 函数经 `kwargs` 按列名取值。参考实现（gsm8k）同样是裸 `Dataset.from_list`。另外 `lib/sft_template.py` / `prompt_template.py` 虽挂 SFT 名，实际是**两阶段共用**（GRPO prompt 渲染与主体回显同源），见 §0 目录注释。
+**数据侧不需要自定义 Dataset 类**（与 SFT 不同，备案）：SFT 要逐样本定制 `labels` / `loss_weights`（前缀掩码+字段加权），所以有 `lib/sft_dataset.py`；GRPO 的 rollout、组采样、优势计算全由 TRL `GRPOTrainer` 内部完成，数据侧只需把 `{prompt, gold…}` **展平成标量列**（`build_dataset_rows()`，dict 列在 datasets 版本间行为不稳），reward 函数经 `kwargs` 按列名取值。参考实现（gsm8k）同样是裸 `Dataset.from_list`。另外 `lib/task_template.py` / `prompt_template.py` 虽曾因历史文件名挂 SFT 名，实际是**任务协议与 prompt 外壳的两阶段共用层**（GRPO 探针构建和 rollout 同源），见 §0 目录注释。
 
 **起点是一个完整模型目录，不是 adapter。** 先用 `merge_sft_adapter.py` 把 `base + ΔSFT` 合成一次：
 
@@ -506,7 +509,7 @@ python3 scripts/merge_sft_adapter.py \
 > LoRA 增量可加，所以「训练时先合并」与「生产时 Base → SFT-LoRA → RL-LoRA 三段挂载」数学等价，部署形态不受影响。
 
 ```bash
-# 1) 任何机器都能跑的干跑体检（数据契约 + 门禁不变量 + 训练预算 + 依赖版本）
+# 1) 任何机器可跑的数据契约 + 预算体检（不 import torch / transformers / trl）
 python3 scripts/train_grpo.py --data data/grpo_prompts_probe.jsonl --dry_run
 
 # 2) 真实训练（AutoDL，需 pip install trl）
@@ -534,15 +537,22 @@ MODEL=models/Qwen3-4B-Instruct ./scripts/run_grpo_train.sh
 
 1. **reward 不能拆成 4 个函数平权相加** —— 我们的门禁是**短路**语义（`R_format` 挂了，`R_accuracy`/`R_length` 归 0）。拆开相加会丢短路。所以只有一个 reward func，内部调 `compute_reward`。
 2. **`max_completion_length` 不能按手册 65~105 截** —— 那一格说的是**扁平 JSON 段**（实测 ≈81 tokens），**不是整段输出**。SFT 73 条真分词：整段 p50 263 / p95 335 / max 383，CoT 占大头。按 105 或 200 截，**99% 的样本被砍在中间** → `json.loads` 失败 → 全池 `R_format` −2.5 → 训练废掉。
-3. **`loss_type` 必须是 `grpo`（均值中心化 + std 归一）** —— 与 `reward_fns.group_advantages` 公式逐字一致；新版 TRL 默认 `dr_grpo` 不做中心化，优势带非零均值即偏离契约。
+3. **优势只减组内均值、不除 std（`scale_rewards="none"`）** —— 别和 `loss_type` 搞混：`loss_type` 管 loss 分母，`scale_rewards` 管优势要不要标准化，两个独立开关。TRL 默认 `scale_rewards="group"` 会除 std，把「只差一档」的垃圾组放大成满格优势（`[-2.5,-2.5,-2.5,-2.0]` → +1.73），反而压过真有判别信息的组（`[+2,+1,-1,-2]` → +1.26），等于教模型「学垃圾里最不烂的那条」。我们的 reward 是固定尺度的离散阶梯，分数本身已校准，再标准化只会抹掉校准（推导见 `notes/舆情负面精判_GRPO训练实战手册.md` §1.2）。
 
-**eval 循环与对齐税熔断（TODO 5.19，已落盘）**：`--eval_file` 给了才开。把对齐税基线集接成 `eval_dataset`，每 `--eval_steps` 步采一次样、用同一套 reward 打分取均值；首轮均值记 baseline，此后相对跌幅超 `--fuse_threshold`（默认 2%）打 `[FUSE]` 告警（`--fuse_hard` 才真终止）。探针阶段用 8 条迷你基线集 `data/grpo/grpo_eval_probe.jsonl` 验链路；正式 3,000 条阶段换成 k=4 封存集。判定纯逻辑 `grpo_common.should_fuse`（6 项单测）。启动脚本传 `EVAL_FILE=data/grpo/grpo_eval_probe.jsonl` 即开启。
+
+**可选 eval reward 熔断**：训练脚本传 `--eval_file` 才接入熔断；训练开始前先用当前策略算 baseline，之后每 `--eval_steps` 步（默认 2）对 eval 集采样打分，与 baseline 比较。跌幅超过 `--fuse_threshold`（默认 2%）时只告警；加 `--fuse_hard` 才请求 Trainer 停训。`scripts/run_grpo_train.sh` 透传 `EVAL_FILE` / `EVAL_STEPS` / `FUSE_THRESHOLD` / `FUSE_HARD` 环境变量。
+
+
+**探针熔断用途限制**：快速启动清单用的 8 条 eval 是从同一探针池抽取，会和训练数据重叠；它适合验证“训练前测 baseline → 周期 eval → 告警/停止”的功能链路，**不是独立泛化集，也不能据此声称测到了真实通用能力对齐税或防止了 reward collapse**。熔断只负责发现 eval reward 下跌并可选刹车，不阻止下跌；防止策略退化还依赖 KL、奖励契约、采样配置和数据筛选。
 
 另有两处防御（启动时自动处理）：
 - **prompt 上限体检**：实测 prompt 最长 token 数（含行业风险词表）若超 `max_prompt_length`，**自动放宽**——截断会砍掉待判原文 → `evidence` 必然溯源失败 → 全池短路。
-- **Zero-Advantage Masking 无需改 Trainer**：我们的实装条件是「整组都触顶门禁罚」→ 4 个分数相同 → 方差 0，TRL 的 `(r−mean)/std` 天然给 0 优势。启动时打 `ZAM 自检 PASS` 即确认两者语义重合，**不去 hack TRL 私有 API**。
+- **Zero-Advantage Masking 逻辑检查**：同分组减均值后必为 0，所以 `[-2.5]×4` 没有梯度。`assert_zam_equivalence()` 只检查我方优势公式和「不除 std」口径，**不是对 TRL 源码实测**；TRL 是否采用预期配置，要看 `GRPOConfig(scale_rewards="none")` 字段在目标版本中实际存在并生效。检查失败会抛断言异常，训练拒启；**不会 hack TRL 私有 API**。
 
-**版本要求**：`transformers>=4.55`（Qwen3 架构要 4.51+，参考仓库那套 `trl==0.14` 不认 Qwen3）、`trl>=0.19`（拿到 `temperature` / `processing_class=`）。
+
+
+**版本要求**：`transformers>=4.55`（Qwen3 架构要 4.51+，TRL 0.14 不认 Qwen3）、`trl>=0.19`（本入口直接使用 `processing_class=`、`temperature` 与 `scale_rewards="none"`；不再兼容旧参数名/缺字段版本，配置字段不支持时应升级依赖而不是静默回退）。双卡 vLLM 拓扑显式指定 `vllm_device="auto"`、`vllm_gpu_memory_utilization=0.3`。
+
 
 ### 3.6 难度分流：`run_grpo_probe.py`（只留 k∈{1,2,3}）
 
