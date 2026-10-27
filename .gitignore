@@ -15,3 +15,5 @@ data/align_report.json
 .claude/settings.json
 .claude/worktrees
 data/*_report.json
+.claude/tmp*
+data/grpo

@@ -9,6 +9,10 @@
 #   ./scripts/run_probe_e2e.sh train        # 只跑训练
 #   ./scripts/run_probe_e2e.sh test         # 只跑推理+评测
 #   ./scripts/run_probe_e2e.sh traintest    # 只跑训练+推理+评测 (复用已有混合数据与基座模型)
+#   ./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest
+#                              # 同 traintest, 但输出目录名追加 tag 后缀
+#                              # (run_20261024_180116 → run_20261024_180116_POC1_epoch6)
+#                              # --tag 位置任意, 不传则保持原有输出路径不变
 #
 # traintest 说明: 数据(公开 Anchor + 领域数据混合产物)与基座模型都不重复下载/重复混合,
 #                 直接读 $DATA_DIR/mixed/sft_{train,val}.jsonl 与 $MODEL_DIR 下的本地基座。
@@ -64,6 +68,17 @@ export SFT_POC_STAGE="${SFT_POC_STAGE:-POC1}"
 
 TS=$(date +"%Y%m%d_%H%M%S")
 
+# 参数解析: 第一个非 --tag 参数为步骤名, --tag=XXX 为实验标签
+# (传入 tag: 输出目录名追加后缀, 如 run_20261024_180116_POC1_epoch6; 不传保持原样)
+STEP="all"
+TAG=""
+for arg in "$@"; do
+  case "$arg" in
+    --tag=*) TAG="${arg#--tag=}" ;;
+    *) STEP="$arg" ;;
+  esac
+done
+
 # 显存碎片缓解：大 vocab(151936)×seq2560 的 logits/loss 临时块 + DDP 通信 buffer
 # 容易把 reserved-but-unallocated 顶高；expandable_segments 让 caching allocator
 # 按需扩展段而非按 2 的幂整块预留，显著降低 OOM 概率（对 3090 24G 尤其有效）
@@ -71,7 +86,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 
 # 单次实验独立目录: 本轮所有产物 (adapter/预测/报告) 与日志全收在 run_<TS>/ 下,
 # 一个目录 = 一次完整实验, 拷走即归档; latest 指针放 OUTPUT_DIR 顶层供跨步衔接
-RUN_DIR="$OUTPUT_DIR/run_${TS}"
+RUN_DIR="$OUTPUT_DIR/run_${TS}${TAG:+_${TAG}}"
 LOG_DIR="$RUN_DIR/logs"
 mkdir -p "$RUN_DIR" "$LOG_DIR" "$OUTPUT_DIR"
 
@@ -301,7 +316,6 @@ step_eval() {
 }
 
 # ---------------------------------------------------------------- 入口
-STEP="${1:-all}"
 
 # ---- BG=1: 自我转后台 (nohup + PID 文件 + 日志重定向), 断 SSH 不死 ----
 # 正式训练 3~6 小时必用; 探针 2~3 分钟可前台直跑。实现: 递归调用自身一次,
@@ -322,6 +336,8 @@ fi
 
 check_deps
 log "执行模式: $STEP"
+[ -n "$TAG" ] && log "实验标签: $TAG (输出目录: run_${TS}_${TAG})"
+[ -n "$TAG" ] && log "实验标签: $TAG (输出目录: run_${TS}_${TAG})"
 
 case "$STEP" in
   download) step_download ;;

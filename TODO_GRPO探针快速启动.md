@@ -9,7 +9,7 @@
 > **路径约定（AutoDL，与 SFT 清单对齐）**：模型下到 `/root/autodl-tmp/models`、数据下到 `/root/autodl-tmp/data`。
 > - 探针数据上传：本机执行 `scp tests/data/probe_test_grpo_train_synth.jsonl root@<autodl>:/root/autodl-tmp/data/grpo/`；
 > - 下方命令一律用 AutoDL 绝对路径；本机跑则换成仓库相对路径（`models/`、`data/`）；
-> - `train_grpo.py` / `run_grpo_probe.py` 的 `--data` / `--model_name_or_path` / `--out` 全是显式参数，不依赖仓库布局。
+> - `train_grpo.py` 用 `--model_name_or_path`；`run_grpo_probe.py` 用 `--base_model`（分体挂载另加 `--adapter`）。`--data` / `--out` 两脚本一致，全是显式参数，不依赖仓库布局。
 
 ---
 
@@ -19,30 +19,30 @@
 
 - [ ] **1.1** 确认 SFT adapter 在位：
   ```bash
-  ls output/probe_lora_*/adapter_config.json   # 取最新时间戳那个
+  ls /root/autodl-tmp/models/sft_senti/run_*/probe_lora/adapter_config.json   # 取最新时间戳那个
   ls models/Qwen3-4B-Instruct-2507/config.json # 基座在位
   ```
 - [ ] **1.2** 合并体检（不加载模型，任何环境可跑）：
   ```bash
   python3 scripts/merge_sft_adapter.py --dry_run \
       --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-      --adapter output/probe_lora_<时间戳> \
-      --out /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT
+      --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/probe_lora \
+      --out /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test
   ```
   预期：路径体检通过；若打 `[WARN] adapter 训练时记录的基座是…` 说明 `--base` 与训练时不一致，**先核对再合并**。
-- [ ] **1.3** 真合并（GPU 上跑，含 logits 一致性校验）：
+- [ ] **1.3** 真合并（GPU 上跑，含 logits 一致性校验）。**必须 `--dtype fp32`**：实测（2026-10-26）bf16 合并会把「先融合权重」的舍入误差做进权重（max|Δlogit|=1.375、top1Δp≈0.032），fp32 下同一 adapter 误差 4 个数量级更小（max|Δlogit|=1.2e-4、top1Δp≈4e-6）：
   ```bash
-  python3 scripts/merge_sft_adapter.py \
+  python3 scripts/merge_sft_adapter.py --dtype fp32 \
       --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-      --adapter output/probe_lora_<时间戳> \
-      --out /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT
+      --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/probe_lora \
+      --out /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test
   ```
-  预期最后一屏：`合并完成` + `argmax 相同=True` + `merge_manifest.json` 落盘。
-  **若 parity FAIL：拒绝落盘是设计行为**——先查 adapter 是不是这个基座训出来的，不要 `--no_verify` 绕过。
-- [ ] **1.4** 验证据链：`cat /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT/merge_manifest.json`
+  预期最后一屏：`合并完成` + `argmax 相同=True` + `top1Δp` 极小 + `merge_manifest.json` 落盘。
+  **若 parity FAIL（bf16 时代旧判据）**：先换 `--dtype fp32` 重跑再下结论——FAIL 未必是基座错配，更常见是 bf16 融合精度损失；fp32 仍 FAIL 才去查 adapter 基座，不要 `--no_verify` 绕过。
+- [ ] **1.4** 验证据链：`cat /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test/merge_manifest.json`
   → 记录 `parity.max_abs_logit_diff` 与 `argmax_equal`（回填 Step 5 表 A0）。
 
-> **首跑留意**：merge 路径（`merge_and_unload` + parity）从未在真 GPU 上跑过，本步是它的首验。失败先看 peft 版本（≥0.12）。
+> **首跑留意**：merge 路径已在真 GPU 上首验通过（2026-10-26，fp32 口径）。失败先看 peft 版本（≥0.12）。
 
 ---
 
@@ -62,28 +62,8 @@
   - `input_text 为空: 0 条`；
   - `优势口径自检通过`；
   - `[DRY RUN] 未加载模型/TRL`。
-- [ ] **2.3** 生成 8 条 eval 小基线集（只用于熔断功能链路冒烟；与训练集同源，**不代表独立泛化集或真实“对齐税”评估**）：
-  ```bash
-  mkdir -p /root/autodl-tmp/data/grpo
-  python3 - <<'PY'
-  import json
-  source = "/root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl"
-  target = "/root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl"
-  rows = [json.loads(line) for line in open(source, encoding="utf-8") if line.strip()]
-  picked, seen = [], set()
-  for row in rows:
-      key = (row["gold"]["sentiment"], row["gold"]["hard_case_type"])
-      if key not in seen:
-          seen.add(key)
-          picked.append(row)
-      if len(picked) == 8:
-          break
-  with open(target, "w", encoding="utf-8") as stream:
-      stream.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in picked)
-  print("eval 基线集:", len(picked), "条 ->", target)
-  PY
-  ```
-  若样本不足 8 条，记录实际数量，不补造样本。
+- [x] **2.3** eval 基线集（只用于熔断功能链路冒烟；与训练集同源，**不代表独立泛化集或真实“对齐税”评估**）。
+  **无需任何手工步骤**：`train_grpo.py` 不传 `--eval_file` 时自动按 `--eval_n`（默认 8）从训练池按 (极性, 难点) 去重抽取，不足不补造（逻辑在 `lib/grpo_dataset.build_eval_baseline`）。
 
 
 ---
@@ -93,9 +73,9 @@
 - [ ] **3.1** 冒烟（前台，3 步，只验证「能采样、能打分、能更新」）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
-      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
-      --output_dir /root/autodl-tmp/output/grpo_smoke \
+      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
+      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+      --output_dir /root/autodl-tmp/models/grpo_senti/grpo_smoke \
       --limit 8 --max_steps 3 --save_steps 2 --no_wandb \
       --log_file logs/grpo_smoke.log
   ```
@@ -103,10 +83,9 @@
 - [ ] **3.2** 长跑探针（专门验证周期 eval 与熔断链路；50 题 × 4 epochs = 28 步）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
-      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
-      --output_dir /root/autodl-tmp/output/grpo_fuse_smoke \
-      --eval_file /root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl \
+      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
+      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+      --output_dir /root/autodl-tmp/models/grpo_senti/grpo_fuse_smoke \
       --eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 \
       --save_steps 2 --no_wandb --log_file logs/grpo_fuse_smoke.log
   ```
@@ -118,17 +97,13 @@
   > 2. **采样噪声的根因**：`grpo_eval_fuse._eval_reward_mean` 用 `do_sample=True + temperature=0.7` 逐条采样打分，同一样本每次得分都不同。要压低噪声，正式阶段应改 greedy（T=0）+ 更大基线集，否则 2% 相对阈值也会被噪声淹没。
 - [ ] **3.3** 正式探针训练（按当前研究设计的 1 epoch，不带熔断）：
   ```bash
-  DATA=/root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
-  MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
-  OUTPUT_DIR=/root/autodl-tmp/output/grpo_lora \
+  DATA=/root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
+  MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+  OUTPUT_DIR=/root/autodl-tmp/models/grpo_senti/grpo_lora \
   ./scripts/run_grpo_train.sh
   ```
   产物：`grpo_lora/`（adapter + `grpo_metrics.json`）+ 训练日志。
-  > **拓扑自动选择**：单卡 → `python3` 直跑（HF generate 采样，探针 50 题够用）；
-  > 双卡 → `accelerate launch --config_file config/accelerate_grpo.yaml --num_processes 1`
-  > （1 训练进程占 cuda:0 + colocate vLLM 独占 cuda:1，对齐 `12S2W10_rlhf/GRPO/run_train_2gpu.sh`；
-  > yaml 里 `num_processes: 1` 是占位值，被命令行覆盖）。
-- [ ] **3.4** 使用启动脚本启用熔断时，设置 `EVAL_FILE`；`FUSE_HARD=1` 才执行硬停止。训练入口直跑则显式传 `--eval_file`、`--eval_steps`、`--fuse_threshold`，需要硬停止再加 `--fuse_hard`。
+- [ ] **3.4** 熔断默认开：训练入口直跑不传 `--eval_file` 即自动从训练池抽 `--eval_n`（默认 8）条基线集；要显式指定就用 `--eval_file`，`--eval_n 0` 关闭。启动脚本（`run_grpo_train.sh`）则用环境变量：设置 `EVAL_FILE`（或不设走同样自动档）、`FUSE_HARD=1` 才执行硬停止。
 
 ---
 
@@ -137,12 +112,12 @@
 - [ ] **4.1** 真实 rollout（SFT 合并模型作策略起点，同题 G=4）：
   ```bash
   python3 scripts/run_grpo_probe.py \
-      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
-      --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
+      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
+      --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
       --g 4 --temperature 0.7 --max_new_tokens 512 \
-      --out /root/autodl-tmp/output/grpo/grpo_probe_kstats.json
+      --out /root/autodl-tmp/senti/data/grpo/grpo_probe_kstats.json
   ```
-  > 严格说策略起点应带 GRPO adapter（`--adapter /root/autodl-tmp/output/grpo_lora`）——本步先用合并模型跑 k 分布看 SFT 端的「摇摆度」，GRPO 训完再跑一次对比 k 分布迁移（两份 kstats 都留档）。
+  > 严格说策略起点应带 GRPO adapter（`--adapter /root/autodl-tmp/models/grpo_senti/grpo_lora`）——本步先用合并模型跑 k 分布看 SFT 端的「摇摆度」，GRPO 训完再跑一次对比 k 分布迁移（两份 kstats 都留档）。
 - [ ] **4.2** 读 k 直方图（脚本自动打印）：
   - **健康信号**：k=1~3 占比显著非零（有梯度可学）；k=0 与 k=4 两头都有（说明筛选有意义）。
   - **坏信号与处置**：全 k=4 → SFT 已收敛到位，GRPO 无题可训（当前探针 50 条上属可能结果，正式池要靠更难的题）；全 k=0 → 打分或数据坏了，回 Step 2 查。

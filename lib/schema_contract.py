@@ -228,6 +228,118 @@ def parse_lenient(output_str: Any) -> Tuple[Optional[str], Optional[dict], Dict[
 
 
 # ============================================================
+# 基线(未微调)模型 · 正则宽松提取
+# ============================================================
+
+def extract_valid_fields(obj: Dict[str, Any]) -> Dict[str, Any]:
+    """从任意 dict 里只摘出协议内字段，越界值直接丢弃（不算违规）。
+
+    基线模型原生输出不对齐格式规范，字段对比以**原始提取结果**为准：
+    闭集外的取值不进入非法标签统计，而是整字段缺失 → 指标层按缺字段跳过，
+    避免「没微调过 → 格式差 → 全量判违规」的系统性不公平。
+    """
+    pred: Dict[str, Any] = {}
+    if isinstance(obj.get("subject"), str):
+        pred["subject"] = obj["subject"]
+    for f, valid in (("relevance", VALID_RELEVANCE),
+                     ("sentiment", VALID_SENTIMENT),
+                     ("hard_case_type", VALID_HARD_CASE)):
+        v = obj.get(f)
+        if isinstance(v, str) and v in valid:
+            pred[f] = v
+    rk = obj.get("risk_categories")
+    if isinstance(rk, list):
+        pred["risk_categories"] = [v for v in map(str, rk) if v in VALID_RISK]
+    if isinstance(obj.get("evidence"), str):
+        pred["evidence"] = obj["evidence"]
+    return pred
+
+
+# 字段级正则（截断 JSON 兜底用）：基线输出被 max_new_tokens 切断时，
+# JSON 写到一半没闭合，配对扫描抓不到；对已写完的键值对逐个正则提取。
+_FIELD_RE = {
+    "relevance": re.compile(r'"relevance"\s*:\s*"([^"]*)"'),
+    "sentiment": re.compile(r'"sentiment"\s*:\s*"([^"]*)"'),
+    "hard_case_type": re.compile(r'"hard_case_type"\s*:\s*"([^"]*)"'),
+}
+_RISK_RE = re.compile(r'"risk_categories"\s*:\s*\[([^\]]*)')
+_FIELD_VALUE_SETS = {
+    "relevance": VALID_RELEVANCE,
+    "sentiment": VALID_SENTIMENT,
+    "hard_case_type": VALID_HARD_CASE,
+}
+
+
+def _extract_fields_from_truncated(text: str) -> Optional[dict]:
+    """对截断 JSON 做字段级正则提取（只认闭集内取值，任意字段捞到即收）。"""
+    pred: Dict[str, Any] = {}
+    for f, rx in _FIELD_RE.items():
+        m = rx.search(text)
+        if m and m.group(1) in _FIELD_VALUE_SETS[f]:
+            pred[f] = m.group(1)
+    mr = _RISK_RE.search(text)
+    if mr:
+        vals = re.findall(r'"([^"]+)"', mr.group(1))
+        pred["risk_categories"] = [v for v in vals if v in VALID_RISK]
+    # 只要捞到任意协议字段就收（sentiment 可能还没写出来）；
+    # 什么都不剩才返回 None
+    if "risk_categories" in pred and not ({"relevance", "sentiment",
+                                           "hard_case_type"} & pred.keys()):
+        pass  # 只有 risk_categories 也算有效提取
+    return pred or None
+
+
+def extract_baseline_pred(output_str: Any) -> Optional[dict]:
+    """
+    基线模型专用：不用目标格式强解析，用正则/配对扫描捕获输出里的 JSON 片段。
+
+    基线未经微调，原生输出常是「推理文字 + <tool_call> 包裹的 JSON」，
+    parse_output 的 <think> 协议会全量判失败（见 report_baseline.json 全 0）。
+    这里扫描输出中每个配对完整的 {...} 片段，取第一个含 "sentiment" 键的
+    dict，经 extract_valid_fields 只留有效字段；找不到返回 None。
+    """
+    if not isinstance(output_str, str):
+        return None
+    text = strip_terminal_markers(output_str)
+    n = len(text)
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+    for start in starts:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, n):
+            ch = text[i]
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start: i + 1])
+                    except Exception:
+                        break          # 该 "{" 开头的片段不可解析，换下一个
+                    if isinstance(obj, dict) and "sentiment" in obj:
+                        return extract_valid_fields(obj)
+                    break
+        # 继续尝试下一个 "{"
+    # 没有任何配对完整的 JSON 片段（含「有 { 但被截断未闭合」）→
+    # 输出很可能被 max_new_tokens 切断。退一步做字段级正则，
+    # 对已写完的键值对逐个捞取。
+    return _extract_fields_from_truncated(text)
+
+
+# ============================================================
 # 行级契约：pred 载荷归一 + 金标取值
 # ============================================================
 

@@ -80,7 +80,7 @@ def _report(tag, totals, prompts, outputs, unit, top_rows, top_n, cots=None):
     if cots:
         c = sorted(cots)
         print(f"  {'cot':8s}{_pct(c,50):>8d}{_pct(c,95):>8d}{_pct(c,99):>8d}{c[-1]:>8d}"
-              f"   ← R_length 只量这一段")
+              f"   <- R_length 只量这一段")
     if top_rows:
         top_sorted = sorted(top_rows, key=lambda x: -x[0])
         print(f"  Top{top_n} 最长样本:")

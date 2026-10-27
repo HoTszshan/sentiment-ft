@@ -780,6 +780,11 @@ def main():
     print(f"[OK] 训练指标存盘: {metrics_path}")
     print(f"[OK] 本轮耗时: {elapsed:.1f}s | loss(train)={metrics.get('train_loss')}")
 
+    # setup_wandb ready 即代表 import wandb 成功，此处补 import 供收尾同步用
+    if wandb_ready:
+        import wandb as wandb_mod
+    else:
+        wandb_mod = None
     if wandb_ready and wandb_mod is not None:
         try:
             # Trainer 的 WandbCallback 已在 train() 里把 train/loss、train/grad_norm、
