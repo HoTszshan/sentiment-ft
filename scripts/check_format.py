@@ -10,7 +10,7 @@
     # 训练后验收
     python scripts/check_format.py \
         --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-        --adapter_path output/probe_lora \
+        --adapter_path output/run_<时间戳>/sft_lora \
         --data_file data/mixed/sft_val.jsonl
 
     # 训练前摸底（不传 adapter，看基座原生水平）

@@ -24,7 +24,7 @@ k = 同一 prompt 采 G 份，其中「判对 且 evidence 溯源过门禁」的
   python3 scripts/run_grpo_probe.py \
       --data data/grpo_prompts_probe.jsonl \
       --base_model models/Qwen3-4B-Instruct \
-      --adapter output/probe_lora \
+      --adapter output/run_<时间戳>/sft_lora \
       --g 4 --temperature 0.7 --max_new_tokens 512 \
       --out output/grpo/grpo_probe_kstats.json
 """

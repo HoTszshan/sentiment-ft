@@ -29,6 +29,8 @@
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
+#   INFER_BACKEND=hf      推理后端: hf (单卡 PyTorch 原生，默认推荐) | vllm (高吞吐批量推理)
+#   INFER_GPU=0           方案 1 (hf) 时绑定的单卡编号 (默认 0)
 #   TRAINER_BACKEND=...  训练器后端 (默认 auto: 有 trl 用 trl.SFTTrainer 否则 HF Trainer;
 #                        显式 trl 缺库即报错; 显式 hf 强制回退 HF Trainer)
 #   BG=1                  后台执行: nohup + PID 文件 + 日志重定向, 断 SSH 不死
@@ -199,7 +201,7 @@ step_mix() {
 
 # ---------------------------------------------------------------- 3. 训练
 step_train() {
-  log "步骤 3/5 · LoRA SFT 探针训练 (前缀掩码 + 骨架掩码 + FIELD_W 字段级加权)"
+  log "步骤 3/5 · LoRA SFT 训练 (前缀掩码 + 骨架掩码 + FIELD_W 字段级加权)"
   resolve_local_model
   TRAIN_LOG="$LOG_DIR/train_probe.log"
   RUN_NAME="probe_${TS}"
@@ -247,7 +249,7 @@ step_train() {
     --model_name_or_path "${LOCAL_MODEL:-$MODEL_NAME}" \
     --train_file "$MIXED_DIR/sft_train.jsonl" \
     --val_file "$MIXED_DIR/sft_val.jsonl" \
-    --output_dir "$RUN_DIR/probe_lora" \
+    --output_dir "$RUN_DIR/sft_lora" \
     --num_train_epochs "$EPOCHS" \
     --per_device_train_batch_size "$PER_DEV_BATCH" \
     --max_seq_length "$MAX_LEN" \
@@ -272,7 +274,7 @@ step_train() {
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
   train_rc=${PIPESTATUS[0]}
 
-  ADAPTER_DIR="$RUN_DIR/probe_lora"
+  ADAPTER_DIR="$RUN_DIR/sft_lora"
   if [ "$train_rc" -ne 0 ]; then
     log "⚠️ 训练失败 (exit=$train_rc)，跳过 adapter 登记 —— 详见 $TRAIN_LOG"
     return "$train_rc"
@@ -286,17 +288,32 @@ step_train() {
 step_infer() {
   resolve_local_model
   ADAPTER_DIR="$(cat "$OUTPUT_DIR/latest_adapter_path.txt" 2>/dev/null || echo "")"
-  log "步骤 4/5 · 加载 Adapter 在内部 val 上批量推理"
+  INFER_BACKEND="${INFER_BACKEND:-hf}"
+  INFER_GPU="${INFER_GPU:-0}"
+  log "步骤 4/5 · 加载 Adapter 在内部 val 上批量推理 (后端: $INFER_BACKEND)"
   # 渲染协议必须与训练侧一致：THINK_PREFIX=1 时训练把 <think>\n 写进了前缀，
   # 推理侧不加同一 flag 就会「训练有前缀、推理没前缀」，格式立刻崩。
   THINK_PREFIX_ARG=""
   [ "${THINK_PREFIX:-0}" = "1" ] && THINK_PREFIX_ARG="--think_prefix"
-  python3 scripts/probe_infer.py \
-    --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
-    --adapter_path "$ADAPTER_DIR" \
-    --data_file "$MIXED_DIR/sft_val.jsonl" \
-    --out "$RUN_DIR/pred_val.jsonl" \
-    $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
+
+  if [ "$INFER_BACKEND" = "vllm" ]; then
+    python3 scripts/probe_infer.py \
+      --backend vllm \
+      --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
+      --adapter_path "$ADAPTER_DIR" \
+      --data_file "$MIXED_DIR/sft_val.jsonl" \
+      --out "$RUN_DIR/pred_val.jsonl" \
+      $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
+  else
+    # 方案 1: 显式单卡环境绑定，避免 PEFT trainable_tokens 多卡切分张量不一致 bug
+    CUDA_VISIBLE_DEVICES="$INFER_GPU" python3 scripts/probe_infer.py \
+      --backend hf \
+      --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
+      --adapter_path "$ADAPTER_DIR" \
+      --data_file "$MIXED_DIR/sft_val.jsonl" \
+      --out "$RUN_DIR/pred_val.jsonl" \
+      $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
+  fi
   echo "$RUN_DIR/pred_val.jsonl" > "$OUTPUT_DIR/latest_pred_path.txt"
 }
 

@@ -64,7 +64,7 @@ MVP/tests/
 │   ├── check_format.py             格式 canary 独立检查（不启动训练，测任意「基座+adapter」组合）
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
 │   ├── inspect_sft_dataset.py      数据模板预览（原文→messages→渲染文本→token/权重四层；--check_parity 只跑字节比对）
-│   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；无 tokenizer 退化为字符级近似）
+│   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；--out 落统计 json / --log 追加日志，均可选；无 tokenizer 退化为字符级近似）
 │   ├── pick_hard_cases.py          难例选样（按 hard_case_type 过滤打印行号+摘要，对比样张/四档对照选样用）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
@@ -117,6 +117,8 @@ wandb login
 | `EPOCHS` | `3` | 训练轮数 |
 | `SFT_POC_STAGE` | `POC1` | **Loss 消融阶段**：`POC1`=仅前缀掩码 / `POC2`=+骨架掩码 / `POC3`=+字段加权 FIELD_W（详见 §训练 与 `sft_weight_planner.POC_STAGE`） |
 | `TRAINER_BACKEND` | `auto` | 训练器后端：`auto`=有 trl 用 `trl.SFTTrainer` 否则 `transformers.Trainer` / `trl`=强制 trl（缺库报错）/ `hf`=强制 HF Trainer（同一份 compute_loss 覆写，加权口径一致） |
+| `INFER_BACKEND` | `hf` | **推理后端**：`hf`=方案1 单卡 PyTorch 原生（默认，避免 PEFT 多卡切分设备不一致 bug）/ `vllm`=方案3 高并发批量推理引擎 |
+| `INFER_GPU` | `0` | 方案 1 (hf) 绑定的单卡 GPU 编号（默认 0） |
 | `UNFREEZE_PROTOCOL_TOKENS` | `1` | **协议 token 解冻**：给 `<think>` / `</think>` 两行 embedding 挂可训练偏移（约 10 KB，随 adapter 落盘）。设 `0` 关闭，用于消融对照。详见「步骤 3c」 |
 | `THINK_PREFIX` | `0` | **前缀预置**：把 `<think>\n` 写进 assistant 前缀。默认关（已证实无额外收益，且会让 adapter 依赖推理端复现同一前缀）。设 `1` 开启 |
 | `CANARY_EVERY` | `30` | 格式 canary 检测间隔（优化步）；`0` 关闭 |
@@ -228,7 +230,7 @@ python3 scripts/train_sft_lora.py \
     --model_name_or_path models/Qwen3-4B-Instruct \
     --train_file data/mixed/sft_train.jsonl \
     --val_file data/mixed/sft_val.jsonl \
-    --output_dir output/probe_lora \
+    --output_dir output/run_*/sft_lora \
     --num_train_epochs 3 \
     --per_device_train_batch_size 2 --gradient_accumulation_steps 4 \
     --learning_rate 1e-4 --lr_scheduler_type cosine \
@@ -244,7 +246,7 @@ python3 scripts/train_sft_lora.py \
 
 - **日志落盘**：`--log_file` 把终端输出**双写**到文件（`print` / transformers logging / tqdm 一并覆盖），中断也能回看。
 - **wandb**：设了 `WANDB_API_KEY` 自动同步（超参、FIELD_W、数据血缘进 config，每步 loss 上报）；不想同步加 `--no_wandb`，未装 wandb 会自动降级不报错。
-- **收尾产物**：`output/probe_lora/adapter_model.safetensors` + `output/probe_lora/train_metrics.json`（含 `train_loss` / 耗时 / 样本数）。
+- **收尾产物**：`output/run_*/sft_lora/adapter_model.safetensors` + `output/run_*/sft_lora/train_metrics.json`（含 `train_loss` / 耗时 / 样本数）。
 - **步数与停止口径**（启动时会打印「训练规模预算」区块）：
 
 | | 单卡 batch | 梯度累积 | 实际(有效) batch | 训练样本 | 每 epoch 优化器步 | 总步数 |
@@ -295,7 +297,7 @@ python3 scripts/train_sft_lora.py \
 ```bash
 python3 scripts/check_format.py \
     --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-    --adapter_path output/probe_lora \
+    --adapter_path output/run_*/sft_lora \
     --data_file data/mixed/sft_val.jsonl
 ```
 
@@ -342,15 +344,26 @@ token id 通过 tokenizer（`format_canary.resolve_protocol_ids`）动态解析�
 ### 步骤 4 · 推理
 
 ```bash
+# 方案 1（默认推荐）：单卡 PyTorch 原生推理（自动绑单卡，避开多卡张量不一致 bug）
 python3 scripts/probe_infer.py \
+    --backend hf \
     --base_model models/Qwen3-4B-Instruct \
-    --adapter_path output/probe_lora \
+    --adapter_path output/run_*/sft_lora \
+    --data_file data/mixed/sft_val.jsonl \
+    --out output/pred_val.jsonl
+
+# 方案 3（大数据量 / 高并发）：vLLM 引擎（带 LoRA 批处理，需 pip install vllm）
+python3 scripts/probe_infer.py \
+    --backend vllm \
+    --base_model models/Qwen3-4B-Instruct \
+    --adapter_path output/run_*/sft_lora \
     --data_file data/mixed/sft_val.jsonl \
     --out output/pred_val.jsonl
 ```
 
 实时输出三项合规率：**CoT 标签闭合率 / JSON 解析合法率 / evidence 原文命中率**。
 `--adapter_path` 留空可跑**裸基座对照**，用来量化 SFT 带来的增益。
+一键脚本中也可通过环境变量切换：`INFER_BACKEND=vllm ./scripts/run_probe_e2e.sh test`。
 
 ### 步骤 5 · 评测
 
@@ -372,6 +385,13 @@ python3 scripts/evaluate_sft.py --gold_file data/mixed/sft_val.jsonl \
 python3 scripts/stat_seq_len.py \
     --train_file data/mixed/sft_train.jsonl \
     --tokenizer models/Qwen3-4B-Instruct-2507 --top_n 5
+
+# 可选产物（不给 = 只打印，零副作用）：
+#   --out <json>  统计结果存档   --log <file>  日志追加写
+python3 scripts/stat_seq_len.py \
+    --train_file data/mixed/sft_train.jsonl \
+    --tokenizer models/Qwen3-4B-Instruct-2507 \
+    --out output/seq_len_stats.json --log logs/seq_len_stats.log
 
 # 无 tokenizer 环境：字符级近似（1 汉字 ≈ 1.4 token）
 python3 scripts/stat_seq_len.py --train_file data/train_synth_81_aligned.jsonl
@@ -499,12 +519,12 @@ python3 scripts/build_grpo_probe.py \
 # 0) 合并 SFT adapter（一次性操作；产出 models/Qwen3-4B-Instruct-SFT）
 python3 scripts/merge_sft_adapter.py --dry_run \
     --base models/Qwen3-4B-Instruct \
-    --adapter output/probe_lora_<时间戳> \
+    --adapter output/run_<时间戳>/sft_lora \
     --out models/Qwen3-4B-Instruct-SFT
 
 python3 scripts/merge_sft_adapter.py \
     --base models/Qwen3-4B-Instruct \
-    --adapter output/probe_lora_<时间戳> \
+    --adapter output/run_<时间戳>/sft_lora \
     --out models/Qwen3-4B-Instruct-SFT
 ```
 
@@ -570,7 +590,7 @@ python3 scripts/run_grpo_probe.py --data data/grpo_prompts_probe.jsonl --dry_run
 python3 scripts/run_grpo_probe.py \
     --data data/grpo_prompts_probe.jsonl \
     --base_model models/Qwen3-4B-Instruct \
-    --adapter output/probe_lora \
+    --adapter output/run_*/sft_lora \
     --g 4 --temperature 0.7 --max_new_tokens 512 \
     --out output/grpo/grpo_probe_kstats.json
 ```
@@ -604,9 +624,9 @@ python3 scripts/run_grpo_probe.py \
 
 | 产物 | 位置 | 用途 |
 |---|---|---|
-| LoRA Adapter | `output/probe_lora*/` | 下一步 GRPO 的起点 |
+| LoRA Adapter | `output/run_*/sft_lora*/` | 下一步 GRPO 的起点 |
 | 训练日志 | `logs/train_probe_*.log` | 断点回看、面试演示 |
-| 训练指标 | `output/probe_lora*/train_metrics.json` | 多轮探针对比 |
+| 训练指标 | `output/run_*/sft_lora*/train_metrics.json` | 多轮探针对比 |
 | wandb 曲线 | `sentiment-sft-probe` 项目 | loss 收敛可视化 |
 | 预测文件 | `output/pred_*.jsonl` | 喂给 `evaluate_sft` 模式 B |
 | 评测报告 | 终端 + `logs/probe_e2e_*.log` | 难点/行业分桶准确率 |
@@ -669,6 +689,7 @@ python3 scripts/eval_four_tier.py --gold data/test_golden_sample_50.jsonl \
 | 现象 | 处理 |
 |---|---|
 | `缺少依赖: torch transformers peft` | `pip install torch transformers peft accelerate wandb` |
+| 推理报 `Expected all tensors to be on the same device, but found at least two devices, cuda:1 and cuda:0!` | 多卡环境下 PEFT `trainable_tokens` 跨卡切分 bug。切回默认方案 1 单卡跑：`INFER_BACKEND=hf INFER_GPU=0`（或直跑前加 `CUDA_VISIBLE_DEVICES=0`） |
 | GRPO 报 `No module named 'trl'` | `pip install 'transformers>=4.55' 'trl>=0.19' 'peft>=0.12' datasets`（Qwen3 要 4.51+，TRL 0.14 不认） |
 | GRPO 启动就报「batch 不能被 G 整除」 | `--per_device_train_batch_size` 必须是 G 的倍数（默认 4，G=4 合法） |
 | GRPO 日志提示「无 temperature 字段」 | TRL 太老；不升级的话 T 若为 0，组内方差恒 0，RL 会退化成更贵的 SFT |

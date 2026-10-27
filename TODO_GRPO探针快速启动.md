@@ -4,7 +4,7 @@
 > **口径权威源**：`notes/舆情负面精判_GRPO训练实战手册.md`（训练/Reward）、`notes/舆情负面精判_GRPO数据准备实战手册.md` §五（四维 Reward 契约）、`tests/README.md` §3（脚本用法）。冲突以上游为准。
 > **纪律**：跑出来的数才回填；没跑的一律标 `[待实测]`，不编数。本清单勾完即把 GRPO 手册的「训练与 rollout 从未实跑」红线解除。
 >
-> **环境**：与 SFT 共用同一个虚拟环境（Step 0 已装齐 `trl>=0.19` / `peft>=0.12` / `transformers>=4.55`），无需重装。wandb 开关同 SFT（`SYNC_WANDB=1` 才上传，项目名 `sentiment-grpo-probe`）。
+> **环境**：与 SFT 共用同一个虚拟环境（Step 0 已装齐 `trl>=0.19` / `peft>=0.12` / `transformers>=4.55`），无需重装。wandb 开关同 SFT（`SYNC_WANDB=1` 才上传，项目名 `sentiment-grpo-probe`）。vLLM 为可选依赖（只服务双卡采样加速），装法见 SFT 清单 Step 0.2b。
 >
 > **⚠️ TRL 1.16 兼容性（2026-10-27 已在 `train_grpo.py` 适配）**：当前环境实际装的是 `trl==1.16.0`，`GRPOConfig` 不接受 `warmup_ratio`（已折算成 `warmup_steps`）、`max_prompt_length` 与 `vllm_device`（已移除；prompt 截断改由启动时的实测检查兜底——喂超长 prompt 不再静默截断，会直接进模型）。再遇 `unexpected keyword argument` 先跑 `python3 -c "import trl; print(trl.__version__)"` 对版本。
 >
@@ -21,14 +21,15 @@
 
 - [ ] **1.1** 确认 SFT adapter 在位：
   ```bash
-  ls /root/autodl-tmp/models/sft_senti/run_*/probe_lora/adapter_config.json   # 取最新时间戳那个
+  ls /root/autodl-tmp/models/sft_senti/run_*/sft_lora/adapter_config.json   # 取最新时间戳那个
   ls models/Qwen3-4B-Instruct-2507/config.json # 基座在位
   ```
+  > ⚠️ 历史产物适配：改名前训的 run 目录里目录名是 `probe_lora`（如 `run_20261024_180116_POC3/probe_lora`），路径按实际在位的为准；改名后新训的才是 `sft_lora`。
 - [ ] **1.2** 合并体检（不加载模型，任何环境可跑）：
   ```bash
   python3 scripts/merge_sft_adapter.py --dry_run \
       --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-      --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/probe_lora \
+      --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
       --out /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test
   ```
   预期：路径体检通过；若打 `[WARN] adapter 训练时记录的基座是…` 说明 `--base` 与训练时不一致，**先核对再合并**。
@@ -36,7 +37,7 @@
   ```bash
   python3 scripts/merge_sft_adapter.py --dtype fp32 \
       --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-      --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/probe_lora \
+      --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
       --out /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test
   ```
   预期最后一屏：`合并完成` + `argmax 相同=True` + `top1Δp` 极小 + `merge_manifest.json` 落盘。
@@ -101,25 +102,33 @@
   ```bash
   DATA=/root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl \
   MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
-  OUTPUT_DIR=/root/autodl-tmp/models/grpo_senti/grpo_lora \
-  ./scripts/run_grpo_train.sh
+  ./scripts/run_grpo_train.sh --tag=fuse_smoke
+  # (OUTPUT_DIR 默认就是 /root/autodl-tmp/models/grpo_senti，想换地方才传)
   ```
-  产物：`grpo_lora/`（adapter + `grpo_metrics.json`）+ 训练日志。
+  产物布局（对齐 SFT e2e）：一个 run 目录收全部，拷走即归档——
+  `grpo_senti/run_<时间戳>[_<tag>]/`，里面 `grpo_lora/`（adapter + 指标）+ `logs/`（训练日志）。
+  - `--tag=fuse_smoke` 位置任意，不传就不加后缀
+  - GPU 卡数：默认 `nvidia-smi` 自动识别
+  - **1k 探针 / 正式训练用双卡**：`NPROC=2`（cuda:0 训练 + cuda:1 vLLM 采样，快 2~3 倍）
+    - 前置：装 vLLM（可选依赖，见 SFT 清单 Step 0.2b：`pip install vllm==0.7.3`，torch 2.5.x 只兼容 0.7.x）
+    - 没装 vLLM 时脚本会启动失败（`ImportError: vLLM is not available`）——那时退回 `NPROC=1` 单卡
+  - 50 题小探针：`NPROC=1` 单卡即可
 - [ ] **3.4** 熔断默认开：训练入口直跑不传 `--eval_file` 即自动从训练池抽 `--eval_n`（默认 8）条基线集；要显式指定就用 `--eval_file`，`--eval_n 0` 关闭。启动脚本（`run_grpo_train.sh`）则用环境变量：设置 `EVAL_FILE`（或不设走同样自动档）、`FUSE_HARD=1` 才执行硬停止。
 
 ---
 
 ## Step 4 · rollout 与 k 分流（筛出真正的训练池）
 
-- [ ] **4.1** 真实 rollout（SFT 合并模型作策略起点，同题 G=4）：
+- [ ] **4.1** 真实 rollout（SFT 合并模型作起点，同题 G=4）：
   ```bash
-  python3 scripts/run_grpo_probe.py \
-      --data /root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl \
-      --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
-      --g 4 --temperature 0.7 --max_new_tokens 512 \
-      --out /root/autodl-tmp/senti/data/grpo/grpo_probe_kstats.json
+  BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+  ./scripts/run_grpo_probe.sh --tag=sft_kdist
+  # (OUTPUT_DIR 默认 /root/autodl-tmp/models/grpo_senti，想换地方才传)
   ```
-  > 严格说策略起点应带 GRPO adapter（`--adapter /root/autodl-tmp/models/grpo_senti/grpo_lora`）——本步先用合并模型跑 k 分布看 SFT 端的「摇摆度」，GRPO 训完再跑一次对比 k 分布迁移（两份 kstats 都留档）。
+  产物自动收进 `run_<时间戳>[_<tag>]/`：k 直方图 + 逐题明细 + 日志。
+  - 单卡即可（50 题几分钟）；无 GPU 先 `DRY=1` 验链路
+  - 逐题明细 `.rows.jsonl` 带每个标签的对错 + reward 分量，调 `reward_fns.py` 直接看它
+  - GRPO 训完再跑一次（换个 `--tag`），对比 k 分布迁移
 - [ ] **4.2** 读 k 直方图（脚本自动打印）：
   - **健康信号**：k=1~3 占比显著非零（有梯度可学）；k=0 与 k=4 两头都有（说明筛选有意义）。
   - **坏信号与处置**：全 k=4 → SFT 已收敛到位，GRPO 无题可训（当前探针 50 条上属可能结果，正式池要靠更难的题）；全 k=0 → 打分或数据坏了，回 Step 2 查。
