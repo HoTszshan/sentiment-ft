@@ -124,7 +124,7 @@ def resolve_prompt_limit(real_max: int, configured: int, hard_cap: int = 4096) -
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Rule-based GRPO 训练")
-    parser.add_argument("--data", default="data/grpo_prompts_probe.jsonl")
+    parser.add_argument("--data", default="data/probe_test_grpo_train_synth.jsonl")
     parser.add_argument("--model_name_or_path", default="models/Qwen3-4B-Instruct")
     parser.add_argument("--output_dir", default="output/grpo_lora")
     parser.add_argument("--log_file", default=None)
@@ -262,6 +262,8 @@ def main():
             vllm_device="auto", vllm_gpu_memory_utilization=0.3,
             max_steps=args.max_steps or 0, temperature=h.temperature,
             loss_type="grpo", scale_rewards="none",
+            # ε固定0.2(TRL默认单侧clip)：规则reward无重尾；β=0.04 KL控漂移，避免双重约束扼杀G=4组内方差；探针阶段减少超参
+            epsilon=h.epsilon,
         )
 
         # 3. 加载模型；tokenizer 已在步骤 2 加载并测长。

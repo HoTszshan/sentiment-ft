@@ -20,7 +20,7 @@
 #   MODEL_NAME=...     覆盖基座模型 (默认 Qwen/Qwen3-4B-Instruct-2507)
 #   MODEL_DIR=...      模型存放目录 (缺省: /root/autodl-tmp/models，本机自动退回 $BASE_DIR/models)
 #   DATA_DIR=...       公开数据集与混合产物目录 (缺省: /root/autodl-tmp/datasets，本机自动退回 $BASE_DIR/data)
-#   DOMAIN_FILE=...    领域训练数据 (默认 $BASE_DIR/data/train_synth_81_aligned.jsonl（显式输出协议版），仓库内置不外移)
+#   DOMAIN_FILE=...    领域训练数据 (默认 $BASE_DIR/data/probe_test_sft_train_synth.jsonl（探针 81 条；正式批次用 DOMAIN_FILE=data/round1_train_aligned.jsonl 显式切换），仓库内置不外移)
 #   EPOCHS=3           覆盖训练轮数
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
@@ -52,7 +52,7 @@ elif [ -d /root/autodl-tmp ]; then OUTPUT_DIR=/root/autodl-tmp/models/sft_senti;
 else OUTPUT_DIR="$BASE_DIR/output"; fi
 
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-4B-Instruct-2507}"
-DOMAIN_FILE="${DOMAIN_FILE:-$BASE_DIR/data/train_synth_81_aligned.jsonl}"
+DOMAIN_FILE="${DOMAIN_FILE:-$BASE_DIR/data/probe_test_sft_train_synth.jsonl}"
 ANCHOR_FILE="$DATA_DIR/coig_cqia_anchor.jsonl"
 MIXED_DIR="$DATA_DIR/mixed"
 EPOCHS="${EPOCHS:-3}"

@@ -18,7 +18,7 @@ SFT 数据模板预览器 (Inspect SFT Dataset)
 用法:
   # 无 GPU / 无 transformers：字符级近似看结构与权重分布（任何机器都能跑）
   python3 scripts/inspect_sft_dataset.py \
-      --data_file data/train_synth_81_aligned.jsonl --num_samples 2
+      --data_file data/probe_test_sft_train_synth.jsonl --num_samples 2
 
   # 接了 tokenizer：看真实 token 边界与真实长度
   python3 scripts/inspect_sft_dataset.py \
@@ -28,7 +28,7 @@ SFT 数据模板预览器 (Inspect SFT Dataset)
 
   # 只做 parity 冒烟（训练前 / e2e 里跑一次），不一致直接非 0 退出
   python3 scripts/inspect_sft_dataset.py \
-      --data_file data/train_synth_81_aligned.jsonl \
+      --data_file data/probe_test_sft_train_synth.jsonl \
       --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
       --check_parity
 """

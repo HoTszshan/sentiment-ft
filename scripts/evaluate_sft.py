@@ -5,7 +5,7 @@
 
 两种运行模式 (语义保持不变, 只新增参数):
   [A] 单文件质检模式 (默认) —— 校验一个已冻结的数据集自身合规性
-      python scripts/evaluate_sft.py --test_file data/test_golden_sample_50.jsonl
+      python scripts/evaluate_sft.py --test_file data/gold500_test.jsonl
 
   [B] 双文件对照模式 —— 真实模型推理结果 vs 人工金标，出全量指标
       python scripts/evaluate_sft.py --gold_file gold.jsonl --pred_file pred.jsonl
@@ -851,7 +851,7 @@ def _dump_report(report: Dict[str, Any], out_path: str) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description="舆情负面精判 SFT 评测验收")
-    ap.add_argument("--test_file", default="data/test_golden_sample_50.jsonl",
+    ap.add_argument("--test_file", default="data/gold500_test.jsonl",
                     help="[模式A] 单文件数据集自检路径")
     ap.add_argument("--gold_file", help="[模式B] 金标文件")
     ap.add_argument("--pred_file", help="[模式B] 模型预测文件")

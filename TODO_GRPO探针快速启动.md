@@ -7,7 +7,7 @@
 > **环境**：与 SFT 共用同一个虚拟环境（Step 0 已装齐 `trl>=0.19` / `peft>=0.12` / `transformers>=4.55`），无需重装。wandb 开关同 SFT（`SYNC_WANDB=1` 才上传，项目名 `sentiment-grpo-probe`）。
 >
 > **路径约定（AutoDL，与 SFT 清单对齐）**：模型下到 `/root/autodl-tmp/models`、数据下到 `/root/autodl-tmp/data`。
-> - 探针数据上传：本机执行 `scp tests/data/grpo_prompts_probe.jsonl root@<autodl>:/root/autodl-tmp/data/grpo/`；
+> - 探针数据上传：本机执行 `scp tests/data/probe_test_grpo_train_synth.jsonl root@<autodl>:/root/autodl-tmp/data/grpo/`；
 > - 下方命令一律用 AutoDL 绝对路径；本机跑则换成仓库相对路径（`models/`、`data/`）；
 > - `train_grpo.py` / `run_grpo_probe.py` 的 `--data` / `--model_name_or_path` / `--out` 全是显式参数，不依赖仓库布局。
 
@@ -50,12 +50,12 @@
 
 - [ ] **2.1** 数据在位确认：
   ```bash
-  wc -l /root/autodl-tmp/data/grpo_prompts_probe.jsonl    # 当前文件 50 条
+  wc -l /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl    # 当前文件 50 条
   ```
 - [ ] **2.2** 干跑体检（数据契约 + 预算 + 优势口径自检，零 GPU）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl --dry_run --no_wandb
+      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl --dry_run --no_wandb
   ```
   逐项核对：
   - 数据行数为 **50 条**；每步 8 题 × G=4 = 32 轨迹/步；50 题按默认 1 epoch 预算为 **7 步**；
@@ -67,7 +67,7 @@
   mkdir -p /root/autodl-tmp/data/grpo
   python3 - <<'PY'
   import json
-  source = "/root/autodl-tmp/data/grpo_prompts_probe.jsonl"
+  source = "/root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl"
   target = "/root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl"
   rows = [json.loads(line) for line in open(source, encoding="utf-8") if line.strip()]
   picked, seen = [], set()
@@ -93,7 +93,7 @@
 - [ ] **3.1** 冒烟（前台，3 步，只验证「能采样、能打分、能更新」）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl \
+      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
       --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
       --output_dir /root/autodl-tmp/output/grpo_smoke \
       --limit 8 --max_steps 3 --save_steps 2 --no_wandb \
@@ -103,7 +103,7 @@
 - [ ] **3.2** 长跑探针（专门验证周期 eval 与熔断链路；50 题 × 4 epochs = 28 步）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl \
+      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
       --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
       --output_dir /root/autodl-tmp/output/grpo_fuse_smoke \
       --eval_file /root/autodl-tmp/data/grpo/grpo_eval_probe.jsonl \
@@ -118,12 +118,16 @@
   > 2. **采样噪声的根因**：`grpo_eval_fuse._eval_reward_mean` 用 `do_sample=True + temperature=0.7` 逐条采样打分，同一样本每次得分都不同。要压低噪声，正式阶段应改 greedy（T=0）+ 更大基线集，否则 2% 相对阈值也会被噪声淹没。
 - [ ] **3.3** 正式探针训练（按当前研究设计的 1 epoch，不带熔断）：
   ```bash
-  DATA=/root/autodl-tmp/data/grpo_prompts_probe.jsonl \
+  DATA=/root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
   MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
   OUTPUT_DIR=/root/autodl-tmp/output/grpo_lora \
   ./scripts/run_grpo_train.sh
   ```
   产物：`grpo_lora/`（adapter + `grpo_metrics.json`）+ 训练日志。
+  > **拓扑自动选择**：单卡 → `python3` 直跑（HF generate 采样，探针 50 题够用）；
+  > 双卡 → `accelerate launch --config_file config/accelerate_grpo.yaml --num_processes 1`
+  > （1 训练进程占 cuda:0 + colocate vLLM 独占 cuda:1，对齐 `12S2W10_rlhf/GRPO/run_train_2gpu.sh`；
+  > yaml 里 `num_processes: 1` 是占位值，被命令行覆盖）。
 - [ ] **3.4** 使用启动脚本启用熔断时，设置 `EVAL_FILE`；`FUSE_HARD=1` 才执行硬停止。训练入口直跑则显式传 `--eval_file`、`--eval_steps`、`--fuse_threshold`，需要硬停止再加 `--fuse_hard`。
 
 ---
@@ -133,7 +137,7 @@
 - [ ] **4.1** 真实 rollout（SFT 合并模型作策略起点，同题 G=4）：
   ```bash
   python3 scripts/run_grpo_probe.py \
-      --data /root/autodl-tmp/data/grpo_prompts_probe.jsonl \
+      --data /root/autodl-tmp/data/probe_test_grpo_train_synth.jsonl \
       --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT \
       --g 4 --temperature 0.7 --max_new_tokens 512 \
       --out /root/autodl-tmp/output/grpo/grpo_probe_kstats.json
@@ -201,4 +205,4 @@
 
 - eval 基线集换成独立留出集（若目标是测通用能力退化，应选通用指令集）；阈值需结合基线集规模与波动重新校准；**同时复审 `should_fuse` 的绝对差分支**（baseline≤0 时 0.02 门槛在采样噪声下会误报，见 Step 3.2 的坑位说明）与 `do_sample=True` 的解码噪声，必要时改 greedy 解码；
 - `eval_four_tier.py` T4 档跑四档对照归因；
-- 双卡拓扑 + vLLM 采样（`run_grpo_train.sh` 已支持，GPU 数 ≥2 自动开）。
+- 双卡拓扑 + vLLM 采样（`run_grpo_train.sh` 已支持，GPU 数 ≥2 自动开；走 `config/accelerate_grpo.yaml` + `--num_processes 1` 覆盖，与 `12S2W10_rlhf/GRPO/run_train_2gpu.sh` 同构）。

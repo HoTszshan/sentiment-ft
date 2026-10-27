@@ -51,7 +51,7 @@
 - [ ] **2.1** 9:1 混合 + 分层切分（新增统计日志与四查落盘）：
   ```bash
   python3 scripts/mix_sft_dataset.py \
-      --domain_file data/train_synth_81_aligned.jsonl \
+      --domain_file data/probe_test_sft_train_synth.jsonl \
       --anchor_file /root/autodl-tmp/datasets/coig_cqia_anchor.jsonl \
       --out_dir /root/autodl-tmp/datasets/mixed --anchor_ratio 0.1 --val_ratio 0.1 --seed 42
   ```
@@ -150,10 +150,10 @@
   ```bash
   python3 scripts/pick_hard_cases.py --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl
   # 命中太少可从全量领域集挑（用同一段原文临时构造输入）:
-  python3 scripts/pick_hard_cases.py --data_file data/train_synth_81_aligned.jsonl --n 5
+  python3 scripts/pick_hard_cases.py --data_file data/probe_test_sft_train_synth.jsonl --n 5
   # 自定义类型: --types irony,metaphor
   ```
-  > 记下选中的行号（8 条 val 若无难例，就从 `data/train_synth_81_aligned.jsonl` 全量里挑，用同一段原文临时构造输入）。
+  > 记下选中的行号（8 条 val 若无难例，就从 `data/probe_test_sft_train_synth.jsonl` 全量里挑，用同一段原文临时构造输入）。
 - [ ] **4.5.2** 分别跑两版推理（同一份输入、同一解码配置）：
   ```bash
   # T1 · 裸基座

@@ -8,7 +8,7 @@
 #   DRY=1 ./scripts/run_grpo_train.sh                  # 只跑 --dry_run 体检（无 GPU 可跑）
 #
 # 环境变量:
-#   DATA           默认 data/grpo_prompts_probe.jsonl
+#   DATA           默认 data/probe_test_grpo_train_synth.jsonl
 #   MODEL          默认 models/Qwen3-4B-Instruct-SFT (先跑 merge_sft_adapter.py 产出)
 #                  指向原厂基座 = 未挂 SFT 起训，只用于对照实验
 #   OUTPUT_DIR     默认 output/grpo_lora
@@ -23,6 +23,11 @@
 #   1 卡  → 不启用 vLLM，rollout 走 HF generate（探针 50 题足够）
 #   2 卡  → 训练进程数 = GPU 数 - 1 = 1，vLLM 独占 cuda:1（use_vllm=auto）
 #   ⚠️ 不要在脚本里重排 CUDA_VISIBLE_DEVICES（torch 初始化后改它不生效）
+#
+# accelerate 配置: config/accelerate_grpo.yaml（仅 GRPO 用；SFT 走 NPROC，不读本文件），
+#   其中 num_processes: 1 是占位值，真实值由下方 --num_processes 覆盖：
+#   --num_processes N = 启动 N 个训练进程（=N 张卡各占一个 DDP rank），
+#   双卡拓扑下 N = GPU-1，剩余那张卡留给 colocate vLLM 独占采样。
 # ==============================================================================
 
 set -euo pipefail
@@ -31,7 +36,7 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BASE_DIR"
 echo "工作目录: $BASE_DIR"
 
-DATA="${DATA:-data/grpo_prompts_probe.jsonl}"
+DATA="${DATA:-data/probe_test_grpo_train_synth.jsonl}"
 MODEL="${MODEL:-models/Qwen3-4B-Instruct-SFT}"
 OUTPUT_DIR="${OUTPUT_DIR:-output/grpo_lora}"
 EVAL_FILE="${EVAL_FILE:-}"
@@ -79,7 +84,8 @@ log "检测到 GPU 数: $N_GPU"
 
 if [ "$N_GPU" -ge 2 ]; then
   # 双卡: 1 训练进程 (cuda:0) + vLLM 独占 (cuda:1)
-  LAUNCH=(accelerate launch --num_processes 1)
+  # 走 config/accelerate_grpo.yaml（与参考 run_train_2gpu.sh 同构），--num_processes 覆盖占位值
+  LAUNCH=(accelerate launch --config_file config/accelerate_grpo.yaml --num_processes 1)
   VLLM_FLAG="--use_vllm"
   log "拓扑: accelerate 1 进程训练 (cuda:0) + vLLM 采样 (cuda:1)"
 elif [ "$N_GPU" = "1" ]; then

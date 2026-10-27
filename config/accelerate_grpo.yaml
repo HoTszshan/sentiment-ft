@@ -1,0 +1,44 @@
+# accelerate 配置文件 (单机，配合 run_grpo_train.sh 使用)
+# ⚠️ 仅 GRPO 使用：SFT 侧 (run_probe_e2e.sh) 用 NPROC 环境变量自选启动方式，不读本文件。
+# 拓扑口径与 12S2W10_rlhf/GRPO/run_train_2gpu.sh 对齐：
+#   GRPO + colocate vLLM 下「训练进程数 = GPU 数 - 1」，留最后一张卡给 vLLM 独占采样。
+#   因此 num_processes 故意不写成 GPU 数——由 run_grpo_train.sh 按实测卡数
+#   用 --num_processes 在命令行覆盖（1 卡=1 进程纯训练；2 卡=1 进程 + vLLM 独占）。
+#
+# 注意：这里用 MULTI_GPU (DDP) 而不是 DEEPSPEED ——
+#   vLLM colocate 在训练主进程内加载，显存/进程管理与 DeepSpeed 易冲突；
+#   4B + LoRA 的 GRPO 用 DDP 即可，不需要 ZeRO。
+
+# 计算环境类型: LOCAL_MACHINE 代表单机多卡
+compute_environment: LOCAL_MACHINE
+
+# 分布式训练类型: 多卡 DDP（单卡时 CLI 直跑 python3，不经过本文件）
+distributed_type: MULTI_GPU
+
+# 是否将 bf16 张量向下转换 (通常不需要)
+downcast_bf16: 'no'
+
+# 机器配置 (单机)
+num_machines: 1
+machine_rank: 0
+
+# 进程配置: 占位值 1 —— 真实值由 run_grpo_train.sh 的 --num_processes 覆盖
+# （对照: 参考 run_train_2gpu.sh 里 yaml 写 2、命令行 --num_processes 覆盖为 GPU-1）
+num_processes: 1
+
+# GPU 配置: 'all' 表示使用所有可见的 GPU (由 CUDA_VISIBLE_DEVICES 限定)
+gpu_ids: all
+
+# 混合精度: bf16 (A100/H100/4090 等 Ampere+ 架构支持)
+# train_grpo.py 中 GRPOConfig(bf16=cuda 可用) 与该值保持一致
+mixed_precision: bf16
+
+# 随机种子 (可选)
+# seed: 42
+
+# Rendezvous (集合点) 配置 (通常使用默认值)
+rdzv_backend: static
+same_network: true
+
+# 是否只在 CPU 上运行 (多卡 GPU 训练，置 false)
+use_cpu: false
