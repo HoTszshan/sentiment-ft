@@ -4,9 +4,9 @@
 > **口径权威源**：`notes/舆情负面精判_GRPO训练实战手册.md`（训练/Reward）、`notes/舆情负面精判_GRPO数据准备实战手册.md` §五（四维 Reward 契约）、`tests/README.md` §3（脚本用法）。冲突以上游为准。
 > **纪律**：跑出来的数才回填；没跑的一律标 `[待实测]`，不编数。本清单勾完即把 GRPO 手册的「训练与 rollout 从未实跑」红线解除。
 >
-> **环境**：与 SFT 共用同一个虚拟环境（Step 0 已装齐 `trl>=0.19` / `peft>=0.12` / `transformers>=4.55`），无需重装。wandb 开关同 SFT（`SYNC_WANDB=1` 才上传，项目名 `sentiment-grpo-probe`）。vLLM 为可选依赖（只服务双卡采样加速），装法见 SFT 清单 Step 0.2b。
+> **环境**：与 SFT 共用同一个虚拟环境，`pip install -r requirements.txt` 一步到位（trl 0.14 / torch 2.5.1 组合，2026-10-27 真机验证）。wandb 开关同 SFT（`SYNC_WANDB=1` 才上传，项目名 `sentiment-grpo-probe`）。
 >
-> **⚠️ TRL 1.16 兼容性（2026-10-27 已在 `train_grpo.py` 适配）**：当前环境实际装的是 `trl==1.16.0`，`GRPOConfig` 不接受 `warmup_ratio`（已折算成 `warmup_steps`）、`max_prompt_length` 与 `vllm_device`（已移除；prompt 截断改由启动时的实测检查兜底——喂超长 prompt 不再静默截断，会直接进模型）。再遇 `unexpected keyword argument` 先跑 `python3 -c "import trl; print(trl.__version__)"` 对版本。
+> **⚠️ 依赖红线**：不要升 `trl`（1.x 与 vllm 0.7 剧毒不兼容）也不要装 `vllm`，除非走双卡 vLLM 拓扑——那套组合（trl 0.14 + vllm 0.7.3 + torch 2.5.1）已在另一台机器实测跑通，需要时再装 vllm 并先 3 步冒烟。
 >
 > **路径约定（AutoDL，与 SFT 清单对齐）**：模型下到 `/root/autodl-tmp/models`；数据与训练/探针产物都在仓库内 `/root/autodl-tmp/senti/data/`（探针数据实际在位路径：`/root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl`，50 条）。
 > - 探针数据上传：本机执行 `scp tests/data/grpo_prompts_probe.jsonl root@<autodl>:/root/autodl-tmp/senti/data/`；
@@ -110,9 +110,8 @@
   - `--tag=fuse_smoke` 位置任意，不传就不加后缀
   - GPU 卡数：默认 `nvidia-smi` 自动识别
   - **1k 探针 / 正式训练用双卡**：`NPROC=2`（cuda:0 训练 + cuda:1 vLLM 采样，快 2~3 倍）
-    - 前置：装 vLLM（可选依赖，见 SFT 清单 Step 0.2b：`pip install vllm==0.7.3`，torch 2.5.x 只兼容 0.7.x）
-    - 没装 vLLM 时脚本会启动失败（`ImportError: vLLM is not available`）——那时退回 `NPROC=1` 单卡
-  - 50 题小探针：`NPROC=1` 单卡即可
+    - 前置：trl 0.14 + vllm 0.7.3 + torch 2.5.1（trl 1.x 与 vllm 0.7 不兼容，别升 trl）；装完先 3 步冒烟
+  - 50 题小探针：`NPROC=1` 单卡即可（多卡机上会自动限 CUDA_VISIBLE_DEVICES=0，不会踩 DataParallel）
 - [ ] **3.4** 熔断默认开：训练入口直跑不传 `--eval_file` 即自动从训练池抽 `--eval_n`（默认 8）条基线集；要显式指定就用 `--eval_file`，`--eval_n 0` 关闭。启动脚本（`run_grpo_train.sh`）则用环境变量：设置 `EVAL_FILE`（或不设走同样自动档）、`FUSE_HARD=1` 才执行硬停止。
 
 ---

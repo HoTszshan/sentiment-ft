@@ -133,13 +133,22 @@ if [ "$N_GPU" -ge 2 ]; then
   # 会包 nn.DataParallel, TRL 1.16 GRPOTrainer 直接拒绝 (n_gpu>1 raise)。
   # 实测报错: run_20261027_110514_fuse_smoke。CUDA_VISIBLE_DEVICES=0 把训练进程
   # 限到 cuda:0, 剩下的卡留给 vLLM (colocate 模式自己挑可见卡之外的设备)。
-  LAUNCH=(env CUDA_VISIBLE_DEVICES=0 accelerate launch --num_processes 1 --gpu_ids 0)
-  VLLM_FLAG="--use_vllm"
-  log "拓扑: 训练进程限单卡 (CUDA_VISIBLE_DEVICES=0) + vLLM 采样 (cuda:1)"
-elif [ "$N_GPU" = "1" ]; then
-  LAUNCH=(python3)
+  # trl 0.14 + vllm 在 3090 24G 上 5 次实测全部失败 (run_*vllm_smoke1~5, 2026-10-27):
+  #   1) 限单卡可见 → vllm auto 推导 cuda:1 越界; 2/3) tokenizer API 被 transformers 5.x 删;
+  #   4) 2 卡可见 → DataParallel 铺满两卡, vllm 无卡可起; 5) 单卡 colocate →
+  #   数学不可行: 训练 11.6G + vllm 权重 7.5G + KV 2G + logits 峰值 4G+ > 24G。
+  # 结论: 本机 GRPO 用单卡 HF generate (NPROC=1), vllm 需要 ≥40G 卡或 trl≥1.x 升级线。
+  LAUNCH=(env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+          accelerate launch --num_processes 1 --gpu_ids 0)
   VLLM_FLAG=""
-  log "拓扑: 单卡，HF generate 采样 (1k 探针/正式训练建议 NPROC=2 双卡开 vLLM)"
+  log "拓扑: 单卡 HF generate (trl 0.14 + vllm 在 24G 卡上实测不可行, 见脚本头 vllm 段)"
+elif [ "$N_GPU" = "1" ]; then
+  # "单卡拓扑"在多卡机器上是「只用 1 张卡」—— 也必须限可见卡, 否则 HF Trainer
+  # 包 nn.DataParallel (NPROC=1 只是 1 个进程, 该进程仍看得见全部卡)。实测:
+  # run_20261027_121xxx postfix, GRPOTrainer raise n_gpu>1。
+  LAUNCH=(env CUDA_VISIBLE_DEVICES=0 python3)
+  VLLM_FLAG=""
+  log "拓扑: 单卡 (CUDA_VISIBLE_DEVICES=0)，HF generate 采样 (1k 探针/正式训练建议 NPROC=2 双卡开 vLLM)"
 else
   log "未检测到 GPU，仍继续 (train_grpo 会自己报错)"
   LAUNCH=(python3)

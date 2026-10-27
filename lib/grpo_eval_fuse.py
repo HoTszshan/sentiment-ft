@@ -12,7 +12,8 @@ from typing import Any, Dict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: int):
+def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: int,
+                        eval_rows=None):
     """
     建立 eval reward 熔断 callback；超阈值时告警，可选停止训练。
 
@@ -35,7 +36,7 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
             if trainer is None:
                 return control
             try:
-                current = _eval_reward_mean(trainer, reward_fn, g)
+                current = _eval_reward_mean(trainer, reward_fn, g, eval_rows)
             except Exception as exc:
                 print(f"[WARN] eval 打分失败，跳过本轮熔断判定: {exc}")
                 return control
@@ -61,7 +62,7 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
     def initialize_baseline(trainer):
         """训练前用当前策略评估一次，避免把首个训练中 eval 错当基线。"""
         holder["trainer"] = trainer
-        baseline = _eval_reward_mean(trainer, reward_fn, g)
+        baseline = _eval_reward_mean(trainer, reward_fn, g, eval_rows)
         fuse_state["baseline"] = baseline
         print(f"[EVAL] pre-train baseline reward 均值 = {baseline:.4f}")
         return baseline
@@ -71,12 +72,16 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
     return callback
 
 
-def _eval_reward_mean(trainer, reward_fn, g: int) -> float:
+def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
     """
-    对 eval_dataset 逐题采一条 completion，用 reward_fn 打分取均值。
+    对 eval 集逐题采一条 completion，用 reward_fn 打分取均值。
 
     与训练同一个 reward_fn —— 「退化」的定义就是奖励分本身在掉。
     每题只采 1 条（eval 求稳定均值，无需 G 组内对比）。
+
+    eval_rows: 元数据行列表（含 gold_* 列）。trl 0.14 下 eval_dataset 只喂
+    prompt 列（整行会炸 HF prediction_step），gold 从这里拿；
+    trl>=1.x 不传则回退旧行为（从 dataset 行取）。
     """
     import torch
 
@@ -91,7 +96,8 @@ def _eval_reward_mean(trainer, reward_fn, g: int) -> float:
     totals = []
     try:
         with torch.no_grad():
-            for row in dataset:
+            meta_rows = eval_rows if eval_rows is not None else list(dataset)
+            for row in meta_rows:
                 prompt = row["prompt"]
                 if not isinstance(prompt, str):
                     raise TypeError("独立 eval callback 只接受字符串 prompt")

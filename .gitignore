@@ -17,3 +17,4 @@ data/align_report.json
 .claude/tmp*
 data/grpo
 train_grpo_pid.txt
+notes/

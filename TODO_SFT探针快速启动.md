@@ -11,20 +11,12 @@
 > **不建多个虚拟环境**：SFT 与 GRPO 依赖栈兼容（GRPO 只比 SFT 多 `trl`），统一装一份即可。
 
 - [ ] **0.1** 租卡：AutoDL 单卡 RTX 4090 24GB（镜像选 PyTorch 2.x + CUDA 12.x + Python 3.10+）
-- [ ] **0.2** 进入实例后**只装一次依赖**（单环境，含 GRPO 需求，一步到位）：
+- [ ] **0.2** 进入实例后**只装一次依赖**（单环境，SFT/GRPO 共用，一步到位）：
   ```bash
-  pip install "torch>=2.1" "transformers>=4.55" "trl>=0.19" "peft>=0.12" \
-      accelerate datasets modelscope wandb
+  pip install -r requirements.txt
   ```
-  验证版本：`python3 -c "import transformers, trl, peft; print(transformers.__version__, trl.__version__, peft.__version__)"`
-  （Qwen3 要 transformers≥4.51；trl≥0.19 才认 `temperature`/`processing_class`）
-- [ ] **0.2b**（可选）vLLM——只服务 GRPO 双卡加速采样，SFT 全流程用不到：
-  ```bash
-  pip install vllm==0.7.3   # torch 2.5.x 只兼容 vllm 0.7.x；0.8+ 要 torch 2.6，别硬升
-  ```
-  - 不装也行：探针/冒烟用单卡 HF generate 就够（`run_grpo_train.sh` 会自动降级）
-  - 装了才可用双卡拓扑：`NPROC=2 ./scripts/run_grpo_train.sh`（1k 探针/正式训练建议）
-  - ⚠️ 未实测项：vllm 0.7 + trl 1.16 的 colocate 接口兼容性待真机验证，装完先跑 3 步冒烟再上正式训练
+  - 版本全部 == 锚定（2026-10-27 真机验证组合），不要自行升级 `trl` / `vllm` / `torch`
+  - 验证：`python3 -c "import torch, transformers, trl, peft; print(torch.__version__, transformers.__version__, trl.__version__)"`
 - [ ] **0.3**（可选但推荐）`wandb login` 登录；不登录则自动降级只写本地日志。
   > **开关：`SYNC_WANDB=1` 才上传**。探针实验默认只落本地日志（`logs/train_probe*.log`），不污染 wandb 项目；正式跑或想看曲线时在命令前加 `SYNC_WANDB=1`（例：`SYNC_WANDB=1 SFT_POC_STAGE=POC1 ./scripts/run_probe_e2e.sh train`）。登录态认两条路径：`WANDB_API_KEY` 环境变量 或 `~/.netrc` 里 `api.wandb.ai` 凭据（`wandb login` 写入的即是后者）。上传目标项目固定为 `sentiment-sft-probe`，run 名 `probe_<时间戳>`。
 - [ ] **0.4** 上传 `tests/` 目录（或 git clone 仓库），`cd tests && chmod +x scripts/*.sh`

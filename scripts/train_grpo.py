@@ -161,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--use_vllm", action="store_true")
+    parser.add_argument("--vllm_device", default=None,
+                        help="trl 0.14: vLLM 采样卡, 如 cuda:1 (双卡 colocate); 不传走 auto")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--dry_run", action="store_true")
@@ -230,6 +232,26 @@ def main():
         from datasets import Dataset
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        # 环境怪癖补丁: 本环境 (trl 0.14 + transformers 5.x) 下 trl 检测 vllm
+        # 返回 (bool, version) 元组而非 bool, 恒 truthy → 未装 vllm 时
+        # grpo_trainer 无条件 import vllm 而崩。import trl 前把元组修回 bool。
+        try:
+            import trl.import_utils as _trl_iu
+            if isinstance(getattr(_trl_iu, "_vllm_available", None), tuple):
+                _trl_iu._vllm_available = _trl_iu._vllm_available[0]
+        except Exception:
+            pass
+        # 环境怪癖补丁③: vllm 0.7.3 读 tokenizer.all_special_tokens_extended,
+        # transformers 5.x 已删除该属性 (实测 Qwen2Tokenizer AttributeError)。
+        # vLLM 只做缓存/集合运算, 挂基类 property 返回 str 列表语义等价。
+        try:
+            from transformers.tokenization_utils_base import PreTrainedTokenizerBase as _PTB
+            if not hasattr(_PTB, "all_special_tokens_extended"):
+                _PTB.all_special_tokens_extended = property(
+                    lambda self: list(self.all_special_tokens))
+        except Exception:
+            pass
         from trl import GRPOConfig, GRPOTrainer
         from peft import LoraConfig, TaskType
         dataset = Dataset.from_list(rows)
@@ -277,7 +299,16 @@ def main():
             per_device_eval_batch_size=h.per_device,
             vllm_gpu_memory_utilization=0.3,
             max_steps=args.max_steps or 0, temperature=h.temperature,
-            loss_type="grpo", scale_rewards="none",
+            # trl 0.14 的 vllm_device: auto=cuda:{num_processes}, 但训练进程限单卡时
+            # torch 只见 1 张 → auto 推导的 cuda:1 越界 (run_20261027_160037 实测)。
+            # 双卡 colocate: 训练进程保持 2 卡可见 + 训练走 accelerate 管的 cuda:0,
+            # vllm 显式指定 cuda:1。单卡 (可见1张) 不传, 走 auto=cuda:0? 也越界 —
+            # 故单卡不用 vllm (脚本层保证), 双卡必须显式传。
+            **({"vllm_device": args.vllm_device} if args.vllm_device else {}),
+            # 显存: 0.14 的 per_device 是「prompt 数」, ×G=4 即 16 序列/batch,
+            # 3090 24G OOM (2026-10-27), 开 GC 压 activation。
+            gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
         )
 
         # 3. 加载模型；tokenizer 已在步骤 2 加载并测长。
@@ -287,6 +318,10 @@ def main():
             args.model_name_or_path,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             trust_remote_code=True)
+        # 环境怪癖补丁②: trl 0.14 写 model.warnings_issued[...] (transformers
+        # 5.x 已删该属性 → AttributeError)。预挂空 dict, 仅影响警告抑制。
+        if not hasattr(model, "warnings_issued"):
+            model.warnings_issued = {}
 
         # 4. 创建 Trainer（可选注册评估熔断 callback）
         peft_config = LoraConfig(
@@ -297,12 +332,17 @@ def main():
         trainer = GRPOTrainer(
             model=model, peft_config=peft_config,
             reward_funcs=make_reward_fn(h.num_generations), args=config,
-            train_dataset=dataset, eval_dataset=Dataset.from_list(eval_rows) if eval_rows else None,
+            train_dataset=dataset,
+            # eval 只喂 prompt 列: 打分由熔断 callback 自行采样, 不走 Trainer
+            # 的 prediction_step (整行喂入会在 0.14 上因 gold 的 list 字段炸掉)。
+            eval_dataset=(Dataset.from_dict(
+                {"prompt": [r["prompt"] for r in eval_rows]}) if eval_rows else None),
             processing_class=tokenizer)
         if eval_rows:
             fuse_callback = build_fuse_callback(
                 fuse_threshold=args.fuse_threshold, fuse_hard=args.fuse_hard,
-                reward_fn=make_reward_fn(h.num_generations), g=h.num_generations)
+                reward_fn=make_reward_fn(h.num_generations), g=h.num_generations,
+                eval_rows=eval_rows)
             fuse_callback._attach(trainer)
             fuse_callback.initialize_baseline(trainer)
             trainer.add_callback(fuse_callback)
