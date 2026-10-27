@@ -15,7 +15,7 @@
 #     └── logs/grpo_probe.log           控制台全量日志 (tee)
 #
 # 环境变量:
-#   DATA         默认 data/grpo_prompts_probe.jsonl
+#   DATA         默认 data/probe_test_grpo_train_synth.jsonl
 #   BASE_MODEL   默认 models/Qwen3-4B-Instruct-SFT (合并 SFT 后的完整模型目录)
 #   OUTPUT_DIR   默认 /root/autodl-tmp/models/grpo_senti (AutoDL, 与训练脚本同目录);
 #                本机自动退回 <仓库>/output/grpo
@@ -32,7 +32,7 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BASE_DIR"
 echo "工作目录: $BASE_DIR"
 
-DATA="${DATA:-data/grpo_prompts_probe.jsonl}"
+DATA="${DATA:-data/probe_test_grpo_train_synth.jsonl}"
 BASE_MODEL="${BASE_MODEL:-models/Qwen3-4B-Instruct-SFT}"
 # 与 run_grpo_train.sh 同款回退: 环境变量 > AutoDL 数据盘 > 仓库本地
 OUTPUT_DIR="${OUTPUT_DIR:-}"

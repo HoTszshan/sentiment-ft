@@ -20,7 +20,7 @@ GRPO 探针数据构建：把「新生成的语料池」转成 GRPO 落盘契约
 用法:
     python3 scripts/build_grpo_probe.py \
         --src data/grpo_probe_pool.jsonl \
-        --out data/grpo_prompts_probe.jsonl
+        --out data/probe_test_grpo_train_synth.jsonl
 """
 
 import argparse

@@ -48,8 +48,8 @@
 
 | 项 | 值 | 来源 |
 |---|---|---|
-| SFT 探针数据 | `data/train_synth_81_aligned.jsonl`，**81 行**（实测 `wc -l`） | 已核 |
-| GRPO 探针数据 | `data/grpo_prompts_probe.jsonl`，**51 行**，契约 `{prompt, gold}` | 已核 |
+| SFT 探针数据 | `data/probe_test_sft_train_synth.jsonl`，**81 行**（实测 `wc -l`） | 已核 |
+| GRPO 探针数据 | `data/probe_test_grpo_train_synth.jsonl`，**51 行**，契约 `{prompt, gold}` | 已核 |
 | GRPO eval 基线集 | `data/grpo/grpo_eval_probe.jsonl`（8 条）——🟡 **文件未提交**，需在 AutoDL 按 `TODO_GRPO探针快速启动.md:76-78` 的 snippet 现生成 | 见下 |
 | 7 类难例 + 15% 空表 | 由 `align_sft_data.py` / `build_grpo_probe.py` 质检保证 | TODO 2.1 |
 

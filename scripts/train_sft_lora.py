@@ -4,7 +4,7 @@
 舆情负面精判 · Qwen3-4B SFT LoRA 训练主脚本 (《训练手册SOP》对齐版)
 
 核心特性:
-1. 基座: Qwen/Qwen3-4B-Instruct + LoRA (r=16, alpha=32, target_modules=全量线性层)。
+1. 基座: Qwen/Qwen3-4B-Instruct-2507 + LoRA (r=16, alpha=32, target_modules=全量线性层)。
 2. 协议分隔符对齐: 识别 <think> ... </think>（训练语料固定形态）。
 3. 前缀损失掩码 (Prefix Masking): 输入指令、Schema 与原文整段置 -100 (Ignore Index)。
 4. 骨架差分掩码 (Skeleton Masking): JSON 结构骨架（键名/引号/括号/冒号/逗号）权重置 0，
@@ -298,7 +298,7 @@ def _resolve_trainer_base(backend: str):
         except ImportError:
             raise SystemExit(
                 "[FATAL] --trainer_backend trl 但未安装 trl："
-                "pip install 'trl>=0.19'（或改 --trainer_backend hf）")
+                "pip install -r requirements.txt（trl==0.14.0，或改 --trainer_backend hf）")
     from transformers import Trainer
     return Trainer, "transformers.Trainer"
 
@@ -317,7 +317,7 @@ def _sft_trainer_extra_kwargs(TrainerBase, tokenizer, backend_name: str) -> dict
       必须让 SFTTrainer 跳过它自带的 _prepare_dataset（分词/截断/packing），
       否则会对已编码数据二次处理。
 
-    ⚠️ skip_prepare_dataset 是 trl>=0.19 的 SFTConfig 字段，不是 __init__ 参数：
+    ⚠️ skip_prepare_dataset 是 SFTConfig 字段（trl 0.14 与 0.19+ 均如此），不是 __init__ 参数：
         需在 SFTConfig 里传入，无法从函数签名检测，由参数解析透传。
         下方样本自检兜底：避免SFTTrainer对自定义数据集执行prepare，提前抛出异常而非静默出错。
     HF Trainer 路径不需要这些，返回空 dict。

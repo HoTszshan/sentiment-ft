@@ -31,6 +31,9 @@ def setup_wandb(project: str, run_name: str, no_wandb: bool = False,
     # None = 调用方未传 report_to（如 SFT 没扫到 --report_to），不算禁用
     _rt_forms = (user_report_to, ) if not isinstance(user_report_to, list) else tuple(user_report_to)
     _user_off = any(v in ("none", "") for v in _rt_forms)
+    # list 形态的"空"也是禁用: [] / [""] (调用方显式传了空列表 = 不要上报)
+    if isinstance(user_report_to, list) and not any(v for v in user_report_to):
+        _user_off = True
     if no_wandb or _user_off:
         return False
     try:

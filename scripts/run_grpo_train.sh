@@ -2,7 +2,7 @@
 # ==============================================================================
 # 舆情负面精判 · GRPO 训练启动脚本 (nohup 后台 + 时间戳日志 + PID 文件)
 #
-# 用法 (在 MVP/tests 目录):
+# 用法 (在仓库根目录):
 #   ./scripts/run_grpo_train.sh                        # 自动按 GPU 数选拓扑
 #   ./scripts/run_grpo_train.sh --tag=fuse_smoke       # 输出目录追加 tag 后缀
 #   GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 冒烟
@@ -14,7 +14,7 @@
 #     └── logs/grpo_train_<TS>.log    训练日志 (train_grpo 双写 + 脚本 tee 同一份)
 #
 # 环境变量:
-#   DATA           默认 data/grpo_prompts_probe.jsonl
+#   DATA           默认 data/probe_test_grpo_train_synth.jsonl
 #   MODEL          默认 models/Qwen3-4B-Instruct-SFT (先跑 merge_sft_adapter.py 产出)
 #                  指向原厂基座 = 未挂 SFT 起训，只用于对照实验
 #   OUTPUT_DIR     默认 /root/autodl-tmp/models/grpo_senti (AutoDL, 与 SFT 的 sft_senti 同盘同层);
@@ -31,6 +31,11 @@
 #   1 卡  → 不启用 vLLM，rollout 走 HF generate（探针 50 题足够）
 #   2 卡  → 训练进程数 = GPU 数 - 1 = 1，vLLM 独占 cuda:1（use_vllm=auto）
 #   ⚠️ 不要在脚本里重排 CUDA_VISIBLE_DEVICES（torch 初始化后改它不生效）
+#
+# accelerate 配置: config/accelerate_grpo.yaml（仅 GRPO 用；SFT 走 NPROC，不读本文件），
+#   其中 num_processes: 1 是占位值，真实值由下方 --num_processes 覆盖：
+#   --num_processes N = 启动 N 个训练进程（=N 张卡各占一个 DDP rank），
+#   双卡拓扑下 N = GPU-1，剩余那张卡留给 colocate vLLM 独占采样。
 # ==============================================================================
 
 set -euo pipefail
@@ -39,7 +44,7 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BASE_DIR"
 echo "工作目录: $BASE_DIR"
 
-DATA="${DATA:-data/grpo_prompts_probe.jsonl}"
+DATA="${DATA:-data/probe_test_grpo_train_synth.jsonl}"
 MODEL="${MODEL:-models/Qwen3-4B-Instruct-SFT}"
 # 与 run_probe_e2e.sh 同款回退: 环境变量 > AutoDL 数据盘 > 仓库本地
 OUTPUT_DIR="${OUTPUT_DIR:-}"
@@ -89,7 +94,7 @@ for m in torch transformers trl peft datasets; do
 done
 if [ -n "$missing" ]; then
   log "缺少依赖:$missing"
-  log "安装: pip install 'torch>=2.2' 'transformers>=4.55' 'trl>=0.19' 'peft>=0.12' datasets accelerate"
+  log "安装: pip install -r requirements.txt (trl==0.14.0)"
   if [ "${SKIP_DEPS:-0}" != "1" ]; then exit 1; fi
 else
   log "训练依赖齐全"
@@ -129,17 +134,12 @@ log "GPU 卡数: $N_GPU${NPROC:+ (NPROC 显式指定; 实机 $N_REAL 张)}"
 
 if [ "$N_GPU" -ge 2 ]; then
   # 双卡: 1 训练进程 (cuda:0) + vLLM 独占 (cuda:1)
-  # 关键: 训练进程必须只看得见 1 张卡 —— 多卡可见 + 非分布式启动时 HF Trainer
-  # 会包 nn.DataParallel, TRL 1.16 GRPOTrainer 直接拒绝 (n_gpu>1 raise)。
-  # 实测报错: run_20261027_110514_fuse_smoke。CUDA_VISIBLE_DEVICES=0 把训练进程
-  # 限到 cuda:0, 剩下的卡留给 vLLM (colocate 模式自己挑可见卡之外的设备)。
-  # trl 0.14 + vllm 在 3090 24G 上 5 次实测全部失败 (run_*vllm_smoke1~5, 2026-10-27):
-  #   1) 限单卡可见 → vllm auto 推导 cuda:1 越界; 2/3) tokenizer API 被 transformers 5.x 删;
-  #   4) 2 卡可见 → DataParallel 铺满两卡, vllm 无卡可起; 5) 单卡 colocate →
-  #   数学不可行: 训练 11.6G + vllm 权重 7.5G + KV 2G + logits 峰值 4G+ > 24G。
-  # 结论: 本机 GRPO 用单卡 HF generate (NPROC=1), vllm 需要 ≥40G 卡或 trl≥1.x 升级线。
-  LAUNCH=(env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-          accelerate launch --num_processes 1 --gpu_ids 0)
+  # 走 config/accelerate_grpo.yaml（与参考 run_train_2gpu.sh 同构），--num_processes 覆盖占位值
+  LAUNCH=(accelerate launch --config_file config/accelerate_grpo.yaml --num_processes 1)
+  VLLM_FLAG="--use_vllm"
+  log "拓扑: accelerate 1 进程训练 (cuda:0) + vLLM 采样 (cuda:1)"
+elif [ "$N_GPU" = "1" ]; then
+  LAUNCH=(python3)
   VLLM_FLAG=""
   log "拓扑: 单卡 HF generate (trl 0.14 + vllm 在 24G 卡上实测不可行, 见脚本头 vllm 段)"
 elif [ "$N_GPU" = "1" ]; then

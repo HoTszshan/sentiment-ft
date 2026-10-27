@@ -126,7 +126,7 @@ def resolve_prompt_limit(real_max: int, configured: int, hard_cap: int = 4096) -
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Rule-based GRPO 训练")
-    parser.add_argument("--data", default="data/grpo_prompts_probe.jsonl")
+    parser.add_argument("--data", default="data/probe_test_grpo_train_synth.jsonl")
     parser.add_argument("--model_name_or_path", default="models/Qwen3-4B-Instruct")
     parser.add_argument("--output_dir", default="output/grpo_lora")
     parser.add_argument("--log_file", default=None)
@@ -299,16 +299,9 @@ def main():
             per_device_eval_batch_size=h.per_device,
             vllm_gpu_memory_utilization=0.3,
             max_steps=args.max_steps or 0, temperature=h.temperature,
-            # trl 0.14 的 vllm_device: auto=cuda:{num_processes}, 但训练进程限单卡时
-            # torch 只见 1 张 → auto 推导的 cuda:1 越界 (run_20261027_160037 实测)。
-            # 双卡 colocate: 训练进程保持 2 卡可见 + 训练走 accelerate 管的 cuda:0,
-            # vllm 显式指定 cuda:1。单卡 (可见1张) 不传, 走 auto=cuda:0? 也越界 —
-            # 故单卡不用 vllm (脚本层保证), 双卡必须显式传。
-            **({"vllm_device": args.vllm_device} if args.vllm_device else {}),
-            # 显存: 0.14 的 per_device 是「prompt 数」, ×G=4 即 16 序列/batch,
-            # 3090 24G OOM (2026-10-27), 开 GC 压 activation。
-            gradient_checkpointing=True,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
+            loss_type="grpo", scale_rewards="none",
+            # ε固定0.2(TRL默认单侧clip)：规则reward无重尾；β=0.04 KL控漂移，避免双重约束扼杀G=4组内方差；探针阶段减少超参
+            epsilon=h.epsilon,
         )
 
         # 3. 加载模型；tokenizer 已在步骤 2 加载并测长。

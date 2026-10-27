@@ -1,15 +1,12 @@
 # GRPO 探针实验 · 快速启动 TODO 清单
 
 > **定位**：AutoDL 单卡（RTX 4090/3090 24GB）上把 GRPO 探针（merge → 训练 → rollout 分流）从零跑通并回填实测数字的**一步步操作清单**。前置：SFT 探针已训完（有 adapter，见 `TODO_SFT探针快速启动.md`）。
-> **口径权威源**：`notes/舆情负面精判_GRPO训练实战手册.md`（训练/Reward）、`notes/舆情负面精判_GRPO数据准备实战手册.md` §五（四维 Reward 契约）、`tests/README.md` §3（脚本用法）。冲突以上游为准。
+> **口径权威源**：`notes/舆情负面精判_GRPO训练实战手册.md`（训练/Reward）、`notes/舆情负面精判_GRPO数据准备实战手册.md` §五（四维 Reward 契约）、`README.md` §3（脚本用法）。冲突以上游为准。
 > **纪律**：跑出来的数才回填；没跑的一律标 `[待实测]`，不编数。本清单勾完即把 GRPO 手册的「训练与 rollout 从未实跑」红线解除。
 >
 > **环境**：与 SFT 共用同一个虚拟环境，`pip install -r requirements.txt` 一步到位（trl 0.14 / torch 2.5.1 组合，2026-10-27 真机验证）。wandb 开关同 SFT（`SYNC_WANDB=1` 才上传，项目名 `sentiment-grpo-probe`）。
 >
-> **⚠️ 依赖红线**：不要升 `trl`（1.x 与 vllm 0.7 剧毒不兼容）也不要装 `vllm`，除非走双卡 vLLM 拓扑——那套组合（trl 0.14 + vllm 0.7.3 + torch 2.5.1）已在另一台机器实测跑通，需要时再装 vllm 并先 3 步冒烟。
->
-> **路径约定（AutoDL，与 SFT 清单对齐）**：模型下到 `/root/autodl-tmp/models`；数据与训练/探针产物都在仓库内 `/root/autodl-tmp/senti/data/`（探针数据实际在位路径：`/root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl`，50 条）。
-> - 探针数据上传：本机执行 `scp tests/data/grpo_prompts_probe.jsonl root@<autodl>:/root/autodl-tmp/senti/data/`；
+> **路径约定（AutoDL，与 SFT 清单对齐）**：模型下到 `/root/autodl-tmp/models`；数据与训练/探针产物都在仓库内 `/root/autodl-tmp/senti/data/`（探针数据为仓库内置文件 `data/probe_test_grpo_train_synth.jsonl`，50 条，无需上传）。
 > - 下方命令一律用 AutoDL 绝对路径；本机跑则换成仓库相对路径（`models/`、`data/`）；
 > - `train_grpo.py` 用 `--model_name_or_path`；`run_grpo_probe.py` 用 `--base_model`（分体挂载另加 `--adapter`）。`--data` / `--out` 两脚本一致，全是显式参数，不依赖仓库布局。
 
@@ -22,7 +19,7 @@
 - [ ] **1.1** 确认 SFT adapter 在位：
   ```bash
   ls /root/autodl-tmp/models/sft_senti/run_*/sft_lora/adapter_config.json   # 取最新时间戳那个
-  ls models/Qwen3-4B-Instruct-2507/config.json # 基座在位
+  ls /root/autodl-tmp/models/Qwen3-4B-Instruct-2507/config.json # 基座在位
   ```
   > ⚠️ 历史产物适配：改名前训的 run 目录里目录名是 `probe_lora`（如 `run_20261024_180116_POC3/probe_lora`），路径按实际在位的为准；改名后新训的才是 `sft_lora`。
 - [ ] **1.2** 合并体检（不加载模型，任何环境可跑）：
@@ -53,12 +50,12 @@
 
 - [ ] **2.1** 数据在位确认：
   ```bash
-  wc -l /root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl    # 当前文件 50 条
+  wc -l /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl    # 当前文件 50 条
   ```
 - [ ] **2.2** 干跑体检（数据契约 + 预算 + 优势口径自检，零 GPU）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl --dry_run --no_wandb
+      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl --dry_run --no_wandb
   ```
   逐项核对：
   - 数据行数为 **50 条**；每步 8 题 × G=4 = 32 轨迹/步；50 题按默认 1 epoch 预算为 **7 步**；
@@ -76,7 +73,7 @@
 - [ ] **3.1** 冒烟（前台，3 步，只验证「能采样、能打分、能更新」）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl \
+      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
       --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
       --output_dir /root/autodl-tmp/models/grpo_senti/grpo_smoke \
       --limit 8 --max_steps 3 --save_steps 2 --no_wandb \
@@ -86,7 +83,7 @@
 - [ ] **3.2** 长跑探针（专门验证周期 eval 与熔断链路；50 题 × 4 epochs = 28 步）：
   ```bash
   python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl \
+      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
       --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
       --output_dir /root/autodl-tmp/models/grpo_senti/grpo_fuse_smoke \
       --eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 \
@@ -100,7 +97,7 @@
   > 2. **采样噪声的根因**：`grpo_eval_fuse._eval_reward_mean` 用 `do_sample=True + temperature=0.7` 逐条采样打分，同一样本每次得分都不同。要压低噪声，正式阶段应改 greedy（T=0）+ 更大基线集，否则 2% 相对阈值也会被噪声淹没。
 - [ ] **3.3** 正式探针训练（按当前研究设计的 1 epoch，不带熔断）：
   ```bash
-  DATA=/root/autodl-tmp/senti/data/grpo_prompts_probe.jsonl \
+  DATA=/root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
   MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
   ./scripts/run_grpo_train.sh --tag=fuse_smoke
   # (OUTPUT_DIR 默认就是 /root/autodl-tmp/models/grpo_senti，想换地方才传)
@@ -109,9 +106,8 @@
   `grpo_senti/run_<时间戳>[_<tag>]/`，里面 `grpo_lora/`（adapter + 指标）+ `logs/`（训练日志）。
   - `--tag=fuse_smoke` 位置任意，不传就不加后缀
   - GPU 卡数：默认 `nvidia-smi` 自动识别
-  - **1k 探针 / 正式训练用双卡**：`NPROC=2`（cuda:0 训练 + cuda:1 vLLM 采样，快 2~3 倍）
-    - 前置：trl 0.14 + vllm 0.7.3 + torch 2.5.1（trl 1.x 与 vllm 0.7 不兼容，别升 trl）；装完先 3 步冒烟
-  - 50 题小探针：`NPROC=1` 单卡即可（多卡机上会自动限 CUDA_VISIBLE_DEVICES=0，不会踩 DataParallel）
+  - 50 题小探针 / 1k 探针：一律 `NPROC=1` 单卡（多卡机上会自动限 CUDA_VISIBLE_DEVICES=0，不会踩 DataParallel）
+    - **双卡 vLLM 采样（`NPROC=2`）为 TODO，尚未跑通**：vllm 0.7.3 + trl 0.14 五次实测（run_*vllm_smoke1~5）未成功，vllm 暂未列入 requirements。候选方案（trl>=1.x 升级线 / sleep_mode / ≥40G 卡）与排查记录见 `notes/GRPO环境踩坑实录_20261027.md`；跑通前探针先用单卡
 - [ ] **3.4** 熔断默认开：训练入口直跑不传 `--eval_file` 即自动从训练池抽 `--eval_n`（默认 8）条基线集；要显式指定就用 `--eval_file`，`--eval_n 0` 关闭。启动脚本（`run_grpo_train.sh`）则用环境变量：设置 `EVAL_FILE`（或不设走同样自动档）、`FUSE_HARD=1` 才执行硬停止。
 
 ---
@@ -190,4 +186,4 @@
 
 - eval 基线集换成独立留出集（若目标是测通用能力退化，应选通用指令集）；阈值需结合基线集规模与波动重新校准；**同时复审 `should_fuse` 的绝对差分支**（baseline≤0 时 0.02 门槛在采样噪声下会误报，见 Step 3.2 的坑位说明）与 `do_sample=True` 的解码噪声，必要时改 greedy 解码；
 - `eval_four_tier.py` T4 档跑四档对照归因；
-- 双卡拓扑 + vLLM 采样（`run_grpo_train.sh` 已支持，GPU 数 ≥2 自动开）。
+- 双卡拓扑 + vLLM 采样（`run_grpo_train.sh` 已支持，GPU 数 ≥2 自动开；走 `config/accelerate_grpo.yaml` + `--num_processes 1` 覆盖）。**TODO：尚未跑通**——vllm 0.7.3 + trl 0.14 五次实测未成功，候选方案与排查记录见 `notes/GRPO环境踩坑实录_20261027.md`，跑通前探针继续用单卡。

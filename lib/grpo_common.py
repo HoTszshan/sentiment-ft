@@ -114,6 +114,7 @@ class GrpoHyper:
     warmup_ratio: float = 0.03
     max_prompt_length: int = 2048            # 2560(SFT max_seq) - 512(completion)；实测 max=774，2.6× 余量
     max_completion_length: int = 512         # 实测整段输出 max=383；见下方 budget_note()
+    epsilon: float = 0.2                     # PPO 截断替代项，裁概率比 r 不裁优势 A ✅ TRL 默认显式化
     seed: int = 42
 
     @property
@@ -143,6 +144,7 @@ class GrpoHyper:
             "total_steps": total,
             "warmup_steps": int(total * self.warmup_ratio),
             "lr": self.lr, "temperature": self.temperature, "beta_kl": self.beta_kl,
+            "epsilon": self.epsilon,
             "max_prompt_length": self.max_prompt_length,
             "max_completion_length": self.max_completion_length,
         }

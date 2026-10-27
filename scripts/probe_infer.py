@@ -13,8 +13,8 @@
 
 用法:
     python probe_infer.py \
-        --base_model Qwen/Qwen3-4B-Instruct \
-        --adapter_path output/run_<时间戳>/sft_lora \
+        --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+        --adapter_path /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
         --data_file data/mixed/sft_val.jsonl \
         --out output/pred_val.jsonl
 
