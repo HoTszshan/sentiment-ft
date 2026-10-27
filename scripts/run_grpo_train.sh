@@ -8,7 +8,7 @@
 #   GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 冒烟
 #   DRY=1 ./scripts/run_grpo_train.sh                  # 只跑 --dry_run 体检（无 GPU 可跑）
 #
-# 产物布局 (对齐 run_probe_e2e.sh: 一个 run 目录 = 一次完整实验, 拷走即归档):
+# 产物布局 (对齐 run_sft_e2e.sh: 一个 run 目录 = 一次完整实验, 拷走即归档):
 #   $OUTPUT_DIR/run_<TS>[_<TAG>]/
 #     ├── grpo_lora/                  adapter + grpo_metrics.json (训练产物)
 #     └── logs/grpo_train_<TS>.log    训练日志 (train_grpo 双写 + 脚本 tee 同一份)
@@ -46,7 +46,7 @@ echo "工作目录: $BASE_DIR"
 
 DATA="${DATA:-data/probe_test_grpo_train_synth.jsonl}"
 MODEL="${MODEL:-models/Qwen3-4B-Instruct-SFT}"
-# 与 run_probe_e2e.sh 同款回退: 环境变量 > AutoDL 数据盘 > 仓库本地
+# 与 run_sft_e2e.sh 同款回退: 环境变量 > AutoDL 数据盘 > 仓库本地
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 if [ -n "$OUTPUT_DIR" ]; then :;
 elif [ -d /root/autodl-tmp ]; then OUTPUT_DIR=/root/autodl-tmp/models/grpo_senti;

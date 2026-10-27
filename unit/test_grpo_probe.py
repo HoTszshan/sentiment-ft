@@ -63,8 +63,14 @@ def _mk(sentiment="negative", hard="irony", risk=None, evidence=None, rel="core"
             "hard_case_type": hard,
             "risk_categories": GOLD["risk_categories"] if risk is None else risk,
             "evidence": GOLD["evidence"] if evidence is None else evidence}
-    cot = cot or ("Step1 主体居叙事中心故core。Step2 字面语义与真实取向相反判irony。"
-                  "Step3 风险归product与marketing，负面定negative。")
+    # 2026-10-27 R_length 阈值重设为 120/200/320 (750 条实测 p50=201)。
+    # 自然展开的三跳推理 ≈190 汉字 ≈138 tokens，落在理想带 → GOOD 组 total = 2.0。
+    cot = cot or (
+        "Step1 主体识别：通读全文，叙事焦点始终落在广发证券身上，主体相关度判 core。"
+        "Step2 语义分析：字面用「稳赚不赔」的褒义表述，但紧跟「才一天就亏了3000多」的事实反转，"
+        "典型反讽修辞，难例类型判 irony。Step3 风险归因：亏损直接指向理财产品表现归 product，"
+        "「稳赚不赔」的宣传口径涉嫌误导归 marketing。综合判 negative。"
+    )
     return f"<think>{cot}</think>" + _j.dumps(body, ensure_ascii=False)
 
 
@@ -264,10 +270,11 @@ class TestRunProbe(unittest.TestCase):
         self.assertEqual([r["bucket"] for r in rows], ["drop_k0"] * 3)
 
     def test_k_bucket_keeps_only_1_to_3(self):
-        # 第 1 题 1 对、第 2 题 2 对、第 3 题 3 对 → 全部 keep
+        # 2026-10-27 阶梯式 accuracy 后 k 口径变化: 情感对即 accuracy_pass。
+        # 构造非 pass 轨迹必须真的打掉 sentiment (rel/hard/risk 错现在都算 pass)。
         seqs = [
-            [GOOD, _mk(sentiment="positive"), _mk(hard="explicit"), _mk(rel="passing")],
-            [GOOD, GOOD, _mk(sentiment="positive"), _mk(hard="explicit")],
+            [GOOD, _mk(sentiment="positive"), _mk(sentiment="neutral"), _mk(sentiment="positive")],
+            [GOOD, GOOD, _mk(sentiment="positive"), _mk(sentiment="neutral")],
             [GOOD, GOOD, GOOD, _mk(sentiment="positive")],
         ]
         it = iter(seqs)

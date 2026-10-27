@@ -15,6 +15,7 @@ data/align_report.json
 .claude/settings.json
 .claude/worktrees
 data/*_report.json
+data/report/
 .claude/tmp*
 data/grpo
 train_grpo_pid.txt

@@ -3,13 +3,13 @@
 # 舆情负面精判 · 小样本探针实验 一键串跑 (仓库根 /root/autodl-tmp/senti)
 #
 # 用法 (在仓库根目录下，或任何位置直接执行本脚本):
-#   ./scripts/run_probe_e2e.sh              # 全流程: 下载→混合→训练→推理→评测
-#   ./scripts/run_probe_e2e.sh download     # 只跑第一步
-#   ./scripts/run_probe_e2e.sh mix          # 只跑混合
-#   ./scripts/run_probe_e2e.sh train        # 只跑训练
-#   ./scripts/run_probe_e2e.sh test         # 只跑推理+评测
-#   ./scripts/run_probe_e2e.sh traintest    # 只跑训练+推理+评测 (复用已有混合数据与基座模型)
-#   ./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest
+#   ./scripts/run_sft_e2e.sh              # 全流程: 下载→混合→训练→推理→评测
+#   ./scripts/run_sft_e2e.sh download     # 只跑第一步
+#   ./scripts/run_sft_e2e.sh mix          # 只跑混合
+#   ./scripts/run_sft_e2e.sh train        # 只跑训练
+#   ./scripts/run_sft_e2e.sh test         # 只跑推理+评测
+#   ./scripts/run_sft_e2e.sh traintest    # 只跑训练+推理+评测 (复用已有混合数据与基座模型)
+#   ./scripts/run_sft_e2e.sh --tag=POC1_epoch6 traintest
 #                              # 同 traintest, 但输出目录名追加 tag 后缀
 #                              # (run_20261024_180116 → run_20261024_180116_POC1_epoch6)
 #                              # --tag 位置任意, 不传则保持原有输出路径不变
@@ -26,6 +26,7 @@
 #   DATA_DIR=...       公开数据集与混合产物目录 (缺省: /root/autodl-tmp/datasets，本机自动退回 $BASE_DIR/data)
 #   DOMAIN_FILE=...    领域训练数据 (默认 $BASE_DIR/data/probe_test_sft_train_synth.jsonl（探针 81 条；正式批次用 DOMAIN_FILE=data/round1_train_aligned.jsonl 显式切换），仓库内置不外移)
 #   EPOCHS=3           覆盖训练轮数
+#   LR=1e-4            覆盖学习率 (对照实验用, 如 LR=5e-5 / LR=2e-4)
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
@@ -62,6 +63,7 @@ DOMAIN_FILE="${DOMAIN_FILE:-$BASE_DIR/data/probe_test_sft_train_synth.jsonl}"
 ANCHOR_FILE="$DATA_DIR/coig_cqia_anchor.jsonl"
 MIXED_DIR="$DATA_DIR/mixed"
 EPOCHS="${EPOCHS:-3}"
+LR="${LR:-1e-4}"
 echo "路径解析: MODEL_DIR=$MODEL_DIR  DATA_DIR=$DATA_DIR  DOMAIN_FILE=$DOMAIN_FILE"
 FORCE="${FORCE:-0}"
 # Loss 消融阶段 (POC1=仅前缀掩码 / POC2=+骨架掩码 / POC3=+字段加权 FIELD_W)
@@ -122,7 +124,7 @@ check_deps() {
   # wandb 默认关：探针实验不上传，正式跑才 SYNC_WANDB=1 显式开启。
   # 登录态有两条路径: WANDB_API_KEY 环境变量 或 ~/.netrc 里的 api.wandb.ai 凭据
   if [ "${SYNC_WANDB:-0}" != "1" ]; then
-    log "wandb: 探针模式默认关闭，只落本地日志 (正式跑: SYNC_WANDB=1 ./scripts/run_probe_e2e.sh)"
+    log "wandb: 探针模式默认关闭，只落本地日志 (正式跑: SYNC_WANDB=1 ./scripts/run_sft_e2e.sh)"
     WANDB_FLAG="--no_wandb"
   elif ! python3 -c "import wandb" 2>/dev/null; then
     log "wandb: SYNC_WANDB=1 但未安装 wandb，降级为本地日志 (pip install wandb)"
@@ -150,8 +152,8 @@ check_reuse_assets() {
   fi
   if [ -n "$miss_data" ] || [ -n "$miss_model" ]; then
     log "❌ 缺少可复用产物:"
-    [ -n "$miss_data" ]  && log "   混合数据缺失 ($MIXED_DIR/sft_train.jsonl, sft_val.jsonl) → 先跑: ./scripts/run_probe_e2e.sh mix"
-    [ -n "$miss_model" ] && log "   基座模型缺失 ($MODEL_DIR/$(basename "$MODEL_NAME"))            → 先跑: ./scripts/run_probe_e2e.sh download"
+    [ -n "$miss_data" ]  && log "   混合数据缺失 ($MIXED_DIR/sft_train.jsonl, sft_val.jsonl) → 先跑: ./scripts/run_sft_e2e.sh mix"
+    [ -n "$miss_model" ] && log "   基座模型缺失 ($MODEL_DIR/$(basename "$MODEL_NAME"))            → 先跑: ./scripts/run_sft_e2e.sh download"
     log "   (也可用 DATA_DIR / MODEL_DIR / MODEL_NAME 指定现有产物位置)"
     # 自检失败即退出：清掉本次创建的空 run 目录，避免留下无用产物
     rm -rf "$RUN_DIR"
@@ -254,7 +256,7 @@ step_train() {
     --per_device_train_batch_size "$PER_DEV_BATCH" \
     --max_seq_length "$MAX_LEN" \
     "${TRAIN_ARGS[@]}" \
-    --learning_rate 1e-4 \
+    --learning_rate "${LR:-1e-4}" \
     --lr_scheduler_type cosine \
     --warmup_ratio 0.05 \
     --logging_steps 1 \
@@ -297,7 +299,7 @@ step_infer() {
   [ "${THINK_PREFIX:-0}" = "1" ] && THINK_PREFIX_ARG="--think_prefix"
 
   if [ "$INFER_BACKEND" = "vllm" ]; then
-    python3 scripts/probe_infer.py \
+    python3 scripts/sft_infer.py \
       --backend vllm \
       --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
       --adapter_path "$ADAPTER_DIR" \
@@ -306,7 +308,7 @@ step_infer() {
       $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
   else
     # 方案 1: 显式单卡环境绑定，避免 PEFT trainable_tokens 多卡切分张量不一致 bug
-    CUDA_VISIBLE_DEVICES="$INFER_GPU" python3 scripts/probe_infer.py \
+    CUDA_VISIBLE_DEVICES="$INFER_GPU" python3 scripts/sft_infer.py \
       --backend hf \
       --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
       --adapter_path "$ADAPTER_DIR" \

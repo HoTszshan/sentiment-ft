@@ -18,13 +18,13 @@
   - 版本全部 == 锚定（2026-10-27 真机验证组合），不要自行升级 `trl` / `vllm` / `torch`
   - 验证：`python3 -c "import torch, transformers, trl, peft; print(torch.__version__, transformers.__version__, trl.__version__)"`
 - [ ] **0.3**（可选但推荐）`wandb login` 登录；不登录则自动降级只写本地日志。
-  > **开关：`SYNC_WANDB=1` 才上传**。探针实验默认只落本地日志（`logs/train_probe*.log`），不污染 wandb 项目；正式跑或想看曲线时在命令前加 `SYNC_WANDB=1`（例：`SYNC_WANDB=1 SFT_POC_STAGE=POC1 ./scripts/run_probe_e2e.sh train`）。登录态认两条路径：`WANDB_API_KEY` 环境变量 或 `~/.netrc` 里 `api.wandb.ai` 凭据（`wandb login` 写入的即是后者）。上传目标项目固定为 `sentiment-sft-probe`，run 名 `probe_<时间戳>`。
+  > **开关：`SYNC_WANDB=1` 才上传**。探针实验默认只落本地日志（`logs/train_probe*.log`），不污染 wandb 项目；正式跑或想看曲线时在命令前加 `SYNC_WANDB=1`（例：`SYNC_WANDB=1 SFT_POC_STAGE=POC1 ./scripts/run_sft_e2e.sh train`）。登录态认两条路径：`WANDB_API_KEY` 环境变量 或 `~/.netrc` 里 `api.wandb.ai` 凭据（`wandb login` 写入的即是后者）。上传目标项目固定为 `sentiment-sft-probe`，run 名 `probe_<时间戳>`。
 - [ ] **0.4** 上传仓库目录（或 git clone），`cd /root/autodl-tmp/senti && chmod +x scripts/*.sh`
 - [ ] **0.5** 零依赖自检：`python3 -m unittest discover -s unit -p "test_*.py"` —— 全绿才继续
 
 > **路径约定（AutoDL）**：模型下到 `/root/autodl-tmp/models`、公开数据集下到 `/root/autodl-tmp/datasets`（数据盘，容量大）。脚本已适配：
 > - `download_assets.py` 的 `--model_dir` / `--data_dir` 默认值即上述两个目录；
-> - `run_probe_e2e.sh` 支持环境变量 `MODEL_DIR` / `DATA_DIR`（默认指向 AutoDL 数据盘），全流程自动衔接；
+> - `run_sft_e2e.sh` 支持环境变量 `MODEL_DIR` / `DATA_DIR`（默认指向 AutoDL 数据盘），全流程自动衔接；
 > - 领域训练数据 `train_synth_81.jsonl` 是仓库内置文件，留在 `tests/data/` 不外移；混合产物 `data/mixed/` 由 `DATA_DIR/mixed` 派生。
 
 ## Step 1 · 下载模型与公开数据集
@@ -55,7 +55,7 @@
       --out_dir /root/autodl-tmp/datasets/mixed --anchor_ratio 0.1 --val_ratio 0.1 --seed 42
   ```
   预期：Train 82 条（73 领域 + 9 anchor）/ Val 8 条；**Anchor 全进 Train 不进 Val**（脚本末尾有分账核对行，异常会打 `!!`）
-  > 用 `run_probe_e2e.sh mix` 跑会自动多做两件事：混合统计写进总日志、混合后自动对 Train 集跑四查并落盘
+  > 用 `run_sft_e2e.sh mix` 跑会自动多做两件事：混合统计写进总日志、混合后自动对 Train 集跑四查并落盘
   > `logs/mix_check_<时间戳>.log` + `output/report_train_check_<时间戳>.json`。
 - [ ] **2.2** 数据侧四查验收（模式 A）：
   ```bash
@@ -86,27 +86,27 @@
 ## Step 3 · SFT 探针训练（POC1→POC3 消融，一次只动一个变量）
 
 > 三档共用同一份代码，只切 `SFT_POC_STAGE`。探针规模 82 条 / 33 步 / 3 epoch（探针 B）。
-> `run_probe_e2e.sh` 会自动从 `MODEL_DIR` 找基座、从 `DATA_DIR/mixed` 找数据，adapter 落在 `run_<时间戳>/sft_lora/`（run 目录互不覆盖），路径记录在 `<OUTPUT_DIR>/latest_adapter_path.txt`（AutoDL: `/root/autodl-tmp/models/sft_senti/latest_adapter_path.txt`，本机退回 `output/`）。
+> `run_sft_e2e.sh` 会自动从 `MODEL_DIR` 找基座、从 `DATA_DIR/mixed` 找数据，adapter 落在 `run_<时间戳>/sft_lora/`（run 目录互不覆盖），路径记录在 `<OUTPUT_DIR>/latest_adapter_path.txt`（AutoDL: `/root/autodl-tmp/models/sft_senti/latest_adapter_path.txt`，本机退回 `output/`）。
 
 - [ ] **3.1 POC1（baseline：仅前缀掩码）**：
   ```bash
-  SFT_POC_STAGE=POC1 ./scripts/run_probe_e2e.sh train
+  SFT_POC_STAGE=POC1 ./scripts/run_sft_e2e.sh train
   ```
 - [ ] **3.2 POC2（+骨架掩码）**：
   ```bash
-  SFT_POC_STAGE=POC2 ./scripts/run_probe_e2e.sh train
+  SFT_POC_STAGE=POC2 ./scripts/run_sft_e2e.sh train
   ```
 - [ ] **3.3 POC3（+字段加权，完整体）**：
   ```bash
-  SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh train
+  SFT_POC_STAGE=POC3 ./scripts/run_sft_e2e.sh train
   ```
   > 每档 adapter 目录带时间戳自动区分；回填时用 `cat /root/autodl-tmp/models/sft_senti/latest_adapter_path.txt` 找到当前档，或直接取各时间戳目录。
   > 不想分步跑训练+推理+评测时，可用一键模式（**复用已有混合数据与本地基座，不重复下载/混合**）：
   > ```bash
-  > SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh traintest
+  > SFT_POC_STAGE=POC3 ./scripts/run_sft_e2e.sh traintest
   > ```
   > 前置条件：`$DATA_DIR/mixed/sft_{train,val}.jsonl` 与 `$MODEL_DIR/<基座>` 均已存在（缺任一项会直接报错并提示先跑 `mix` / `download`）。
-  > 输出目录可加实验标签区分消融档：`./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest`
+  > 输出目录可加实验标签区分消融档：`./scripts/run_sft_e2e.sh --tag=POC1_epoch6 traintest`
   > → 产物落在 `run_<时间戳>_POC1_epoch6/`；不传 `--tag` 保持原 `run_<时间戳>` 命名。
 - [ ] **3.4 每档训练中盯防**（本地 `logs/train_probe*.log`；要看曲线就 `SYNC_WANDB=1` 重跑同步 wandb，项目 `sentiment-sft-probe`）：
   - [ ] loss 能压下去、无 NaN（NaN = 整轮作废，查毒样本）
@@ -116,7 +116,7 @@
 ### 3.5 后台执行（正式训练必用；探针可前台直跑）
 
 > **分场景**：探针 33 步只跑 2~3 分钟，前台直跑即可（挂了重跑成本低）；**正式训练 3~6 小时，SSH 断线 = SIGHUP 杀进程 = 白跑**，必须后台。
-> 脚本已内置：`BG=1 ./scripts/run_probe_e2e.sh train` 一行转后台，自动 nohup + PID 文件 + 日志重定向。
+> 脚本已内置：`BG=1 ./scripts/run_sft_e2e.sh train` 一行转后台，自动 nohup + PID 文件 + 日志重定向。
 
 ## Step 4 · 推理与评估（每档都要跑）
 
@@ -124,7 +124,7 @@
 
 - [ ] **4.1** 推理（以 POC3 为例；POC1/POC2 换对应 adapter 路径）：
   ```bash
-  python3 scripts/probe_infer.py \
+  python3 scripts/sft_infer.py \
       --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
       --adapter_path /root/autodl-tmp/models/sft_senti/run_<POC3时间戳>/sft_lora \
       --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \
@@ -162,13 +162,13 @@
 - [ ] **4.5.2** 分别跑两版推理（同一份输入、同一解码配置）：
   ```bash
   # T1 · 裸基座
-  python3 scripts/probe_infer.py \
+  python3 scripts/sft_infer.py \
       --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
       --adapter_path "" \
       --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \
       --out output/pred_base.jsonl
   # T3 · SFT 后
-  python3 scripts/probe_infer.py \
+  python3 scripts/sft_infer.py \
       --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
       --adapter_path /root/autodl-tmp/models/sft_senti/run_<POC3时间戳>/sft_lora \
       --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \

@@ -3,7 +3,7 @@
 > **定位**：需要**跑实验才能决定**的事。确定要落地的改造见 `../OPTIMIZATION_BACKLOG.md`；
 > 已评估但暂不实施的方案见 `2026-10-24_POC1_...md` 附录 B。
 > **纪律**：每条写清「要验证什么」与「什么条件下才做」，不做无触发条件的排期。
-> **最近更新**：2026-10-24
+> **最近更新**：2026-10-27（750 条对照实验设计清单 → `../../plan/SFT对照实验_设计清单_20261027.md`）
 
 ---
 
@@ -29,7 +29,7 @@
 - **命令**：
   ```bash
   NPROC=1 SFT_POC_STAGE=POC2 EPOCHS=6 THINK_PREFIX=0 \
-  ./scripts/run_probe_e2e.sh traintest
+  ./scripts/run_sft_e2e.sh traintest
   ```
 
 ## E2 · POC3 消融（字段级 FIELD_W）
@@ -41,13 +41,13 @@
 - **命令**：
   ```bash
   NPROC=1 SFT_POC_STAGE=POC3 EPOCHS=6 THINK_PREFIX=0 \
-  ./scripts/run_probe_e2e.sh traintest
+  ./scripts/run_sft_e2e.sh traintest
   ```
 
 ## E3 · 裸基座对照
 
 - **要验证**：SFT 净增益（当前只有绝对指标，没有「不训练能拿多少」的参照）。
-- **做法**：`probe_infer.py --adapter_path ''` 跑裸基座，同一份验证集、同一解码配置。
+- **做法**：`sft_infer.py --adapter_path ''` 跑裸基座，同一份验证集、同一解码配置。
 - **状态**：未跑。
 
 ## E4 · POC4（边界 token 提权）

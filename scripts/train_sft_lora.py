@@ -62,7 +62,7 @@ from sft_weight_planner import (
     FIELD_WEIGHTS, plan_token_weights,
     POC_STAGE, USE_SKELETON_MASK, USE_FIELD_WEIGHTS,
 )
-# 外壳渲染（ChatML）唯一真理源：与 probe_infer / stat_seq_len / GRPO 构建同源。
+# 外壳渲染（ChatML）唯一真理源：与 sft_infer / stat_seq_len / GRPO 构建同源。
 import prompt_template as pt
 import format_canary
 from sft_dataset import SFTConversationDataset, WeightedDataCollator

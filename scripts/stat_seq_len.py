@@ -24,7 +24,7 @@ p50 / p95 / p99 / max 分位数，定位 OOM 长样本来源。
   - total  = prompt + output，与训练 max_seq_length 同口径（含模板，不含 padding）
   - **cot  = output 里 <think>…</think> 之间的推理段**（不含标签、不含 JSON 骨架），
     与 reward_fns 的 R_length 同口径（R_length 只量这一段）。带 tokenizer 跑时
-    额外打印「R_length 落档」——直接看现有阈值 40/65/120 在这批数据上是否还有效。
+    额外打印「R_length 落档」——直接看现有阈值 (reward_fns.COT_SHORT/COT_IDEAL_HI/COT_DEAD) 在这批数据上是否还有效。
   - 按 meta.provenance == public_anchor 分 anchor / domain 两桶，直接回答
     「长 token 是领域样本还是锚点带来的」
 """
@@ -112,14 +112,14 @@ def _report(tag, totals, prompts, outputs, unit, top_rows, top_n, cots=None, say
 
 def _report_cot_buckets(cots, unit, say=print):
     """
-    CoT 落在 R_length 哪一档 —— 直接回答「40/65/120 这组阈值还适用吗」。
+    CoT 落在 R_length 哪一档 —— 直接回答「当前三档阈值还适用吗」。
 
     ⚠️ 阈值是在 **token 空间**定义的（reward_fns 用 tokenizer 计数）。字符级近似
     模式下这些数字没有可比性 —— 此时只报分位、不做落档判定，免得把「370 字符」
     拿去和「120 tokens」比大小得出错误结论。
 
     判定式与 reward_fns.r_length 逐条一致：
-      n < COT_SHORT               → 过短罚  (n/40 − 1, −1.0~0)
+      n < COT_SHORT               → 过短罚  (n/COT_SHORT − 1, −1.0~0)
       COT_SHORT ≤ n ≤ COT_IDEAL_HI → 满分 +1.0
       COT_IDEAL_HI < n < COT_DEAD  → 线性衰减 (1 − (n−65)/55, 1.0~0)
       n ≥ COT_DEAD                 → 归 0
@@ -142,7 +142,7 @@ def _report_cot_buckets(cots, unit, say=print):
 
     say(f"\n--- R_length 落档 (阈值 {COT_SHORT}/{COT_IDEAL_HI}/{COT_DEAD} {unit}) ---")
     for name, cnt, note in (
-        (f"过短罚 <{COT_SHORT}", short, "n/40 − 1，越短越负"),
+        (f"过短罚 <{COT_SHORT}", short, "n/COT_SHORT − 1，越短越负"),
         (f"满分 {COT_SHORT}~{COT_IDEAL_HI}", ideal, "+1.0"),
         (f"衰减 {COT_IDEAL_HI}~{COT_DEAD}", decay, "线性 1 → 0"),
         (f"归零 ≥{COT_DEAD}", dead, "0"),

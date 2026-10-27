@@ -1,5 +1,5 @@
 # accelerate 配置文件 (单机，配合 run_grpo_train.sh 使用)
-# ⚠️ 仅 GRPO 使用：SFT 侧 (run_probe_e2e.sh) 用 NPROC 环境变量自选启动方式，不读本文件。
+# ⚠️ 仅 GRPO 使用：SFT 侧 (run_sft_e2e.sh) 用 NPROC 环境变量自选启动方式，不读本文件。
 # 拓扑口径与 12S2W10_rlhf/GRPO/run_train_2gpu.sh 对齐：
 #   GRPO + colocate vLLM 下「训练进程数 = GPU 数 - 1」，留最后一张卡给 vLLM 独占采样。
 #   因此 num_processes 故意不写成 GPU 数——由 run_grpo_train.sh 按实测卡数

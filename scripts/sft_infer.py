@@ -8,11 +8,11 @@
 
 生成 prompt 与训练侧同源 (lib/prompt_template.py):
     train_sft_lora.SFTConversationDataset → prompt_template.render_full()
-    probe_infer                            → prompt_template.render_prompt()
+    sft_infer                            → prompt_template.render_prompt()
 两者走同一个渲染函数，且 Dataset 初始化时会做逐字节 parity 校验。
 
 用法:
-    python probe_infer.py \
+    python sft_infer.py \
         --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
         --adapter_path /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
         --data_file data/mixed/sft_val.jsonl \
