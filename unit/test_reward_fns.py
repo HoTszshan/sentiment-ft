@@ -51,17 +51,20 @@ def _mk(cot: str, **kw) -> str:
             f"{json.dumps(body, ensure_ascii=False)}")
 
 
-# 合格 CoT (长度落在 40~65 tokens 理想区间: 81 汉字 ≈ 59 tokens)
+# 合格 CoT (长度落在 120~200 tokens 理想区间: 2026-10-27 按 750 条实测 p50 重设
+# 阈值后，理想带 ≈165~275 汉字。下面是自然展开的三跳推理 ≈190 字 ≈138 tokens)
 GOOD_COT = (
-    "Step1广发证券是叙事中心故core。Step2字面褒真实贬判irony。"
-    "Step3亏损归product、虚假宣传归marketing，负面判negative。"
+    "Step1 主体识别：通读全文，叙事焦点始终落在广发证券身上，主体相关度判 core。"
+    "Step2 语义分析：字面用「稳赚不赔」的褒义表述，但紧跟「才一天就亏了3000多」的事实反转，"
+    "典型反讽修辞，难例类型判 irony。Step3 风险归因：亏损直接指向理财产品表现归 product，"
+    "「稳赚不赔」的宣传口径涉嫌误导归 marketing。综合判 negative。"
 )
-# 短 CoT (≈ 22 tokens，低于 40 门槛)
+# 短 CoT (≈ 22 tokens，低于 120 门槛 → 过短罚)
 SHORT_COT = "Step 1 core；Step 2 irony；Step 3 negative。"
-# 超长 CoT (≥120 tokens，衰减到 0)
+# 超长 CoT (≥320 tokens，衰减到 0)
 LONG_COT = "理由如下，先把上下文完整复述一遍。" * 40
-# 中段 CoT (≈98 tokens，落在 65~120 衰减带)
-MID_COT = "这是一个推理步骤，" * 15
+# 中段 CoT (≈229 tokens，落在 200~320 衰减带)
+MID_COT = "这是一个推理步骤，" * 35
 
 
 class TestContractInvariants(unittest.TestCase):
@@ -143,17 +146,26 @@ class TestAccuracyTiering(unittest.TestCase):
         self.assertEqual(score, R_FALSE_ALARM)
         self.assertTrue(d["false_alarm"])
 
-    def test_wrong_hard_case_is_minus_one(self):
+    def test_wrong_hard_case_gets_partial_credit(self):
+        # 2026-10-27 阶梯式放宽: 情感+risk+relevance 对、仅难点类型错 → 0.7
+        # (旧口径 -1.0 使 47/50 组 k=0 全零优势，RL 无梯度)
         score, d = r_accuracy(_mk(GOOD_COT, hard_case_type="explicit"), GOLD)
-        self.assertEqual(score, R_FALSE_ALARM)
-        self.assertTrue(d["hard_case_ok"] is False)
+        self.assertAlmostEqual(score, 0.7)
+        self.assertFalse(d["accuracy_pass"] is True and d["hard_case_ok"])
+        self.assertTrue(d["sentiment_ok"] and d["risk_ok"])
+
+    def test_wrong_risk_gets_sentiment_only_credit(self):
+        # 2026-10-27 阶梯式: 情感对、risk 错 → 0.5 (风险标签允许逐步学)
+        score, d = r_accuracy(_mk(GOOD_COT, risk_categories=["product"]), GOLD)
+        self.assertAlmostEqual(score, 0.5)
         self.assertTrue(d["sentiment_ok"])
+        self.assertFalse(d["risk_ok"])
 
     def test_wrong_base_plus_wrong_relevance_stacks(self):
-        # 契约: 判错档再叠 -0.2 → -1.2
+        # 契约: 判错档再叠 -0.2。阶梯式后 hc 错落在 0.7 档 → 0.7-0.2 = 0.5
         score, _ = r_accuracy(
             _mk(GOOD_COT, hard_case_type="explicit", relevance="passing"), GOLD)
-        self.assertAlmostEqual(score, R_FALSE_ALARM - 0.2)
+        self.assertAlmostEqual(score, 0.5)
 
     def test_wrong_relevance_deducts_point_two(self):
         score, _ = r_accuracy(_mk(GOOD_COT, relevance="passing"), GOLD)

@@ -148,9 +148,11 @@ def oracle_sampler(gold: Dict[str, Any]) -> Sampler:
             "risk_categories": gold.get("risk_categories") or [],
             "evidence": gold.get("evidence"),
         }
-        # 造一条落在 40~65 token 理想带的 CoT（与 test_reward_fns 同一套校准手法）
-        cot = ("Step1 主体居叙事中心故core。Step2 字面语义与真实取向相反判irony。"
-               "Step3 风险归product与marketing，负面定negative。")
+        # 造一条落在理想带的 CoT（2026-10-27 阈值重设 120/200/320 后 ≈138 token）
+        cot = ("Step1 主体识别：通读全文，叙事焦点始终落在广发证券身上，主体相关度判 core。"
+               "Step2 语义分析：字面用「稳赚不赔」的褒义表述，但紧跟「才一天就亏了3000多」的事实反转，"
+               "典型反讽修辞，难例类型判 irony。Step3 风险归因：亏损直接指向理财产品表现归 product，"
+               "「稳赚不赔」的宣传口径涉嫌误导归 marketing。综合判 negative。")
         comp = f"<think>{cot}</think>" + json.dumps(body, ensure_ascii=False)
         return [comp] * g
 

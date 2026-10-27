@@ -57,14 +57,21 @@ R_GATE_SHORT_CIRCUIT = -2.5   # 协议损坏 / 证据造假
 R_MISS_SEVERE = -2.0          # 严重危机漏报
 R_FALSE_ALARM = -1.0          # 误报 / 普通判错
 R_CORRECT_FULL = 1.0          # 判别全中 (封顶)
+R_SENTIMENT_ONLY = 0.5        # 仅情感+relevance 对、risk/hard_case 未中 (部分得分)
 R_RELEVANCE_LIGHT = 0.2       # relevance 轻权重
 R_MAX = 2.0                   # 判对 + CoT 紧凑
 R_MIN = -2.5
 
 # CoT 长度档位 (tokens)
-COT_SHORT = 40    # ≈55~60 汉字，三跳推理最低有效表达
-COT_IDEAL_HI = 65
-COT_DEAD = 120
+# 2026-10-27 按 750 条 SFT 数据实测 CoT 分布重设（seq_len_stats.log: p50=201 / p95=276 / p99=303）：
+# 旧档 40/65/120 在真实输出上 100% 归零（理想带一条不中），该维塑形失效。
+# 新档把理想带对准 p50（201 落在 120~200 边界附近），三档来源：
+#   120 = 旧 DEAD 的 1.0×，三跳推理充分表达的下限（实测最短 CoT 仍在 100+ token）
+#   200 ≈ p50 上沿，写满三跳但不注水
+#   320 ≈ p99 上沿，超过即判定注水/复述原文
+COT_SHORT = 120   # 过短罚下限：低于此视为推理空壳
+COT_IDEAL_HI = 200
+COT_DEAD = 320
 
 
 # ============================================================
@@ -116,7 +123,8 @@ def count_cot_tokens(cot_text: str, tokenizer=None) -> int:
     CoT token 计数 (只量思考链，不含 JSON 骨架与 evidence 原文)。
     - 有 tokenizer: 走真实分词
     - 无 tokenizer: 按 SOP 推导的近似换算 —— 40 tokens ≈ 55~60 汉字，
-      即 tokens ≈ chars × 40/55 ≈ 0.727 × chars (Qwen 中文分词经验值)
+      即 tokens ≈ chars × 0.727 (Qwen 中文分词经验值)。
+      注：仅作无 tokenizer 环境的离线粗估，R_length 真实计分走 tokenizer。
     """
     if cot_text is None:
         return 0
@@ -179,9 +187,14 @@ def r_accuracy(completion: str, gold: Dict[str, Any]) -> Tuple[float, Dict[str, 
     detail["hard_case_ok"] = (g_hc == p_hc)
     detail["relevance_ok"] = (g_rel == p_rel)
 
-    # 定档: 漏报 vs 误报 vs 普通判错
-    # 业务不对称: 漏掉 P0 危机 > 多报一条 → -2.0 / -1.0 两档;
-    # ③④ 只算普通判错: 有裁决链兜底的细粒度偏差，不吃漏报/误报级的罚
+    # 定档 (2026-10-27 放宽: 阶梯式) —— 旧「全字段全对才算判对」口径下 50 条探针
+    # 有 47 条 k=0 (组内全零优势)，RL 无梯度。新口径:
+    #   L1 情感错 (漏报/误报)               → -2.0 / -1.0 (业务罚不变)
+    #   L2 情感+relevance 对, risk 未中      → R_SENTIMENT_ONLY (0.5)
+    #   L3 情感+relevance 对, risk 对, hc 错 → R_SENTIMENT_ONLY + 0.2 = 0.7
+    #   L4 全对                              → R_CORRECT_FULL (1.0)
+    # risk / hard_case 允许模型逐步学: 从 0 档直接跳到「答错也要有区分度」，
+    # 组内只要有一档差就能拉开优势差。阶梯间必须严格单调。
     if g_sent == "negative" and p_sent != "negative":
         # 真实负面却没判负 = 漏报；gold 命中正式 6 类风险 → 严重危机漏报
         severe = bool(g_rk & CRISIS_RISK_KEYS)
@@ -190,39 +203,39 @@ def r_accuracy(completion: str, gold: Dict[str, Any]) -> Tuple[float, Dict[str, 
     elif g_sent != "negative" and p_sent == "negative":
         detail["false_alarm"] = True
         base = R_FALSE_ALARM
-    elif not detail["sentiment_ok"] or not detail["risk_ok"]:
+    elif not detail["sentiment_ok"]:
+        # 极性都不对但不构成漏报/误报 (如 neutral↔positive 互错): 普通判错
         base = R_FALSE_ALARM
-    elif not detail["hard_case_ok"]:
-        # 极性与风险都对，仅难点类型判错: 记普通判错
-        # (有 7 类全序裁决链兜底，不属于主观噪声)
-        base = R_FALSE_ALARM
-    else:
+    elif detail["risk_ok"] and detail["hard_case_ok"]:
         base = R_CORRECT_FULL
         detail["accuracy_pass"] = True
-
+    elif detail["risk_ok"]:
+        base = round(R_SENTIMENT_ONLY + 0.2, 4)   # 0.7: 难点类型待学
+    else:
+        base = R_SENTIMENT_ONLY                    # 0.5: 风险标签待学
     # relevance 轻判 (契约 §五): 弱主观字段只做 ±0.2 微调，不参与定档;
-    #   - 全中: 判对 +1.0 / 判错 +0.8 (已含在封顶内不外溢)
-    #   - 判错档: -1.0 / 追加 -0.2 → -1.2
+    #   - 判错档: 追加 -0.2
     #   - 危机漏报档 (-2.0) **不叠加** → 防弱主观字段压过危机漏报
     if base == R_MISS_SEVERE:
         score = base
-    elif base == R_CORRECT_FULL:
-        score = base if detail["relevance_ok"] else round(base - R_RELEVANCE_LIGHT, 4)
     else:
         score = base if detail["relevance_ok"] else round(base - R_RELEVANCE_LIGHT, 4)
 
-    # accuracy_pass = 全字段口径的「判对」门票: k_of 计数、r_length 激活都只认它
-    detail["accuracy_pass"] = detail["accuracy_pass"] and detail["relevance_ok"]
+    # accuracy_pass = 判对门票 (k_of 计数、r_length 激活都只认它)。
+    # 2026-10-27 放宽: 情感对即算有效 (risk/hard_case 不再一票否决)，
+    # 让 750 条数据在 G=4 采样下有足够 k∈{1..3} 的组进训练池。
+    detail["accuracy_pass"] = detail["accuracy_pass"] or detail["sentiment_ok"]
     return round(score, 4), detail
 
 
 def r_length(completion: str, accuracy_pass: bool, tokenizer=None) -> float:
     """
     奖励②: CoT 长度。仅「判对 + 溯源双通过」才激活；否则硬置 0。
-      <40   → cot/40 - 1        (过短罚)
-      40~65 → +1.0             (理想区间)
-      65~120→ 1-(cot-65)/55     (线性衰减)
-      ≥120  → 0
+    三档阈值按 750 条实测 CoT 分布重设 (2026-10-27):
+      <120  → n/120 - 1         (过短罚)
+      120~200 → +1.0            (理想区间，对准实测 p50=201 附近)
+      200~320 → 1-(n-200)/120   (线性衰减)
+      ≥320  → 0
     """
     if not accuracy_pass:
         return 0.0
@@ -237,6 +250,8 @@ def r_length(completion: str, accuracy_pass: bool, tokenizer=None) -> float:
     if n < COT_DEAD:
         return round(1.0 - (n - COT_IDEAL_HI) / float(COT_DEAD - COT_IDEAL_HI), 4)
     return 0.0
+# ↑ 三档阈值已按 750 条实测重设（2026-10-27），无 tokenizer 近似换算比例 (40/55) 不再适用，
+#   count_cot_tokens 的换算只影响无 tokenizer 的离线粗估，真实训练走 tokenizer 计数。
 
 
 def compute_reward(completion: str, input_text: str, gold: Dict[str, Any],

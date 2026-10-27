@@ -26,6 +26,7 @@
 #   DATA_DIR=...       公开数据集与混合产物目录 (缺省: /root/autodl-tmp/datasets，本机自动退回 $BASE_DIR/data)
 #   DOMAIN_FILE=...    领域训练数据 (默认 $BASE_DIR/data/probe_test_sft_train_synth.jsonl（探针 81 条；正式批次用 DOMAIN_FILE=data/round1_train_aligned.jsonl 显式切换），仓库内置不外移)
 #   EPOCHS=3           覆盖训练轮数
+#   LR=1e-4            覆盖学习率 (对照实验用, 如 LR=5e-5 / LR=2e-4)
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
@@ -60,6 +61,7 @@ DOMAIN_FILE="${DOMAIN_FILE:-$BASE_DIR/data/probe_test_sft_train_synth.jsonl}"
 ANCHOR_FILE="$DATA_DIR/coig_cqia_anchor.jsonl"
 MIXED_DIR="$DATA_DIR/mixed"
 EPOCHS="${EPOCHS:-3}"
+LR="${LR:-1e-4}"
 echo "路径解析: MODEL_DIR=$MODEL_DIR  DATA_DIR=$DATA_DIR  DOMAIN_FILE=$DOMAIN_FILE"
 FORCE="${FORCE:-0}"
 # Loss 消融阶段 (POC1=仅前缀掩码 / POC2=+骨架掩码 / POC3=+字段加权 FIELD_W)
@@ -252,7 +254,7 @@ step_train() {
     --per_device_train_batch_size "$PER_DEV_BATCH" \
     --max_seq_length "$MAX_LEN" \
     "${TRAIN_ARGS[@]}" \
-    --learning_rate 1e-4 \
+    --learning_rate "${LR:-1e-4}" \
     --lr_scheduler_type cosine \
     --warmup_ratio 0.05 \
     --logging_steps 1 \

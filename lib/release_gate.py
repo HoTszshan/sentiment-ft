@@ -59,7 +59,9 @@ def _item_correct(gold: Dict[str, Any], pred: Optional[Dict[str, Any]]) -> bool:
     """
     单条「判别主线全对」判定：sentiment + hard_case_type + risk_categories 三项全中。
 
-    口径与 GRPO `R_accuracy` 的「accuracy_pass」对齐（判别主线，不含 relevance 轻判）。
+    GRPO `accuracy_pass` 已阶梯式放宽为「情感对即算有效」，
+    本评测侧保持**严格口径不变**——发布门是验收关卡，放宽会放水；两侧行为有意分叉，
+    不再声称对齐。若需在评测中复现 GRPO 的宽松口径，另加参数，不动默认值。
     """
     if not pred:
         return False
