@@ -116,6 +116,7 @@ def convert_row(row: dict):
     meta["hard_case_type"] = gold_src["hard_case_type"]
     meta["sentiment"] = gold_src["sentiment"]
     meta["relevance"] = gold_src["relevance"]
+    meta["risk_categories"] = gold_src.get("risk_categories") or []
     meta["event_id"] = row.get("event_id") or ""
     meta["input_raw"] = text          # 裸原文（input 是题面壳，grounding 用裸原文）
 

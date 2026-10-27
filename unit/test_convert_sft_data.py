@@ -81,7 +81,8 @@ class TestConvertRow(unittest.TestCase):
         m = row["meta"]
         self.assertEqual(sorted(m.keys()),
                          ["event_id", "hard_case_type", "industry",
-                          "input_raw", "provenance", "relevance", "sentiment"])
+                          "input_raw", "provenance", "relevance",
+                          "risk_categories", "sentiment"])
         self.assertNotIn("anno_mode", m)
         self.assertEqual(m["input_raw"], "这理财才一天就亏了3000多，真是稳赚不赔啊。")
 
