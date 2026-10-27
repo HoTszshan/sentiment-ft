@@ -57,13 +57,13 @@ MVP/tests/
 │   └── test_sft_dataset.py         ★ SFT 专用 Dataset 单测（长度/掩码/权重三不变量 + parity gate）
 ├── prompts/                        ← gen/anno 双端提示词（单主体隔离锁在内）
 ├── scripts/                        ← 只放 CLI 入口（可执行脚本）
-│   ├── run_probe_e2e.sh            ★ 一键串跑（5 步）
+│   ├── run_sft_e2e.sh            ★ 一键串跑（5 步）
 │   ├── run_grpo_train.sh           ★ GRPO 后台启动（nohup + 时间戳日志 + PID + 拓扑选择）
 │   ├── download_assets.py          1 下载：COIG-CQIA Anchor + 基座模型
 │   ├── align_sft_data.py           1.5 对齐：原文+meta → {instruction(显式输出协议), input, output} + 质检（纯规则零 LLM，模板唯一源 lib/task_template.py）
 │   ├── mix_sft_dataset.py          2 混合：9:1 + 分层切分 train/val
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
-│   ├── probe_infer.py              4 推理：加载 Adapter 批量生成
+│   ├── sft_infer.py              4 推理：加载 Adapter 批量生成
 │   ├── check_format.py             格式 canary 独立检查（不启动训练，测任意「基座+adapter」组合）
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
 │   ├── inspect_sft_dataset.py      数据模板预览（原文→messages→渲染文本→token/权重四层；--check_parity 只跑字节比对）
@@ -89,26 +89,26 @@ MVP/tests/
 
 ```bash
 cd MVP/tests
-chmod +x scripts/run_probe_e2e.sh
+chmod +x scripts/run_sft_e2e.sh
 
 # （可选）登录 wandb，登录后训练曲线会同步在线；不登录则只写本地日志
 wandb login
 
-./scripts/run_probe_e2e.sh          # 全流程：download → mix → train → infer → test
+./scripts/run_sft_e2e.sh          # 全流程：download → mix → train → infer → test
 ```
 
 按步骤单独执行（模型已下好、想只重跑训练时很有用）：
 
 ```bash
-./scripts/run_probe_e2e.sh download   # 步骤1
-./scripts/run_probe_e2e.sh mix        # 步骤2
-./scripts/run_probe_e2e.sh train      # 步骤3
-./scripts/run_probe_e2e.sh test       # 步骤4+5（推理+评测）
-./scripts/run_probe_e2e.sh traintest  # 步骤3+4+5（只训练+评测；复用已有混合数据与本地基座，不重复下载/混合）
+./scripts/run_sft_e2e.sh download   # 步骤1
+./scripts/run_sft_e2e.sh mix        # 步骤2
+./scripts/run_sft_e2e.sh train      # 步骤3
+./scripts/run_sft_e2e.sh test       # 步骤4+5（推理+评测）
+./scripts/run_sft_e2e.sh traintest  # 步骤3+4+5（只训练+评测；复用已有混合数据与本地基座，不重复下载/混合）
 
 # --tag=<实验标签>：输出目录名追加后缀，便于区分消融档（位置任意，不传保持原样）
 #   例： run_20261024_180116 → run_20261024_180116_POC1_epoch6
-./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest
+./scripts/run_sft_e2e.sh --tag=POC1_epoch6 traintest
 ```
 
 可用环境变量：
@@ -132,10 +132,10 @@ wandb login
 
 ```bash
 # 例子：7B 基座对照 + 强制重下 + 训练 2 轮
-MODEL_NAME=Qwen/Qwen2.5-7B-Instruct FORCE=1 EPOCHS=2 ./scripts/run_probe_e2e.sh
+MODEL_NAME=Qwen/Qwen2.5-7B-Instruct FORCE=1 EPOCHS=2 ./scripts/run_sft_e2e.sh
 
 # 例子：跑 POC2 消融（只开骨架掩码、字段仍等权）
-SFT_POC_STAGE=POC2 ./scripts/run_probe_e2e.sh train
+SFT_POC_STAGE=POC2 ./scripts/run_sft_e2e.sh train
 ```
 
 ### 快速消融对比：POC1 ~ POC3 运行指令集
@@ -151,14 +151,14 @@ SFT_POC_STAGE=POC2 python3 scripts/train_sft_lora.py --dry_run --train_file data
 SFT_POC_STAGE=POC3 python3 scripts/train_sft_lora.py --dry_run --train_file data/mixed/sft_train.jsonl
 
 # 真实探针训练
-SFT_POC_STAGE=POC1 ./scripts/run_probe_e2e.sh train
-SFT_POC_STAGE=POC2 ./scripts/run_probe_e2e.sh train
-SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh train
+SFT_POC_STAGE=POC1 ./scripts/run_sft_e2e.sh train
+SFT_POC_STAGE=POC2 ./scripts/run_sft_e2e.sh train
+SFT_POC_STAGE=POC3 ./scripts/run_sft_e2e.sh train
 
 # 全流程（训练 → 推理 → 评测）
-SFT_POC_STAGE=POC1 ./scripts/run_probe_e2e.sh all
-SFT_POC_STAGE=POC2 ./scripts/run_probe_e2e.sh all
-SFT_POC_STAGE=POC3 ./scripts/run_probe_e2e.sh all
+SFT_POC_STAGE=POC1 ./scripts/run_sft_e2e.sh all
+SFT_POC_STAGE=POC2 ./scripts/run_sft_e2e.sh all
+SFT_POC_STAGE=POC3 ./scripts/run_sft_e2e.sh all
 ```
 
 ---
@@ -357,7 +357,7 @@ python3 scripts/check_format.py \
 **使用方式**：默认开启。消融实验可关闭：
 
 ```
-UNFREEZE_PROTOCOL_TOKENS=0 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_probe_e2e.sh traintest
+UNFREEZE_PROTOCOL_TOKENS=0 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_sft_e2e.sh traintest
 ```
 
 token id 通过 tokenizer（`format_canary.resolve_protocol_ids`）动态解析、无硬编码；基座词表缺失对应token会直接报错。
@@ -365,7 +365,7 @@ token id 通过 tokenizer（`format_canary.resolve_protocol_ids`）动态解析�
 ### 步骤 4 · 推理
 
 ```bash
-python3 scripts/probe_infer.py \
+python3 scripts/sft_infer.py \
     --base_model models/Qwen3-4B-Instruct \
     --adapter_path output/probe_lora \
     --data_file data/mixed/sft_val.jsonl \
@@ -699,5 +699,5 @@ python3 scripts/eval_four_tier.py --gold data/gold500_test.jsonl \
 | COIG-CQIA 拉取超时 | 脚本已自动落盘内置兜底包；或 `pip install modelscope` 后重试 |
 | wandb 提示未登录 | `wandb login`，或加 `--no_wandb` 关掉 |
 | OOM | 降 `--per_device_train_batch_size 1 --gradient_accumulation_steps 8` |
-| 想换 7B 对照 | `MODEL_NAME=Qwen/Qwen2.5-7B-Instruct ./scripts/run_probe_e2e.sh all` |
+| 想换 7B 对照 | `MODEL_NAME=Qwen/Qwen2.5-7B-Instruct ./scripts/run_sft_e2e.sh all` |
 | `loss_weights` 被 Trainer 丢掉 | 训练命令里必须保留 `--remove_unused_columns false` |

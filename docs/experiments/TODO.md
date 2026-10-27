@@ -29,7 +29,7 @@
 - **命令**：
   ```bash
   NPROC=1 SFT_POC_STAGE=POC2 EPOCHS=6 THINK_PREFIX=0 \
-  ./scripts/run_probe_e2e.sh traintest
+  ./scripts/run_sft_e2e.sh traintest
   ```
 
 ## E2 · POC3 消融（字段级 FIELD_W）
@@ -41,13 +41,13 @@
 - **命令**：
   ```bash
   NPROC=1 SFT_POC_STAGE=POC3 EPOCHS=6 THINK_PREFIX=0 \
-  ./scripts/run_probe_e2e.sh traintest
+  ./scripts/run_sft_e2e.sh traintest
   ```
 
 ## E3 · 裸基座对照
 
 - **要验证**：SFT 净增益（当前只有绝对指标，没有「不训练能拿多少」的参照）。
-- **做法**：`probe_infer.py --adapter_path ''` 跑裸基座，同一份验证集、同一解码配置。
+- **做法**：`sft_infer.py --adapter_path ''` 跑裸基座，同一份验证集、同一解码配置。
 - **状态**：未跑。
 
 ## E4 · POC4（边界 token 提权）

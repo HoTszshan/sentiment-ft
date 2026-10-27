@@ -3,13 +3,13 @@
 # 舆情负面精判 · 小样本探针实验 一键串跑 (MVP/tests)
 #
 # 用法 (在 MVP/tests 目录下，或任何位置直接执行本脚本):
-#   ./scripts/run_probe_e2e.sh              # 全流程: 下载→混合→训练→推理→评测
-#   ./scripts/run_probe_e2e.sh download     # 只跑第一步
-#   ./scripts/run_probe_e2e.sh mix          # 只跑混合
-#   ./scripts/run_probe_e2e.sh train        # 只跑训练
-#   ./scripts/run_probe_e2e.sh test         # 只跑推理+评测
-#   ./scripts/run_probe_e2e.sh traintest    # 只跑训练+推理+评测 (复用已有混合数据与基座模型)
-#   ./scripts/run_probe_e2e.sh --tag=POC1_epoch6 traintest
+#   ./scripts/run_sft_e2e.sh              # 全流程: 下载→混合→训练→推理→评测
+#   ./scripts/run_sft_e2e.sh download     # 只跑第一步
+#   ./scripts/run_sft_e2e.sh mix          # 只跑混合
+#   ./scripts/run_sft_e2e.sh train        # 只跑训练
+#   ./scripts/run_sft_e2e.sh test         # 只跑推理+评测
+#   ./scripts/run_sft_e2e.sh traintest    # 只跑训练+推理+评测 (复用已有混合数据与基座模型)
+#   ./scripts/run_sft_e2e.sh --tag=POC1_epoch6 traintest
 #                              # 同 traintest, 但输出目录名追加 tag 后缀
 #                              # (run_20261024_180116 → run_20261024_180116_POC1_epoch6)
 #                              # --tag 位置任意, 不传则保持原有输出路径不变
@@ -120,7 +120,7 @@ check_deps() {
   # wandb 默认关：探针实验不上传，正式跑才 SYNC_WANDB=1 显式开启。
   # 登录态有两条路径: WANDB_API_KEY 环境变量 或 ~/.netrc 里的 api.wandb.ai 凭据
   if [ "${SYNC_WANDB:-0}" != "1" ]; then
-    log "wandb: 探针模式默认关闭，只落本地日志 (正式跑: SYNC_WANDB=1 ./scripts/run_probe_e2e.sh)"
+    log "wandb: 探针模式默认关闭，只落本地日志 (正式跑: SYNC_WANDB=1 ./scripts/run_sft_e2e.sh)"
     WANDB_FLAG="--no_wandb"
   elif ! python3 -c "import wandb" 2>/dev/null; then
     log "wandb: SYNC_WANDB=1 但未安装 wandb，降级为本地日志 (pip install wandb)"
@@ -148,8 +148,8 @@ check_reuse_assets() {
   fi
   if [ -n "$miss_data" ] || [ -n "$miss_model" ]; then
     log "❌ 缺少可复用产物:"
-    [ -n "$miss_data" ]  && log "   混合数据缺失 ($MIXED_DIR/sft_train.jsonl, sft_val.jsonl) → 先跑: ./scripts/run_probe_e2e.sh mix"
-    [ -n "$miss_model" ] && log "   基座模型缺失 ($MODEL_DIR/$(basename "$MODEL_NAME"))            → 先跑: ./scripts/run_probe_e2e.sh download"
+    [ -n "$miss_data" ]  && log "   混合数据缺失 ($MIXED_DIR/sft_train.jsonl, sft_val.jsonl) → 先跑: ./scripts/run_sft_e2e.sh mix"
+    [ -n "$miss_model" ] && log "   基座模型缺失 ($MODEL_DIR/$(basename "$MODEL_NAME"))            → 先跑: ./scripts/run_sft_e2e.sh download"
     log "   (也可用 DATA_DIR / MODEL_DIR / MODEL_NAME 指定现有产物位置)"
     # 自检失败即退出：清掉本次创建的空 run 目录，避免留下无用产物
     rm -rf "$RUN_DIR"
@@ -291,7 +291,7 @@ step_infer() {
   # 推理侧不加同一 flag 就会「训练有前缀、推理没前缀」，格式立刻崩。
   THINK_PREFIX_ARG=""
   [ "${THINK_PREFIX:-0}" = "1" ] && THINK_PREFIX_ARG="--think_prefix"
-  python3 scripts/probe_infer.py \
+  python3 scripts/sft_infer.py \
     --base_model "${LOCAL_MODEL:-$MODEL_NAME}" \
     --adapter_path "$ADAPTER_DIR" \
     --data_file "$MIXED_DIR/sft_val.jsonl" \

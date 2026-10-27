@@ -173,13 +173,13 @@ B 组的 `gate2: PASS` 是**空判定，不是真实通过**。
 cd /root/autodl-tmp/senti
 
 # A 组 · 默认配置（推荐）
-SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_probe_e2e.sh traintest
+SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_sft_e2e.sh traintest
 
 # B 组 · 关闭 token 解冻
-UNFREEZE_PROTOCOL_TOKENS=0 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_probe_e2e.sh traintest
+UNFREEZE_PROTOCOL_TOKENS=0 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_sft_e2e.sh traintest
 
 # C 组 · 开启前缀预置
-THINK_PREFIX=1 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_probe_e2e.sh traintest
+THINK_PREFIX=1 SFT_POC_STAGE=POC1 EPOCHS=6 ./scripts/run_sft_e2e.sh traintest
 ```
 
 **产物路径**

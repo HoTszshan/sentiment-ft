@@ -23,7 +23,7 @@
       --pred_grpo  output/pred_grpo.jsonl \
       --out output/tier_report.json
 
-  每份 pred 文件行序必须与 gold 严格对齐（probe_infer.py 保证）。
+  每份 pred 文件行序必须与 gold 严格对齐（sft_infer.py 保证）。
   任一档缺文件 → 该档记 "missing"，其余档照常出数，不中断。
 
 输出:
