@@ -139,10 +139,6 @@ if [ "$N_GPU" -ge 2 ]; then
   VLLM_FLAG="--use_vllm"
   log "拓扑: accelerate 1 进程训练 (cuda:0) + vLLM 采样 (cuda:1)"
 elif [ "$N_GPU" = "1" ]; then
-  LAUNCH=(python3)
-  VLLM_FLAG=""
-  log "拓扑: 单卡 HF generate (trl 0.14 + vllm 在 24G 卡上实测不可行, 见脚本头 vllm 段)"
-elif [ "$N_GPU" = "1" ]; then
   # "单卡拓扑"在多卡机器上是「只用 1 张卡」—— 也必须限可见卡, 否则 HF Trainer
   # 包 nn.DataParallel (NPROC=1 只是 1 个进程, 该进程仍看得见全部卡)。实测:
   # run_20261027_121xxx postfix, GRPOTrainer raise n_gpu>1。
@@ -179,6 +175,11 @@ else
 fi
 
 # ---------------------------------------------------------------- 3. 后台启动
+# 显存碎片整理：GRPO 的 logps forward 会产生大块瞬时 logits 分配，
+# 24G 卡临界 OOM 时 reserved-but-unallocated 碎片常是压死骆驼的一根稻草
+# （实测 run_20261028_111510: 480MiB 碎片 + 差 252MiB 分配失败）。
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+log "PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF"
 log "日志: $RUN_LOG"
 CMD=("${LAUNCH[@]}" scripts/train_grpo.py \
   --data "$DATA" \
@@ -217,4 +218,18 @@ log "查进度: tail -f $RUN_LOG"
 log "停训练: kill $PID"
 log "GPU:    nvidia-smi"
 log "----------------------------------------------"
+
+# 状态自查命令（下次直接拷贝；PID 文件路径含时间戳，已在上面 echo 到 *.pid.path）
+log "状态自查 (拷贝即用, 把 <RUN_LOG_DIR> 换成 $LOG_DIR):"
+log "  # 1. 进程活着吗 (S/R=活着, Z=僵尸, 无输出=已退出)"
+log "     ps -p \$(cat $LOG_DIR/grpo_train_${TS}.log.pid) -o pid,stat,etime,cmd"
+log "  # 2. GPU 上还有它吗 (训练中必占显存; 空表=进程没了)"
+log "     nvidia-smi --query-compute-apps=pid,used_memory --format=csv"
+log "  # 3. 日志还在动吗 (挂了就不增长; Ctrl-C 退出 watch)"
+log "     watch -n 5 'tail -n 3 $RUN_LOG'"
+log "  # 4. 快速判断挂没挂 (FATAL/OutOfMemory/Killed 关键字)"
+log "     grep -cE 'FATAL|OutOfMemory|Killed' $RUN_LOG"
+log "  # 5. 残留显存清理 (进程死了但显存没放时, 确认 PID 后)"
+log "     kill -9 \$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
+
 tail -n 20 "$RUN_LOG" || true

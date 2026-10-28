@@ -2,11 +2,16 @@
 # 安装: pip install -r requirements.txt
 # 基座模型 Qwen3 要 transformers>=4.51; 实测组合以 == 锚定 (2026-10-27 真机验证)
 #
-# ⚠️ vllm 未列入 (2026-10-27 五次实测, run_*vllm_smoke1~5):
-#  - vllm 0.7.x 与 trl>=1.x 剧毒不兼容 (装了连单卡训练都崩)
-#  - vllm 0.7.3 + trl 0.14 在 3090 24G 上也不可行: 2卡可见→DataParallel铺满两卡;
-#    单卡 colocate→训练11.6G + vllm权重7.5G + logits峰值 > 24G, 数学超限
-#  → vLLM 采样需 ≥40G 显存卡或 trl>=1.x 升级线 (后者要 torch>=2.6)
+# vllm 0.7.3 如需手动安装 (阿里云镜像):
+#   pip install vllm==0.7.3 -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+# ⚠️ vllm 0.7.3 需手动安装 (清华镜像):
+#   pip install vllm==0.7.3 -i https://pypi.tuna.tsinghua.edu.cn/simple
+# ✅ 2026-10-28 已跑通双卡拓扑 (run_20261028_115727_smoke):
+#  - vllm 0.7.3 + trl 0.14 + transformers 4.51 可用, 前提:
+#    a) transformers 4.51 而非 5.x (Qwen3 支持 + trl 0.14 兼容)
+#    b) 双卡: 训练 cuda:0 + vLLM 独占 cuda:1 (单卡 colocate 显存仍超限)
+#    c) train_grpo.py 内置 5 个环境补丁 (max_model_len 注入等)
+#  - deepspeed 必须 pip uninstall (与 transformers 4.51 循环导入)
 
 # torch 三件套: 先加 cu124 源再装 (CUDA 12.4 轮子不在默认 PyPI)
 #   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
@@ -15,7 +20,8 @@ torch==2.5.1
 torchvision==0.20.1
 torchaudio==2.5.1
 
-transformers==5.15.0
+# transformers==5.15.0
+transformers==4.51.0
 trl==0.14.0
 peft==0.20.0
 accelerate==1.14.0

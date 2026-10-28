@@ -108,8 +108,8 @@ class GrpoHyper:
     temperature: float = 0.7                 # T ✅ 手册 1.3
     lr: float = 2e-5                         # [设计值] LoRA 口径：≈ SFT 1e-4 的 1/5；全参 RLHF 的 1e-6~5e-6 不适用
     beta_kl: float = 0.04                    # β ✅ 手册 1.3 常数 KL
-    per_device: int = 4                      # 一步内同时进来的 prompt 数
-    grad_accum: int = 2                      # → 8 题/步 × G=4 = 32 条轨迹/步 ✅
+    per_device: int = 2                      # 一步内同时进来的 prompt 数
+    grad_accum: int = 4                      # → 8 题/步 × G=4 = 32 条轨迹/步 ✅ (24G 卡 OOM 实测锚定 2×4)
     num_train_epochs: float = 1.0
     warmup_ratio: float = 0.03
     max_prompt_length: int = 2048            # 2560(SFT max_seq) - 512(completion)；实测 max=774，2.6× 余量

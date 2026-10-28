@@ -70,26 +70,22 @@
 
 ## Step 3 · GRPO 探针训练（先冒烟，再长跑验证熔断）
 
-- [ ] **3.1** 冒烟（前台，3 步，只验证「能采样、能打分、能更新」）：
+- [x] **3.1** 冒烟（前台，3 步，只验证「能采样、能打分、能更新」）——✅ 2026-10-28 通过（run_20261028_115727_smoke，3 步 262s，reward -0.35→+0.17→-0.17，LoRA 已落盘）：
   ```bash
-  python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
-      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
-      --output_dir /root/autodl-tmp/models/grpo_senti/grpo_smoke \
-      --limit 8 --max_steps 3 --save_steps 2 --no_wandb \
-      --log_file logs/grpo_smoke.log
+  # 推荐走 wrapper（拓扑/显存配置自动）；或手动命令加 --per_device_train_batch_size 2 --gradient_accumulation_steps 4 --gradient_checkpointing
+  MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+  GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh --tag=smoke
   ```
   验收：训练能启动、reward 在合法值域、模型/checkpoint 可保存。**此步不验证 eval 熔断**，因为只有 3 步且基线与训练池同源。
 - [ ] **3.2** 长跑探针（专门验证周期 eval 与熔断链路；50 题 × 4 epochs = 28 步）：
   ```bash
-  python3 scripts/train_grpo.py \
-      --data /root/autodl-tmp/senti/data/probe_test_grpo_train_synth.jsonl \
-      --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
-      --output_dir /root/autodl-tmp/models/grpo_senti/grpo_fuse_smoke \
-      --eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 \
-      --save_steps 2 --no_wandb --log_file logs/grpo_fuse_smoke.log
+  # 走 wrapper（拓扑/显存配置自动）；双卡自动开 vLLM，单卡自动降级 HF generate
+  MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+  GRPO_ARGS="--eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 --save_steps 2" \
+  ./scripts/run_grpo_train.sh --tag=fuse_smoke
   ```
-  验收：出现训练前 `[EVAL] pre-train baseline reward 均值`；之后每 2 步出现 `[EVAL]` 或 `[FUSE]`；正常下降只告警，只有加 `--fuse_hard` 才设置训练停止。若想验证硬刹车，可另跑一次 `--fuse_hard --fuse_threshold 0`（零阈值仅用于功能测试，非推荐训练阈值）。
+  ⚠️ 不要用裸 `python3 scripts/train_grpo.py` 直启：双卡机不加 `CUDA_VISIBLE_DEVICES=0` 会触发 DataParallel OOM，且缺 `--gradient_checkpointing`（已固化默认值，走 wrapper 自动带上）。手动调试实在要前台跑，须带：`CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True ... --gradient_checkpointing`。
+  验收：出现训练前 `[EVAL] pre-train baseline reward 均值`；之后每 2 步出现 `[EVAL]` 或 `[FUSE]`（由 callback 的 `on_step_end` 周期触发）；正常下降只告警，只有加 `--fuse_hard` 才设置训练停止。若想验证硬刹车，可另跑一次 `GRPO_ARGS` 里加 `--fuse_hard --fuse_threshold 0`（零阈值仅用于功能测试，非推荐训练阈值）。
   > 这 8 条从同一个 50 条探针池抽出，会和训练集重叠。它只用于验证“评估→比较→告警/停止”功能，不是泛化评估；报告中要注明此限制。更多 epochs 是为了让功能有机会被触发，不代表正式训练轮数建议。
 
   > **熔断阈值的两个已知坑（探针阶段把 `[FUSE]` 当功能信号，别当真实退化）**：
@@ -106,8 +102,16 @@
   `grpo_senti/run_<时间戳>[_<tag>]/`，里面 `grpo_lora/`（adapter + 指标）+ `logs/`（训练日志）。
   - `--tag=fuse_smoke` 位置任意，不传就不加后缀
   - GPU 卡数：默认 `nvidia-smi` 自动识别
-  - 50 题小探针 / 1k 探针：一律 `NPROC=1` 单卡（多卡机上会自动限 CUDA_VISIBLE_DEVICES=0，不会踩 DataParallel）
-    - **双卡 vLLM 采样（`NPROC=2`）为 TODO，尚未跑通**：vllm 0.7.3 + trl 0.14 五次实测（run_*vllm_smoke1~5）未成功，vllm 暂未列入 requirements。候选方案（trl>=1.x 升级线 / sleep_mode / ≥40G 卡）与排查记录见 `notes/GRPO环境踩坑实录_20261027.md`；跑通前探针先用单卡
+  - ~~单卡 HF generate~~ **双卡 vLLM 已跑通（2026-10-28，run_20261028_115727_smoke）**：
+    `NPROC=2` 自动走「训练 cuda:0 + vLLM 独占 cuda:1」，8 题冒烟 3 步约 4 分钟。
+    显存配置已固化默认值：batch 2×4、`--gradient_checkpointing`、vLLM utilization 0.9（KV 12.3G / 并发 ~35x）、
+    `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（脚本自动 export）。
+    **推荐命令**（显存三件套已入默认值，可不传）：
+    ```bash
+    MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+    GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh --tag=smoke
+    ```
+    单卡环境仍自动降级 `CUDA_VISIBLE_DEVICES=0` + HF generate（DataParallel 防呆保留）
 - [ ] **3.4** 熔断默认开：训练入口直跑不传 `--eval_file` 即自动从训练池抽 `--eval_n`（默认 8）条基线集；要显式指定就用 `--eval_file`，`--eval_n 0` 关闭。启动脚本（`run_grpo_train.sh`）则用环境变量：设置 `EVAL_FILE`（或不设走同样自动档）、`FUSE_HARD=1` 才执行硬停止。
 
 ---
@@ -186,4 +190,4 @@
 
 - eval 基线集换成独立留出集（若目标是测通用能力退化，应选通用指令集）；阈值需结合基线集规模与波动重新校准；**同时复审 `should_fuse` 的绝对差分支**（baseline≤0 时 0.02 门槛在采样噪声下会误报，见 Step 3.2 的坑位说明）与 `do_sample=True` 的解码噪声，必要时改 greedy 解码；
 - `eval_four_tier.py` T4 档跑四档对照归因；
-- 双卡拓扑 + vLLM 采样（`run_grpo_train.sh` 已支持，GPU 数 ≥2 自动开；走 `config/accelerate_grpo.yaml` + `--num_processes 1` 覆盖）。**TODO：尚未跑通**——vllm 0.7.3 + trl 0.14 五次实测未成功，候选方案与排查记录见 `notes/GRPO环境踩坑实录_20261027.md`，跑通前探针继续用单卡。
+- 双卡拓扑 + vLLM 采样 **已跑通（2026-10-28）**：`NPROC=2` 自动启用；显存三件套（batch 2×4 / gradient_checkpointing / vLLM 0.9）已固化为默认值，见 `notes/GRPO环境踩坑实录_20261027.md` 与 `train_grpo.py` 内置补丁注释。

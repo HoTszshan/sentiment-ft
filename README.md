@@ -607,8 +607,8 @@ MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 ./scripts/run_grpo_train.sh
 
 
 
-**版本要求**（2026-10-27 真机锚定，以 `requirements.txt` 为准）：`trl==0.14.0` + `transformers==5.15.0` + `torch==2.5.1` + `peft==0.20.0`。安装一律 `pip install -r requirements.txt`，**不要自行升级 `trl` / `vllm` / `torch`**（`trl` 1.x 与当前栈不兼容；踩坑明细见 `notes/GRPO环境踩坑实录_20261027.md`）。脚本内已对 trl 0.14 × transformers 5.x 的兼容性怪癖打补丁（vllm 检测元组、eval prediction_step 等），换版本前先过一遍该实录。
-**双卡 vLLM 采样（TODO 状态，尚未跑通）**：当前探针一律 **NPROC=1 单卡 + HF generate**。vllm 未列入 requirements（vllm 0.7.x 与 trl>=1.x 剧毒不兼容；vllm 0.7.3 + trl 0.14 在 24G 卡上 colocate 显存吃紧，五次实测 run_*vllm_smoke1~5 未跑通）。跑通方案待定：trl>=1.x 升级线（需 torch>=2.6）、vllm 0.7.3 + `vllm_enable_sleep_mode`、或 ≥40G 显存卡；`config/accelerate_grpo.yaml` 与 `run_grpo_train.sh` 的双卡拓扑参数已备好，跑通后启用。踩坑明细见 `notes/GRPO环境踩坑实录_20261027.md`。
+**版本要求**（2026-10-28 真机锚定，以 `requirements.txt` 为准）：`trl==0.14.0` + `transformers==4.51.0`（Qwen3 支持下限，勿装 5.x——trl 0.14 不兼容）+ `torch==2.5.1` + `peft==0.20.0`；**deepspeed 必须卸载**（与 transformers 4.51 循环导入）。安装一律 `pip install -r requirements.txt`，**不要自行升级 `trl` / `vllm` / `torch`**。`train_grpo.py` 内置 5 个环境补丁（vllm 检测元组 / scale_rewards=none 运行时 patch / vLLM max_model_len 注入 / 显存预算），换版本前先过 `notes/GRPO环境踩坑实录_20261027.md`。
+**双卡 vLLM 采样（✅ 2026-10-28 已跑通，run_20261028_115727_smoke）**：`NPROC=2`（或机器 ≥2 卡自动）走「accelerate 1 训练进程 cuda:0 + vLLM 独占 cuda:1」。显存三件套已固化默认值：batch `2×4`（每步拓扑不变 8 题×G4）、`--gradient_checkpointing`、vLLM utilization `0.9`（KV 12.3G / 并发 ~35x，32 条 rollout 一波发完）；`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 由 `run_grpo_train.sh` 自动 export。vllm 0.7.3 不在 requirements，需手动装（见文件头注释）。单卡环境自动降级 HF generate + `CUDA_VISIBLE_DEVICES=0`（DataParallel 防呆保留）。
 
 
 ### 3.6 难度分流：`run_grpo_probe.py`（只留 k∈{1,2,3}）
@@ -724,7 +724,8 @@ python3 scripts/eval_four_tier.py --gold data/gold500_test.jsonl \
 | GRPO 报 `No module named 'trl'` | `pip install -r requirements.txt`（trl==0.14.0 + transformers==5.15.0 真机锚定组合，**别手装升级版**；踩坑见 `notes/GRPO环境踩坑实录_20261027.md`） |
 | GRPO 启动就报「batch 不能被 G 整除」 | `--per_device_train_batch_size` 必须是 G 的倍数（默认 4，G=4 合法） |
 | GRPO 日志提示「无 temperature 字段」 | TRL 版本与 `requirements.txt` 锚定组合不符；TRL 太老时 T 若为 0，组内方差恒 0，RL 会退化成更贵的 SFT |
-| GRPO 慢 / rollout 占时间 | 当前口径单卡 HF generate（`NPROC=1`）。双卡 vLLM 采样为 **TODO**（vllm 0.7.3 + trl 0.14 五次实测未跑通，候选方案见 §3.5），跑通前别依赖 |
+| GRPO 慢 / rollout 占时间 | 双卡走 `NPROC=2` 自动开 vLLM（✅ 已跑通，utilization 0.9 / 并发 ~35x）；单卡自动降级 HF generate |
+| GRPO OOM（24G 卡） | 默认已固化 batch 2×4 + `--gradient_checkpointing` + `expandable_segments:True`；仍 OOM 再降 `--per_device_train_batch_size 1 --gradient_accumulation_steps 8` |
 | COIG-CQIA 拉取超时 | 脚本已自动落盘内置兜底包；或 `pip install modelscope` 后重试 |
 | wandb 提示未登录 | `wandb login`，或加 `--no_wandb` 关掉 |
 | OOM | 降 `--per_device_train_batch_size 1 --gradient_accumulation_steps 8` |
