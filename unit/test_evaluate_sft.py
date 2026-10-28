@@ -276,6 +276,44 @@ class TestSlices(unittest.TestCase):
 # 模式 A · Anchor 分账（锚点不走舆情四查，只查行级结构）
 # ============================================================
 
+class TestFormatDriftGate4(unittest.TestCase):
+    """格式漂移回归（探针 run_20261028_102858）：模型输出漂移成
+    <tool_call> 包 JSON（缺 <think>），宽松提取能捞到字段算指标，
+    但 valid_json 协议口径不得放宽——JSON 合法率 0%、gate4 FAIL。
+    """
+
+    def _write_jsonl(self, rows):
+        import json as _json
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(_json.dumps(r, ensure_ascii=False) + "\n")
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_drifted_text_counts_json_invalid(self):
+        """文本行强解析失败 → json_valid 记 0%，即使宽松提取捞到了字段。"""
+        from evaluate_sft import parse_model_output
+        drifted = ('<tool_call> {"subject":"资生堂红腰子","relevance":"core",'
+                   '"sentiment":"positive","hard_case_type":"fact_implicit",'
+                   '"risk_categories":["product"],"evidence":"让人过敏"}')
+        res = parse_model_output(drifted)
+        self.assertFalse(res["valid_json"])   # 协议口径：缺 <think> = 不合法
+        self.assertIsNotNone(res["pred"])     # 宽松提取仍供字段对比
+
+    def test_gate4_fails_on_drifted_output(self):
+        """漂移输出过 gate4 必须 FAIL（宽松提取不许洗白格式门槛）。"""
+        gold = _good_pred(sent="negative", hc="explicit")
+        gold["id"] = "#1"
+        pred = dict(gold)
+        pred["valid_json"] = False   # 按强解析口径记 False
+        pred["valid_tags"] = False
+        gates = evaluate_gates([gold], [pred],
+                               thresholds={"json_valid": 99.8})
+        self.assertEqual(gates["gate4"], "FAIL")
+
+
 class TestModeAAnchorPartition(unittest.TestCase):
     """模式 A 单文件质检：Anchor 样本分账跳过协议四查（run_single_file_check）。"""
 
