@@ -53,7 +53,21 @@ def main():
                     help="推理引擎: hf (单卡 PyTorch 原生，默认稳定) | vllm (高吞吐批量推理)")
     ap.add_argument("--gpu_memory_utilization", type=float, default=0.7,
                     help="vLLM 显存占用上限 (默认 0.7，防止与其他进程抢显存)")
+    ap.add_argument("--log", default="",
+                    help="日志落盘路径（stdout 全量 tee + 关键计时落档）；不给则只打印")
     args = ap.parse_args()
+
+    # 日志 tee：所有 print 走 _say，给了 --log 就同步追加落盘
+    if args.log:
+        Path(args.log).parent.mkdir(parents=True, exist_ok=True)
+    _log_fh = open(args.log, "a", encoding="utf-8") if args.log else None
+    _t_start = time.time()
+
+    def _say(msg: str = ""):
+        print(msg, flush=True)
+        if _log_fh:
+            _log_fh.write(msg + "\n")
+            _log_fh.flush()
 
     # 渲染协议开关：与训练侧同源（prompt_template.set_think_prefix）
     pt.set_think_prefix(args.think_prefix)
@@ -72,13 +86,15 @@ def main():
     if args.limit:
         rows = rows[: args.limit]
 
-    print("=" * 70)
-    print("探针推理")
-    print(f"  基座    : {args.base_model}")
-    print(f"  Adapter : {args.adapter_path or '(无 — 裸基座对照)'}")
-    print(f"  数据    : {args.data_file} ({len(rows)} 条)")
-    print(f"  产出    : {args.out}")
-    print("=" * 70)
+    _say("=" * 70)
+    _say("探针推理")
+    _say(f"  基座    : {args.base_model}")
+    _say(f"  Adapter : {args.adapter_path or '(无 — 裸基座对照)'}")
+    _say(f"  数据    : {args.data_file} ({len(rows)} 条)")
+    _say(f"  产出    : {args.out}")
+    if _log_fh:
+        _say(f"  日志    : {args.log}")
+    _say("=" * 70)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +117,7 @@ def main():
         ]
 
         enable_lora = bool(args.adapter_path)
+        t_load = time.time()
         llm = LLM(
             model=args.base_model,
             trust_remote_code=True,
@@ -108,8 +125,13 @@ def main():
             enable_lora=enable_lora,
             max_lora_rank=64 if enable_lora else None,
             tensor_parallel_size=1,
+            # 模型原生 max_position=256K，KV cache 装不下会直接拒启动；
+            # prompt p99≈840 token + 生成 512，2048 绰绰有余
+            max_model_len=2048,
         )
+        _say(f"[TIME] 引擎+模型加载: {time.time()-t_load:.1f}s")
 
+        t_render = time.time()
         sampling_params = SamplingParams(
             temperature=args.temperature,
             top_p=0.9 if args.temperature > 0 else 1.0,
@@ -117,7 +139,14 @@ def main():
         )
         lora_req = LoRARequest("probe_adapter", 1, args.adapter_path) if enable_lora else None
 
+        # 批量一次进队：整体耗时 = t_gen；吞吐 = n / t_gen
+        t_gen = time.time()
         outputs = llm.generate(prompts, sampling_params, lora_request=lora_req)
+        t_gen = time.time() - t_gen
+        _say(f"[TIME] prompt 渲染: {time.time()-t_render:.1f}s | "
+             f"批量生成 {len(rows)} 条: {t_gen:.1f}s "
+             f"(吞吐 {len(rows)/max(t_gen,1e-9):.2f} 条/s, "
+             f"均值 {t_gen/max(len(rows),1):.2f}s/条)")
         with open(out_path, "w", encoding="utf-8") as f:
             for i, (row, out) in enumerate(zip(rows, outputs), 1):
                 text = out.outputs[0].text
@@ -139,8 +168,8 @@ def main():
 
                 f.write(text.replace("\n", " ").strip() + "\n")
                 if i % 10 == 0 or i == len(rows):
-                    print(f"  [{i}/{len(rows)}] tag合规 {n_tag} | JSON合法 {n_json} | "
-                          f"evidence 命中原文 {n_ev}", flush=True)
+                    _say(f"  [{i}/{len(rows)}] tag合规 {n_tag} | JSON合法 {n_json} | "
+                         f"evidence 命中原文 {n_ev}")
 
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True,
@@ -155,10 +184,18 @@ def main():
         if args.adapter_path:
             from peft import PeftModel
             model = PeftModel.from_pretrained(model, args.adapter_path)
-            print(f"[OK] 已加载 LoRA Adapter: {args.adapter_path}")
+            _say(f"[OK] 已加载 LoRA Adapter: {args.adapter_path}")
         model.eval()
+        _say(f"[TIME] 模型加载: {time.time()-t0:.1f}s")
 
         with open(out_path, "w", encoding="utf-8") as f:
+            n_total = len(rows)
+            # 单条生成慢（百秒级/条 × 500 条），进度条按样本打：tqdm 覆盖 stderr，
+            # 合规计数打在同一行后缀，不与 tqdm 冲突
+            from tqdm import tqdm
+            pbar = tqdm(total=n_total, desc="推理", unit="条",
+                        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} "
+                                   "[{elapsed}<{remaining}, {rate_fmt}{postfix}]")
             for i, row in enumerate(rows, 1):
                 prompt = pt.render_prompt(tokenizer, row.get("instruction", "") or "",
                                           row.get("input", "") or "")
@@ -200,19 +237,29 @@ def main():
                 f.write(text.replace("\n", " ").strip() + "\n")
                 f.flush()
 
-                if i % 10 == 0 or i == len(rows):
-                    print(f"  [{i}/{len(rows)}] tag合规 {n_tag} | JSON合法 {n_json} | "
-                          f"evidence 命中原文 {n_ev}", flush=True)
+                pbar.set_postfix_str(
+                    f"tag {n_tag} | JSON {n_json} | ev {n_ev}")
+                pbar.update(1)
+                if i % 50 == 0 or i == n_total:
+                    _el = time.time() - t0
+                    _say(f"  [{i}/{n_total}] tag合规 {n_tag} | JSON合法 {n_json} | "
+                         f"evidence 命中原文 {n_ev} | 累计 {_el:.0f}s "
+                         f"(均值 {_el/i:.1f}s/条)")
+            pbar.close()
 
-    print("=" * 70)
-    print(f"[OK] 推理完成 {len(rows)} 条，耗时 {time.time() - t0:.1f}s")
-    print(f"     CoT 标签闭合率 : {n_tag}/{len(rows)} ({n_tag/max(len(rows),1)*100:.1f}%)")
-    print(f"     JSON 解析合法率: {n_json}/{len(rows)} ({n_json/max(len(rows),1)*100:.1f}%)")
-    print(f"     evidence 原文命中: {n_ev}/{len(rows)} ({n_ev/max(len(rows),1)*100:.1f}%)")
-    print(f"     预测文件: {out_path}")
-    print("=" * 70)
-    print("下一步: python evaluate_sft.py --gold_file "
-          f"{args.data_file} --pred_file {args.out}")
+    _t_total = time.time() - t0
+    _say("=" * 70)
+    _say(f"[OK] 推理完成 {len(rows)} 条，总耗时 {_t_total:.1f}s "
+         f"(均值 {_t_total/max(len(rows),1):.2f}s/条)")
+    _say(f"     CoT 标签闭合率 : {n_tag}/{len(rows)} ({n_tag/max(len(rows),1)*100:.1f}%)")
+    _say(f"     JSON 解析合法率: {n_json}/{len(rows)} ({n_json/max(len(rows),1)*100:.1f}%)")
+    _say(f"     evidence 原文命中: {n_ev}/{len(rows)} ({n_ev/max(len(rows),1)*100:.1f}%)")
+    _say(f"     预测文件: {out_path}")
+    _say("=" * 70)
+    _say("下一步: python evaluate_sft.py --gold_file "
+         f"{args.data_file} --pred_file {args.out}")
+    if _log_fh:
+        _log_fh.close()
 
 
 if __name__ == "__main__":

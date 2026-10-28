@@ -597,7 +597,15 @@ def run_dual_file_eval(gold_file: str, pred_file: str,
             text_lines += 1
             if parsed["valid_thought_tags"]:
                 tag_ok += 1
-        if pred is not None:
+        # 协议口径的 JSON 合法：强解析成功（缺 <think> 标签 = 协议失败），
+        # dict 行没有模型输出文本，强解析不适用，按给了结构化 pred 记合法。
+        # 宽松提取（baseline_extracted / parse_lenient）只供字段对比，
+        # 不放宽协议判定——否则格式漂移会被洗成 100% PASS。
+        if is_text:
+            strong_json = bool(parsed["valid_json"])
+        else:
+            strong_json = pred is not None
+        if strong_json:
             json_ok += 1
         if parsed["trailing_garbage"]:
             trailing += 1
@@ -610,7 +618,7 @@ def run_dual_file_eval(gold_file: str, pred_file: str,
             violations += 1
 
         pred_flags.append({
-            "valid_json": pred is not None,
+            "valid_json": strong_json,
             "valid_tags": bool(parsed["valid_thought_tags"]),
             "schema_error": schema_error,
         })
@@ -884,14 +892,36 @@ def main():
                     help="结构化报告落盘路径（默认 output/report.json）")
     ap.add_argument("--old_error_list", default=None,
                     help="[模式B] 门 1 用的上一版错题 id 列表（每行一个 id）")
+    ap.add_argument("--log", default="",
+                    help="日志落盘路径（stdout 全量 tee）；不给则只打印")
     args = ap.parse_args()
 
-    if args.gold_file and args.pred_file:
-        ok = run_dual_file_eval(args.gold_file, args.pred_file,
-                                out_path=args.out,
-                                old_error_list=args.old_error_list)
-    else:
-        ok = run_single_file_check(args.test_file, out_path=args.out)
+    # 日志 tee：所有 print 走统一 _print，给了 --log 就同步落盘
+    if args.log:
+        os.makedirs(os.path.dirname(os.path.abspath(args.log)), exist_ok=True)
+    _log_fh = open(args.log, "a", encoding="utf-8") if args.log else None
+    if _log_fh:
+        import builtins
+        _orig_print = builtins.print
+
+        def _tee_print(*a, **kw):
+            _orig_print(*a, **kw)
+            sep = kw.get("sep", " ")
+            _log_fh.write(sep.join(str(x) for x in a) + "\n")
+            _log_fh.flush()
+        builtins.print = _tee_print
+
+    try:
+        if args.gold_file and args.pred_file:
+            ok = run_dual_file_eval(args.gold_file, args.pred_file,
+                                    out_path=args.out,
+                                    old_error_list=args.old_error_list)
+        else:
+            ok = run_single_file_check(args.test_file, out_path=args.out)
+    finally:
+        if _log_fh:
+            builtins.print = _orig_print
+            _log_fh.close()
     sys.exit(0 if ok else 1)
 
 
