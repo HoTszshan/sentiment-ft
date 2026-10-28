@@ -74,14 +74,14 @@
   ```bash
   # 推荐走 wrapper（拓扑/显存配置自动）；或手动命令加 --per_device_train_batch_size 2 --gradient_accumulation_steps 4 --gradient_checkpointing
   MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
-  GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh --tag=smoke
+  GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh --gradient_checkpointing --tag=smoke
   ```
   验收：训练能启动、reward 在合法值域、模型/checkpoint 可保存。**此步不验证 eval 熔断**，因为只有 3 步且基线与训练池同源。
 - [ ] **3.2** 长跑探针（专门验证周期 eval 与熔断链路；50 题 × 4 epochs = 28 步）：
   ```bash
   # 走 wrapper（拓扑/显存配置自动）；双卡自动开 vLLM，单卡自动降级 HF generate
   MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
-  GRPO_ARGS="--eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 --save_steps 2" \
+  GRPO_ARGS="--eval_steps 2 --fuse_threshold 0.02 --num_train_epochs 4 --save_steps 2 --gradient_checkpointing" \
   ./scripts/run_grpo_train.sh --tag=fuse_smoke
   ```
   ⚠️ 不要用裸 `python3 scripts/train_grpo.py` 直启：双卡机不加 `CUDA_VISIBLE_DEVICES=0` 会触发 DataParallel OOM，且缺 `--gradient_checkpointing`（已固化默认值，走 wrapper 自动带上）。手动调试实在要前台跑，须带：`CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True ... --gradient_checkpointing`。
