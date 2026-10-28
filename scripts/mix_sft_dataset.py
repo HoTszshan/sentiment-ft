@@ -135,7 +135,10 @@ def mix_datasets(domain_file: str, anchor_file: str, out_dir: str,
     n_anchor = int(n_domain * anchor_ratio / (1.0 - anchor_ratio))
 
     anchor_pool = []
-    if anchor_path.exists():
+    if n_anchor <= 0:
+        # 显式要 0 Anchor (anchor_ratio=0)：连文件都不读，直接全量领域数据
+        print("⚠️ anchor_ratio=0，本次不混 Anchor，全量使用领域数据。")
+    elif anchor_path.exists():
         raw = [json.loads(l) for l in open(anchor_path, encoding="utf-8") if l.strip()]
         # ---- 长度过滤（混合前）: 锚点是通用指令文本, 无 CoT+JSON 协议长度约束,
         # COIG-CQIA 里混有长文 (实测单条 prompt 段可达 1828 token, 为 domain max 719 的 2.6 倍),

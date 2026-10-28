@@ -21,6 +21,8 @@
 # 开关 (环境变量):
 #   SYNC_WANDB=1       探针默认不上传 wandb (只落本地日志)；正式跑设此开关才同步
 #                      (需已 wandb login 或设 WANDB_API_KEY)
+#   WANDB_PROJECT=...  覆盖 wandb project (默认 sentiment-sft-probe4)
+#   WANDB_RUN_NAME=... 覆盖 wandb run 名 (默认 probe_<TS>[_<TAG>])
 #   MODEL_NAME=...     覆盖基座模型 (默认 Qwen/Qwen3-4B-Instruct-2507)
 #   MODEL_DIR=...      模型存放目录 (缺省: /root/autodl-tmp/models，本机自动退回 $BASE_DIR/models)
 #   DATA_DIR=...       公开数据集与混合产物目录 (缺省: /root/autodl-tmp/datasets，本机自动退回 $BASE_DIR/data)
@@ -30,7 +32,7 @@
 #   FORCE=1            忽略已有产物强制重跑
 #   ANCHOR_MAX_CHARS=1200  锚点单条最大字符数 (混合前过滤, 防 OOM 长尾; 1200≈1680 token)
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
-#   INFER_BACKEND=hf      推理后端: hf (单卡 PyTorch 原生，默认推荐) | vllm (高吞吐批量推理)
+#   INFER_BACKEND=auto    推理后端: auto (默认, 探测到 vLLM 用 vllm, 否则回退 hf) | hf | vllm
 #   INFER_GPU=0           方案 1 (hf) 时绑定的单卡编号 (默认 0)
 #   TRAINER_BACKEND=...  训练器后端 (默认 auto: 有 trl 用 trl.SFTTrainer 否则 HF Trainer;
 #                        显式 trl 缺库即报错; 显式 hf 强制回退 HF Trainer)
@@ -64,7 +66,7 @@ ANCHOR_FILE="$DATA_DIR/coig_cqia_anchor.jsonl"
 MIXED_DIR="$DATA_DIR/mixed"
 EPOCHS="${EPOCHS:-3}"
 LR="${LR:-1e-4}"
-echo "路径解析: MODEL_DIR=$MODEL_DIR  DATA_DIR=$DATA_DIR  DOMAIN_FILE=$DOMAIN_FILE"
+echo "路径解析: MODEL_DIR=$MODEL_DIR  DATA_DIR=$DATA_DIR"
 FORCE="${FORCE:-0}"
 # Loss 消融阶段 (POC1=仅前缀掩码 / POC2=+骨架掩码 / POC3=+字段加权 FIELD_W)
 # 透传给 sft_weight_planner，一次只动一个变量
@@ -206,7 +208,8 @@ step_train() {
   log "步骤 3/5 · LoRA SFT 训练 (前缀掩码 + 骨架掩码 + FIELD_W 字段级加权)"
   resolve_local_model
   TRAIN_LOG="$LOG_DIR/train_probe.log"
-  RUN_NAME="probe_${TS}"
+  # wandb run 名可覆盖；默认带 tag，对照组在 wandb 看板上一眼可辨
+  RUN_NAME="${WANDB_RUN_NAME:-probe_${TS}${TAG:+_${TAG}}}"
 
   # ---- 启动方式选择: 自动探测 GPU 数, 可用 NPROC 环境变量覆盖 ----
   #   1 卡 → python3 直启
@@ -256,6 +259,7 @@ step_train() {
     --per_device_train_batch_size "$PER_DEV_BATCH" \
     --max_seq_length "$MAX_LEN" \
     "${TRAIN_ARGS[@]}" \
+    --per_device_eval_batch_size "${PER_DEV_EVAL_BATCH:-1}" \
     --learning_rate "${LR:-1e-4}" \
     --lr_scheduler_type cosine \
     --warmup_ratio 0.05 \
@@ -271,7 +275,7 @@ step_train() {
     --canary_n "${CANARY_N:-3}" \
     --canary_max_new "${CANARY_MAX_NEW:-400}" \
     --log_file "$TRAIN_LOG" \
-    --wandb_project sentiment-sft-probe4 \
+    --wandb_project "${WANDB_PROJECT:-sentiment-sft}" \
     --wandb_run_name "$RUN_NAME" \
     $WANDB_FLAG 2>&1 | tee -a "$RUN_LOG"
   train_rc=${PIPESTATUS[0]}
@@ -290,8 +294,18 @@ step_train() {
 step_infer() {
   resolve_local_model
   ADAPTER_DIR="$(cat "$OUTPUT_DIR/latest_adapter_path.txt" 2>/dev/null || echo "")"
-  INFER_BACKEND="${INFER_BACKEND:-hf}"
+  # 后端选择: 未显式指定时自动探测 —— 有 vLLM 就走 vLLM (高吞吐批量推理),
+  # 没有再回退 hf 原生; 显式 INFER_BACKEND=hf|vllm 仍可强制覆盖。
   INFER_GPU="${INFER_GPU:-0}"
+  if [ -z "${INFER_BACKEND:-}" ]; then
+    if python3 -c "import vllm" 2>/dev/null; then
+      INFER_BACKEND="vllm"
+      log "推理后端: 未指定, 探测到 vLLM → 自动使用 vllm (强制 hf 请设 INFER_BACKEND=hf)"
+    else
+      INFER_BACKEND="hf"
+      log "推理后端: 未指定, 未安装 vLLM → 回退 hf (装 vllm 后自动切换)"
+    fi
+  fi
   log "步骤 4/5 · 加载 Adapter 在内部 val 上批量推理 (后端: $INFER_BACKEND)"
   # 渲染协议必须与训练侧一致：THINK_PREFIX=1 时训练把 <think>\n 写进了前缀，
   # 推理侧不加同一 flag 就会「训练有前缀、推理没前缀」，格式立刻崩。
@@ -341,8 +355,11 @@ step_eval() {
 # 子进程经 nohup 脱离终端, 父进程打印三件套用法后立即退出。
 if [ "${BG:-0}" = "1" ] && [ -z "${BG_CHILD:-}" ]; then
   BG_TS=$(date +"%Y%m%d_%H%M%S")
-  BG_LOG="nohup_${STEP}_${BG_TS}.log"
-  BG_PID="train_${BG_TS}.pid"
+  # nohup 日志与 PID 统一收进 nohup/ 目录，不散落仓库根
+  BG_DIR="$BASE_DIR/nohup"
+  mkdir -p "$BG_DIR"
+  BG_LOG="$BG_DIR/nohup_${STEP}_${BG_TS}.log"
+  BG_PID="$BG_DIR/train_${BG_TS}.pid"
   nohup env BG_CHILD=1 "$0" "$@" > "$BG_LOG" 2>&1 &
   echo $! > "$BG_PID"
   echo "[BG] 已转后台执行: $*"
@@ -356,7 +373,38 @@ fi
 check_deps
 log "执行模式: $STEP"
 [ -n "$TAG" ] && log "实验标签: $TAG (输出目录: run_${TS}_${TAG})"
-[ -n "$TAG" ] && log "实验标签: $TAG (输出目录: run_${TS}_${TAG})"
+
+# 全量超参快照（对齐 run_grpo_train.sh 风格）：一屏看清本次跑的配置，
+# 回填实验登记表 / 排查「这枪和上枪差在哪」时不用翻代码猜默认值
+log "---------------- 超参快照 ----------------"
+log "  模型/数据 : MODEL_NAME=$MODEL_NAME"
+log "              MODEL_DIR=$MODEL_DIR  DATA_DIR=$DATA_DIR"
+log "              MIXED_DIR=$MIXED_DIR"
+# DOMAIN_FILE / ANCHOR_FILE 仅 mix 步真正消费；traintest 复用产物时不打，防误导
+if [ "$STEP" = "mix" ] || [ "$STEP" = "all" ]; then
+  log "              DOMAIN_FILE=$DOMAIN_FILE"
+  log "              ANCHOR_FILE=$ANCHOR_FILE"
+  log "  mix参数   : --anchor_ratio 0.1 --val_ratio 0.1 --seed 42  ANCHOR_MAX_CHARS=${ANCHOR_MAX_CHARS:-1200}"
+fi
+log "  训练核心  : SFT_POC_STAGE=$SFT_POC_STAGE  EPOCHS=$EPOCHS  LR=$LR"
+# 三级 batch 拆解：单卡 batch × 卡数 × 梯度累积 = 有效 batch（参数更新频率的口径）
+#   每步训练消耗 PER_DEV_BATCH×NPROC 条样本，累计 ACCUM 个 micro-batch 才 optimizer.step() 一次
+_NPROC_SNAP="${NPROC:-}"
+_ACCUM_SNAP=$(( 8 / (${PER_DEV_BATCH:-2} * ${_NPROC_SNAP:-1}) ))
+[ "${_ACCUM_SNAP:-0}" -lt 1 ] && _ACCUM_SNAP=$(( 8 / ${_NPROC_SNAP:-1} ))
+log "              MAX_LEN=${MAX_LEN:-2560}"
+log "              per_device_train_batch_size=${PER_DEV_BATCH:-2} × NPROC=${_NPROC_SNAP:-自动(单卡为1)} × gradient_accumulation_steps=$_ACCUM_SNAP → 有效batch=8 (每 $_ACCUM_SNAP 个 micro-batch、共 $(( 8 )) 条样本更新一次参数)"
+log "              per_device_eval_batch_size=${PER_DEV_EVAL_BATCH:-1}  warmup_ratio=0.05  scheduler=cosine  logging_steps=1  eval_steps=5"
+log "              UNFREEZE_PROTOCOL_TOKENS=${UNFREEZE_PROTOCOL_TOKENS:-1}  THINK_PREFIX=${THINK_PREFIX:-0}"
+log "              TRAINER_BACKEND=${TRAINER_BACKEND:-auto}  NPROC=${NPROC:-自动}"
+log "              CANARY_EVERY=${CANARY_EVERY:-30}  CANARY_N=${CANARY_N:-3}  CANARY_MAX_NEW=${CANARY_MAX_NEW:-400}"
+# mix 比例只在上面 mix 分支里打印（traintest 复用产物时，比例来自当时的混合，不在本脚本手里）
+log "  混合/推理 : INFER_BACKEND=${INFER_BACKEND:-auto}  INFER_GPU=${INFER_GPU:-0}"
+log "  wandb     : SYNC_WANDB=${SYNC_WANDB:-0}  WANDB_PROJECT=${WANDB_PROJECT:-sentiment-sft}"
+log "              WANDB_RUN_NAME=${WANDB_RUN_NAME:-probe_${TS}${TAG:+_${TAG}}}"
+log "  输出      : RUN_DIR=$RUN_DIR"
+log "              FORCE=${FORCE:-0}  BG=${BG:-0}  PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF"
+log "------------------------------------------"
 
 case "$STEP" in
   download) step_download ;;
