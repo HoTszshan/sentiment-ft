@@ -387,7 +387,11 @@ def main():
             # 32 条 rollout 一波发完（0.7 只有 ~21x，要分两波）；
             # 单卡 colocate 同卡模式才需要 0.3（给训练留 70%）
             vllm_gpu_memory_utilization=0.9,
-            max_steps=args.max_steps or 0, temperature=h.temperature,
+            # ⚠️ max_steps 传 0 会让 HF Trainer 在第 1 步就停止（global_step >= 0 恒真，
+            # 实测 run_20261028_135919 只跑 1/28 步）。未显式指定时必须传 -1
+            # （= 按 num_train_epochs 决定总步数），不能透传 argparse 的 None/0。
+            max_steps=args.max_steps if args.max_steps else -1,
+            temperature=h.temperature,
             # ε/clip：trl 0.14 无 epsilon 参数，其 per_token_loss 直接用
             # exp(logps - logps.detach())（无截断的 policy-gradient 形式，等价 ε→∞），
             # 概率比截断由 β=0.04 的常数 KL 承担。h.epsilon 保留仅作文档口径。
