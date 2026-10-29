@@ -208,12 +208,20 @@ def build_callback(torch, tokenizer, rows: Sequence[Dict[str, Any]],
                       f"p(<|im_end|>)={m['p_stop']:.3f}  "
                       f"greedy_ok={m['greedy_ok']}/{m['greedy_n']}")
                 if logs is not None:
+                    # 注意：本回调注册在 WandbCallback 之后，改 logs 已来不及
+                    # （wandb 那份先发出去了），必须自己补 log 才能进 history。
                     logs.update({
                         "canary/p_close": m["p_close"],
                         "canary/p_next": m["p_next"],
                         "canary/p_stop": m["p_stop"],
                         "canary/greedy_ok": m["greedy_ok"],
                     })
+                    try:
+                        import wandb
+                        if wandb.run is not None:
+                            wandb.log({f"canary/{k}": v for k, v in m.items()})
+                    except Exception:
+                        pass  # wandb 未启用时静默跳过
             except Exception as e:
                 print(f"[CANARY] 失败(不影响训练): {e}")
 

@@ -20,3 +20,6 @@ data/report/
 data/grpo
 train_grpo_pid.txt
 notes/
+nohup/
+mem_*.log
+mem_*.pid

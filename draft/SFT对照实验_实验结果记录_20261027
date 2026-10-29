@@ -1,0 +1,1081 @@
+#  SFT  对比实验
+
+base_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+
+
+## 统计黄金测试集的长度
+
+python3 scripts/stat_seq_len.py \
+  --train_file data/gold500_test.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --out output/gold500_test_stat_len.json  \
+  --log output/gold500_test_stat_len.log
+
+
+
+## baseline 
+
+python3 scripts/sft_infer.py \
+  --base_model "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507" \
+  --max_new_tokens 1024 \
+  --adapter_path '' \
+  --backend vllm \
+  --data_file data/gold500_test.jsonl \
+  --out output/baseline/pred.jsonl \
+  --log output/baseline/infer.log
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file output/baseline/pred.jsonl  \
+  --out output/baseline/eval.jsonl \
+  --log output/baseline/eval.log 
+
+**长度统计**
+python3 scripts/stat_seq_len.py \
+  --pred_file output/baseline/pred.jsonl \
+  --gold_file data/gold500_test.jsonl \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --out output/gold500_stat_len_base_infer.json \
+  --log output/gold500_stat_len_base_infer.log
+
+
+## thinking 对比
+
+下载模型
+
+python3 scripts/download_assets.py --model "Qwen/Qwen3-4B-Thinking-2507" \
+  --model_dir /root/autodl-tmp/models --source modelscope
+
+**推理**
+
+python3 scripts/sft_infer.py \
+  --base_model "/root/autodl-tmp/models/Qwen3-4B-Thinking-2507" \
+  --max_new_tokens 1536 \
+  --adapter_path '' \
+  --backend vllm \
+  --data_file data/gold500_test.jsonl \
+  --out output/thinking_base/pred.jsonl \
+  --log output/thinking_base/infer.log
+
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file output/thinking_base/pred.jsonl \
+  --out output/thinking_base/eval.jsonl \
+  --log output/thinking_base/eval.log 
+
+
+**长度统计**
+python3 scripts/stat_seq_len.py \
+  --pred_file output/thinking_base/pred.jsonl \
+  --gold_file data/gold500_test.jsonl \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Thinking-2507 \
+  --out output/gold500_stat_len_thinking_infer.json \
+  --log output/gold500_stat_len_thinking_infer.log
+
+
+
+---
+
+
+## R1 · POC1
+
+**混合数据**
+
+python3 scripts/mix_sft_dataset.py \
+  --domain_file data/sft_round0_750.jsonl \
+  --anchor_file /dev/null \
+  --out_dir /root/autodl-tmp/datasets/sft_round_0/mixed \
+  --anchor_ratio 0.0 --val_ratio 0.1 --seed 42
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_0/mixed/sft_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_0/train_stat_len.json   \
+  --log output/data/sft_round_0/train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_0/mixed/sft_val.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_0/val_stat_len.json   \
+  --log output/data/sft_round_0/val_stat_len.log
+
+
+**峰值显存采样**
+
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv,noheader \
+  -l 5 > mem_R1_sft.log 2>&1 &
+echo $! > mem_R1.pid
+
+训练结束后取峰值并停采样：
+```
+# 方法 1：看训练进程还活着吗
+  ps -p $(cat train_*.pid) > /dev/null && echo 还在跑 || echo 已结束
+
+# 方法 2：看 BG 日志尾巴
+  tail -f nohup_traintest_*.log
+  # 等出现「[PROBE] 本轮探针结束 · 总日志: ...」就是跑完整个 traintest 了
+
+# 每次训练一枪就采一次样、一份日志、回填一个格子
+   sort -t, -k2 -n mem_R1_sft.log | tail -3   ← 峰值三行
+   kill $(cat mem_R1.pid)
+```
+
+
+**traintest**
+
+SFT_POC_STAGE=POC1 EPOCHS=10 WANDB_PROJECT=senti-sft \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0 \
+PER_DEV_BATCH=1 \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R1_POC1_lr1e4_d750_ep10 traintest
+
+
+在金标测试集上测试：
+ADAPTER_DIR=/root/autodl-tmp/models/sft_senti/run_20261028_170742_R1_POC1_lr1e4_d750_ep10/sft_lora \
+  INFER_DATA=data/gold500_test.jsonl CLEAN_MERGE=1 BG=1 \
+  ./scripts/run_sft_e2e.sh test
+
+
+---
+
+SFT_POC_STAGE=POC1 EPOCHS=3 \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0 \
+PER_DEV_BATCH=1 \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R1_POC1_lr1e4_d750_ep3 traintest
+
+在金标测试集上测试：
+ADAPTER_DIR=/root/autodl-tmp/models/sft_senti/run_20261028_201826_R1_POC1_lr1e4_d750_ep3/sft_lora \
+  INFER_DATA=data/gold500_test.jsonl CLEAN_MERGE=1  BG=1 \
+  ./scripts/run_sft_e2e.sh test
+  
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261028_201826_R1_POC1_lr1e4_d750_ep3/pred_gold500.jsonl \
+    --out output/R1_ep3/eval.jsonl \
+    --log output/R1_ep3/eval.log
+
+
+
+## R2 · POC2
+
+**峰值显存采样**
+
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv \
+  -l 5 > mem_R2_sft.log 2>&1 &
+echo $! > mem_R2.pid
+
+
+**traintest**
+(设置目标数据集， 评测完顺手删 7.6G 合并模型)
+
+SFT_POC_STAGE=POC2 EPOCHS=3  \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R2_POC2_lr1e4_d750_ep3 traintest
+
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261029_092159_R2_POC2_lr1e4_d750_ep3/pred_gold500_test.jsonl \
+    --out output/R2_ep3/eval.jsonl \
+    --log output/R2_ep3/eval.log
+
+
+
+### R3 · POC3
+
+**峰值显存采样**
+
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv \
+  -l 5 > mem_R3_sft.log 2>&1 &
+echo $! > mem_R3.pid
+
+
+
+**traintest**
+
+SFT_POC_STAGE=POC3 EPOCHS=3  \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R3_POC3_lr1e4_d750_ep3 traintest
+
+
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261029_101756_R3_POC3_lr1e4_d750_ep3/pred_gold500_test.jsonl \
+    --out output/R3_ep3/eval.jsonl \
+    --log output/R3_ep3/eval.log
+
+
+
+### R1_Anchor · 9:1 锚点防遗忘对照
+
+**混合数据**
+
+python3 scripts/download_assets.py --download_anchor --anchor_samples 1000000 \
+  --data_dir /root/autodl-tmp/datasets
+
+
+python3 scripts/mix_sft_dataset.py \
+  --domain_file data/sft_round0_750.jsonl \
+  --anchor_file /root/autodl-tmp/datasets/coig_cqia_anchor.jsonl \
+  --out_dir /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed \
+  --anchor_ratio 0.1 --val_ratio 0.1 --seed 42
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_0_anchor_0.1/train_stat_len.json   \
+  --log output/data/sft_round_0_anchor_0.1/train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_val.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_0_anchor_0.1/val_stat_len.json   \
+  --log output/data/sft_round_0_anchor_0.1/val_stat_len.log
+
+
+
+**峰值显存采样**
+
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv \
+  -l 5 > mem_R1_Anchor_sft.log 2>&1 &
+echo $! > mem_R1_Anchor.pid
+
+
+**traintest**
+
+SFT_POC_STAGE=POC1 EPOCHS=3  \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0_anchor_0.1 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R1_POC1_Anchor_lr1e4_d750_ep3 traintest
+
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261029_124949_R1_POC1_Anchor_lr1e4_d750_ep3/pred_gold500_test.jsonl \
+    --out output/R1_Anchor_ep3/eval.jsonl \
+    --log output/R1_Anchor_ep3/eval.log
+
+
+---
+
+
+### R4 · 学习率 5e-5（$STAGE = R1~R3 胜者）
+
+**峰值显存采样**
+
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv \
+  -l 5 > mem_R4_sft.log 2>&1 &
+echo $! > mem_R4.pid
+
+
+**traintest**
+
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=5e-5 \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0_anchor_0.1 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R4_lr5e5_d750_ep3 traintest
+
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261029_145246_R4_lr5e5_d750_ep3/pred_gold500_test.jsonl \
+    --out output/R4_lr5e5_d750_ep3/eval.jsonl \
+    --log output/R4_lr5e5_d750_ep3/eval.log
+
+
+### R5 · 学习率 2e-4
+
+**峰值显存采样**
+
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv \
+  -l 5 > mem_R5_sft.log 2>&1 &
+echo $! > mem_R5.pid
+
+
+**traintest**
+
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=2e-4 \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_0_anchor_0.1 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R5_lr2e4_d750_ep3 traintest
+
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261029_154558_R5_lr2e4_d750_ep3/pred_gold500_test.jsonl \
+    --out output/R5_lr2e4_d750_ep3/eval.jsonl \
+    --log output/R5_lr2e4_d750_ep3/eval.log
+
+
+
+### R6 · 数据量翻倍 round1_1500（胜者全配置）
+
+**峰值显存采样**
+
+nohup nvidia-smi --query=timestamp,memory.used --format=csv \
+  -l 5 > mem_R6_sft.log 2>&1 &
+echo $! > mem_R6.pid
+
+
+**混合数据**
+
+python3 scripts/mix_sft_dataset.py \
+  --domain_file data/sft_round1_1500.jsonl \
+  --anchor_file /root/autodl-tmp/datasets/coig_cqia_anchor.jsonl \
+  --out_dir /root/autodl-tmp/datasets/sft_round_1_anchor_0.1/mixed \
+  --anchor_ratio 0.1 --val_ratio 0.1 --seed 42
+
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1/mixed/sft_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_1_anchor_0.1/train_stat_len.json   \
+  --log output/data/sft_round_1_anchor_0.1/train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1/mixed/sft_val.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_1_anchor_0.1/val_stat_len.json   \
+  --log output/data/sft_round_1_anchor_0.1/val_stat_len.log
+
+----
+
+
+python3 scripts/mix_sft_dataset.py \
+  --domain_file data/sft_round1_1500.jsonl \
+  --anchor_file /root/autodl-tmp/datasets/coig_cqia_anchor.jsonl \
+  --out_dir /root/autodl-tmp/datasets/sft_round_1_anchor_0.1_val_0.2/mixed \
+  --anchor_ratio 0.1 --val_ratio 0.2 --seed 42
+
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1_val_0.2/mixed/sft_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_1_anchor_0.1_val_0.2/train_stat_len.json   \
+  --log output/data/sft_round_1_anchor_0.1_val_0.2/train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1_val_0.2/mixed/sft_val.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_1_anchor_0.1_val_0.2/val_stat_len.json   \
+  --log output/data/sft_round_1_anchor_0.1_val_0.2/val_stat_len.log
+
+
+----
+
+python3 scripts/mix_sft_dataset.py \
+  --domain_file data/sft_round1_1500.jsonl \
+  --anchor_file /root/autodl-tmp/datasets/coig_cqia_anchor.jsonl \
+  --out_dir /root/autodl-tmp/datasets/sft_round_1_anchor_0.05/mixed \
+  --anchor_ratio 0.05 --val_ratio 0.1 --seed 42
+
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.05/mixed/sft_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_1_anchor_0.05/train_stat_len.json   \
+  --log output/data/sft_round_1_anchor_0.05/train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1/mixed/sft_val.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507   \
+  --out output/data/sft_round_1_anchor_0.05/val_stat_len.json   \
+  --log output/data/sft_round_1_anchor_0.05/val_stat_len.log
+
+
+---
+
+**traintest**
+
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=1e-4 \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_1_anchor_0.1 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R6_d1500_anchor_0.1_ep3 traintest
+
+
+
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=1e-4 \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_1_anchor_0.1_val_0.2 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R6_d1500_anchor_0.1_val_0.2_ep3 traintest
+
+
+
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=1e-4 \
+DATA_DIR=/root/autodl-tmp/datasets/sft_round_1_anchor_0.05 \
+CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
+BG=1 ./scripts/run_sft_e2e.sh --tag=R6_d1500_anchor_0.05_ep3 traintest
+
+
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+## 实验执行状态一览表（截至 2026-10-29）
+
+| 实验编号 | 实验标签 / 标识 | 核心配置 / 说明 | 执行状态 | 产物与关键结论 |
+|---|---|---|---|---|
+| **E3** | `e3_base_pred` | Non-thinking 4B 裸基座参照（不训练） | ✅ **已完成（1024 复测口径）** | JSON/think 仍 0.0%（行为问题非长度问题）；ev 92.8%；sent 80.79 / hc 24.45 |
+| **E4** | `e4_thinking_base_pred` | 官方 Thinking 4B 裸基座参照（不训练） | ✅ **已完成（全维度劣于 E3）** | sent 37.21 / hc 7.83 / JSON 0%；CoT p50=1357（SFT 的 3.5×）——「官方 Thinking ≠ 垂直可用」实锤 |
+| **校准步** | `train_stat_len` | 750 条序列长度与分位统计 | ✅ **已完成** | 确定 R_length 需上调至 250/380/500，总 token ~73.6万/ep |
+| **R1 (ep10)** | `R1_POC1_lr1e4_d750_ep10` | POC1 基准，10 epoch 探针观测 | ✅ **已完成** | 发现 ep2.89 拐点 (0.7423)，证实 ep3 之后严重过拟合 |
+| **R1 (ep3)** | `R1_POC1_lr1e4_d750_ep3` | POC1 基准正式轮，3 epoch 固化 | ✅ **已完成** | gold500: sent 91.14 / hc 55.95 / 误报率 12.02%，立基准分 |
+| **R1_Anchor** | `R1_POC1_Anchor_lr1e4_d750_ep3` | 9:1 通用锚点防遗忘对照 (673+83) | 🏆 **已完成（正收益）** | hc 60.10(+4.2)、FAR 11.05；代价 irony R −8.9；**建议主线切 9:1 配置** |
+| **R2** | `R2_POC2_lr1e4_d750_ep3` | POC2（+骨架掩码），3 epoch | 🏆 **已完成 (胜出晋级)** | gold500: sent 92.04 / hc 58.96 / ev 99.6%，**胜出晋级** |
+| **R3** | `R3_POC3_lr1e4_d750_ep3` | POC3（+字段加权），3 epoch | 🛑 **已完成 (未晋级)** | JSON 100% (gate4 绿)，但 ev 跌至 98.8% 且 hc 微跌，未晋级 |
+| **R4** | `R4_lr5e5_d750_ep3` | POC2，学习率 5e-5 对照 | 🛑 **已完成（欠拟合）** | 全指标低于 1e-4（train_loss 1.07 没压下去）；lr 下界锁 1e-4 |
+| **R5** | `R5_lr2e4_d750_ep3` | POC2，学习率 2e-4 对照 | 🛑 **已完成（格式崩）** | hc 61.12 全场最高但 JSON 92.2%（48 条失败）；gate4 一票否决；lr 上界锁 1e-4 |
+| **R6** | `R6_d1500_ep3` | 胜者全配置，数据量翻倍 1500 条 | ⏳ **待执行** | 测量数据扩充增益斜率（≥2pp 还是转 GRPO） |
+
+---
+
+## E3 结果登记（2026-10-28 已跑完）
+
+产物：`output/baseline/{pred.jsonl, eval.jsonl, infer.log, eval.log}`
+
+| 指标 | 数值 | 备注 |
+|---|---|---|
+| sentiment Macro-F1 | **81.85**（512 首测口径） | 宽解析命中 381/500、可打分 n_scored=375；强解析 0/500。1024 复测口径见「E3 复测」一节 |
+| hard_case Macro-F1 | **24.13** | metaphor、multi_subject F1=0 |
+| risk Subset Acc | **63.2** | general_negative F1=0 |
+| evidence 严格子串率 | **56.2%** | coverage 59.4% |
+| gate4 | **FAIL** | JSON 合法率 0.0%、think 闭合 0.0%（门限 99.8%） |
+| verdict | FAIL | gate1/2/3 N/A，gate4 FAIL |
+
+**格式形态（关键观察）**：裸基座输出 = CoT 正文 + `<tool_call>` 块内嵌 JSON，
+500 条里 381 条靠宽松 baseline 解析、**强解析 0/500**。
+→ sentiment/hard_case/risk 分数全部是宽解析口径下的下限参考，
+「SFT 必要性」叙事素材：裸基座守不住输出契约（JSON 0%、`</think>` 0%）。
+
+**hard_case 弱点分布**（后续 R1~R3 对照基线）：
+
+| 类别 | F1 | recall | support |
+|---|---|---|---|
+| explicit | 50.0 | 94.3 | 105 |
+| irony | 46.2 | 30.0 | 20 |
+| comparative | 39.0 | 27.6 | 29 |
+| fact_implicit | 23.2 | 17.8 | 90 |
+| counterfactual | 10.5 | 5.7 | 35 |
+| metaphor | **0** | 0 | 25 |
+| multi_subject | **0** | 0 | 56 |
+
+**情感混淆**：negative recall 99%（precision 仅 62.65，误报率 37.35），
+neutral recall 仅 65.6% —— 裸基座把大量 neutral 打成 negative。
+
+**行业切片**：real_estate 最好（sent_acc 67.1），beauty_cosmetics 最差（54.0）；
+irony 切片 sentiment_acc 仅 37.8%。
+
+（报告格式参考：`docs/experiments/2026-10-24_POC1_协议token解冻-vs-开口播种.md`，
+全部实验跑完后统一出报告，届时回填 `docs/TODO_数字清单_实验回填.md` §6 Base 行。）
+
+---
+
+## 校准步结果（2026-10-28，750 条 mix 后 train 673 条）
+
+产物：`output/data/sft_round_0/{train_stat_len.json, train_stat_len.log}`
+（val 同目录另有 `val_stat_len.*`；文件路径 `train_stat_len.json` 顶部的 train_file 字段即 mix 产物路径）
+
+**token 分位（tokenizer: Qwen3-4B-Instruct-2507）**
+
+| 段 | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| prompt | 711 | 812 | 836 | 878 |
+| output | 383 | 522 | 568 | 639 |
+| total | 1094 | 1293 | 1354 | 1399 |
+| **cot（R_length 只量这段）** | 316 | 447 | 493 | 560 |
+
+**R_length 落档（当前阈值 120/200/320）——确认大面积归零，需上调三档**：
+
+| 档 | 占比 |
+|---|---|
+| 满分 120~200 | 7.9%（53 条） |
+| 衰减 200~320 | 44.6%（300 条） |
+| **归零 ≥320** | **47.5%（320 条）** |
+| 过短 <120 | 0% |
+
+**决策：R_length 三档 120/200/320 → 上调**。按分布对齐建议（示意）：
+满分档 ≈ p25~p50 一带、衰减档到 p95 附近 → **约 250/380/500**，
+以实测分位为准：p50=316 落满分档上沿、p95=447 落衰减档内、p99=493/max=560 不归零。
+落码改 `lib/reward_fns.py`（此改动只影响 GRPO 阶段 reward，不影响 SFT R1~R6，可与 R1 并行改）。
+
+**回填 `docs/TODO_数字清单_实验回填.md`**：
+- §2.3 CoT 分位（750 条口径）：p50=316 / p95=447 / p99=493 token（mix 后 673 条实测；750 原始字符粗估 p50≈525 字符≈382 token，口径一致）
+- §2.3 总 token 数：全 train 集 CoT 求和 ≈ 21.3 万 token（p50×673 粗估）；总量级 673 条 × total p50≈1094 ≈ **73.6 万 token/epoch**
+- §2.3 每 epoch 步数：待 R1 启动打屏（print_budget 块）后回填
+- max_seq_length 无需降（2560 对 total max=1399 余量充足，P2 调参项可关闭）
+
+**Top5 最长样本**：#278/#280（fact_implicit，1399/1396）、#435（explicit）、#237（multi_subject）、#498（counterfactual），全部 synthetic——长尾来源清楚。
+
+---
+
+## R1 中途观测（2026-10-28，训练进行中，68% ≈ ep 6.7/10）
+
+Run：`/root/autodl-tmp/models/sft_senti/run_20261028_170742_R1_POC1_lr1e4_d750_ep10/`
+配置：POC1，840 步 / 10 epoch → **每 epoch 84 步**（回填数字清单 §2.3），~4.96 s/it，全程约 1.9 h。
+canary step 570：p(</think>)=0.997，greedy_ok=3/3 → 格式已稳定学会。
+
+**val_loss 曲线（每 ep≈0.06）关键点**：
+
+| epoch | val_loss | 阶段 |
+|---|---|---|
+| 1.0 | 0.853 | 快速下降段结束 |
+| 2.0 | 0.758 | 振荡下行 |
+| **2.89** | **0.7423（全程最低）** | ← 拐点候选 |
+| 3.0 | 0.745 | |
+| 3.5± | 0.760~0.775 | 平台微升 |
+| 4.12 | 0.814 | 回弹 |
+| 5.12 | 0.905 | 持续爬升（过拟合） |
+| 6.71 | 0.955 | 仍在爬 |
+
+**初步读数（待跑完确认）**：val_loss 拐点 ≈ **ep 3**（最低 2.89），ep 4 起明确回弹。
+$EP 初步定 3（保守取 2.9~3.0），后续 R2~R6 按 EPOCHS=3 跑可省 ~70% 卡时。
+注意报告里要写：loss 拐点 ≠ F1 拐点，最终以 gold500 上的 F1-epoch 曲线（推理多 checkpoint）交叉验证后再定稿。
+
+---
+
+## 报告必含统计口径（ROI 视角，2026-10-28 补）
+
+F1 只是主判据，报告与结果登记时每枪同时抄 P/R：
+
+- **负面精准率 / 负面召回率 / 负面误报率**：`sentiment.negative_precision / negative_recall / false_alarm_rate`
+  （E3 基线：62.65 / 99.05 / 37.35 —— 误报近四成，SFT 的 ROI 主战场）
+- **neutral recall**：`sentiment.per_class.neutral.recall`（E3 仅 65.6，误报来源）
+- **风险逐类 P/R**：`risk.per_key`（E3: product P72/R54、service P75/R47、marketing P62/R29、general_negative 0/0）
+- **整体风险口径**：`risk.subset_accuracy` + `risk.empty_precision`（「判无风险」时的准确率，误报 vs 漏报的业务成本不对称）
+- **安全底线**：`negative_recall`、`irony_recall`（gate2 门槛 90%）
+
+ROI 叙事约定：F1 涨幅用于实验选型；上线决策用 P/R 讲——如 negative precision 62.65→85+ 意味着误报工单减半以上。
+
+---
+
+## R1 结果登记（2026-10-28 跑完）
+
+Run：`run_20261028_170742_R1_POC1_lr1e4_d750_ep10`
+训练：850 优化器步（10 epoch × 85 步/epoch，回填 §2.3）、train_loss 0.4795、耗时 8913 s（**~2.5 h**），
+canary 收官 p(</think>)=0.997 / greedy_ok=3/3，峰值显存 12699 MiB（回填 §5.1）。
+
+**注意**：探针评测打的是 75 条 holdout val（**不是 gold500**），support 小、数字噪声大，仅供内部参照；
+gold500 正式成绩需另跑 sft_infer + evaluate_sft。
+
+| 指标（75 条 val） | 值 | E3 gold500 基线（仅形态参照） |
+|---|---|---|
+| sentiment Macro-F1 | **82.48** | 81.85 |
+| negative P / R / 误报率 | **96.61 / 98.28 / 3.39** | 62.65 / 99.05 / 37.35 |
+| neutral F1 | 83.3 (12) | 77.9 |
+| hard_case Macro-F1 | **52.76** | 24.13 |
+| risk Subset Acc | **68.00** | 63.2 |
+| JSON 合法率 | 97.33% | 0.0% |
+| evidence 严格子串 | 97.33% | 56.2% |
+| gates | gate2 FAIL(irony 75<90)、gate4 FAIL | 全 FAIL |
+
+hard_case 分类（val 75 条，support 小）：counterfactual 78.8（P92.9）、explicit 76.9、
+irony 54.5（R75）、multi_subject 40.0、fact_implicit 37.5、metaphor 31.6（R 仅 21.4）、comparative 50.0。
+对比 E3：metaphor/multi_subject 从 0 拉起来了，但 metaphor recall 仍低。
+
+### 结论：$EP 定几？
+
+val_loss 全程最低 0.742 @ **ep 2.89**；ep 3.0=0.745、ep 4.0=0.760、ep 5.0=0.809、ep 10=1.088。
+**ep 3 之后 loss 单调回升近 0.35，ep 10 的 val_loss 比 ep3 高 46%——是明确过拟合，不是抖动。**
+
+**建议 $EP = 3**（后续 R2~R6 用 EPOCHS=3，单枪训练时长 ~2.5h → ~45 min）。
+两点保留：
+1. 上表 75 条 val 成绩是 10-epoch 收官 checkpoint 的，**没有 ep3 checkpoint 的推理成绩**；
+   严谨做法是 gold500 上对 ep3 与 ep10 各推理一次比 F1（一次 ~30 min），
+   若 ep3 不输 → 定稿 $EP=3；不比也可先用 3 起跑 R2（漏斗不因此变向）。
+2. 每 epoch 步数修正：实测 **85 步/epoch**（此前按 84 估），回填数字清单 §2.3 用 85。
+
+### 遗留
+
+- mem_R1.pid 采样进程还在跑（kill 被权限拦下），取完峰值后请手动 `kill $(cat mem_R1.pid)`
+- gate2 irony 75% < 90：val 只有 4 条 irony，噪声大，以 gold500 复测为准
+- JSON 合法率 97.33%（73/75）未到 99.8 门限——2 条失败形态待查（pred_val.jsonl 可定位）
+
+---
+
+## R1 结果分析（2026-10-28，草稿）
+
+### 1. 格式契约：从全崩到基本守住（SFT 核心价值验证）
+
+| 格式项 | E3 裸基座 (gold500) | R1 ep10 (val75) |
+|---|---|---|
+| JSON 合法率 | **0.0%** | **97.33%** |
+| think 闭合 | 0.0% | 100%（canary p=0.997，step570 起 3/3） |
+| evidence 严格子串 | 56.2% | 97.33% |
+
+裸基座的 `<tool_call>` 内嵌 JSON 形态被彻底矫正——LoRA+token 解冻用 85 步内学会输出契约，
+验证了 10-24 报告的结论可迁移到 750 条量级。遗留：2/75 条仍解析失败，达不了 99.8 门限，
+需查 pred_val.jsonl 定位失败形态（是否 CoT 里混 JSON/特殊字符截断）。
+
+### 2. 内容指标：判别力大幅上升，且误报率坍缩
+
+- sentiment F1 82.48 vs 基线 81.85——**总分几乎平**，但结构完全不同：
+  负向 **误报率 37.35% → 3.39%**（精确率 62.65 → 96.61），召回 98.28 持平。
+  即裸基座「见负面词就报」的偏置被修掉，neutral 混淆大幅缓解（F1 77.9→83.3，val 上 neutral 只有 12 条，参考即可）。
+  → **ROI 叙事主素材：同等召回下误报工单降一个数量级。**
+- hard_case F1 24.13 → 52.76：metaphor 0→31.6、multi_subject 0→40（从完全失明到能认）；
+  counterfactual 10.5→78.8（P92.9）。短板转移：**metaphor recall 21.4** 成为新的最弱项。
+- risk SubAcc 63.2 → 68.0：涨但幅度最小，与 R_length/字段无关，预判 GRPO 阶段的主战场。
+
+### 3. 过拟合读数（为什么 3 epoch 够）
+
+val_loss：ep1.0=0.853 → ep2.89=**0.7423(最低)** → ep4=0.760 → ep5=0.809 → ep10=1.088。
+ep3 后单调回升 46%，673 条数据 × LoRA r16 的容量下 ~250 步（3ep）即吸干有效信号。
+train_loss 收官 0.4795 与 val 1.088 的剪刀差 0.61，也印证过拟合。
+
+### 4. 对漏斗的决策输出
+
+- **$EP = 3**，R2~R6 全部 EPOCHS=3（单枪 ~45 min）。
+- R2/R3 的看点在 hard_case 侧：POC2 骨架掩码若有效，应主要兑现为 JSON 合法率 97.3→100 与 hard_case F1 提升；
+  POC3 字段加权盯 metaphor recall（0.4 权重压着 evidence，同时看 evidence 子串是否回落）。
+- risk SubAcc 68 与门限 90 的差距提示：SFT 漏斗走完转 GRPO 是对的，风险字段是 reward 设计重点。
+- gate2 的 irony 75% 是 val 仅 4 条的噪声，不入决策。
+
+### 5. 数字清单回填
+
+| 条目 | 值 |
+|---|---|
+| §2.3 每 epoch 步数 | **85 步**（850 步/10ep 实测） |
+| §2.3 训练总时长（A10 口径） | 8913 s ≈ 2.48 h（4090 按 0.6~0.75 折算 ≈ 1.9~2.1 h） |
+| §5.1 峰值显存（SFT） | **12699 MiB** |
+| §2.3 每 epoch token | 673 条 × total p50 1094 ≈ 73.6 万 token（上轮校准步已记） |
+
+---
+
+## R1 · ep3 补枪结果（2026-10-29 更新）
+
+Run：`run_20261028_201826_R1_POC1_lr1e4_d750_ep3`（EPOCHS=3，255 步，train 2464 s ≈ **41 min**，符合 45 min 预估）
+
+| 指标 | ep3 补枪 | ep10 收官 | 结论 |
+|---|---|---|---|
+| val_loss（收官） | **0.7569** | 1.0882 | ep3 远优于 ep10，与 ep10 曲线最低点 0.7423 同水位 |
+| train_loss | 0.8605 | 0.4795 | 剪刀差 0.10 vs 0.61——ep3 未过拟合 |
+| canary | 正常 | 0.997/3/3 | 格式学会 |
+
+（ep10 曲线最低 0.7423 出现在其内部 step 深处；独立重跑 3ep 后落点 0.7569，
+差异来自 cosine scheduler 步数不同，属正常。）
+
+**遗留一个坑：ep3 探针评测的 vLLM 推理崩了**——
+`AssertionError: TransformersModel does not support LoRA yet.`
+（train 后 in-process 起 vLLM 时 model 被 `TransformersModel` 加载，vLLM 0.7.3 的 LoRA 不支持该路径；
+ep10 那枪没崩是因为同进程先有 HF 加载顺序差异。ep3 的 val75 推理成绩因此缺失，探针步骤 5 显示「未找到预测文件，跳过」。）
+**不阻塞主线**：adapter 已完整落盘，gold500 独立推理不受影响（单独起 vLLM 进程加载 adapter 的路径此前 E3/R1 均验证可用）。
+
+### $EP=3 定稿
+
+ep3 vs ep10 的 loss 证据已闭环：**$EP=3 定稿**，R2~R6 全部 EPOCHS=3。
+gold500 上的 ep3 正式成绩（`output/R1_ep3/`）跑完后即为 POC1 的漏斗基准分。
+
+### R1 gold500 推理指令（卡已空，可执行）
+
+```bash
+cd /root/autodl-tmp/senti
+python3 scripts/sft_infer.py \
+  --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --adapter_path /root/autodl-tmp/models/sft_senti/run_20261028_201826_R1_POC1_lr1e4_d750_ep3/sft_lora \
+  --backend vllm \
+  --data_file data/gold500_test.jsonl \
+  --out output/R1_ep3/pred.jsonl \
+  --log output/R1_ep3/infer.log
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file output/R1_ep3/pred.jsonl \
+  --out output/R1_ep3/eval.jsonl \
+  --log output/R1_ep3/eval.log
+```
+
+---
+
+## R1 gold500 正式成绩（POC1 基准分，2026-10-29）
+
+产物：`/root/autodl-tmp/senti/output/R1_ep3/{pred_gold500.jsonl, eval.jsonl, infer_gold500.log, eval.log}`
+（ep3 checkpoint，gold500_test 500 条，模式 B 强解析口径）
+
+| 指标 | R1 ep3 gold500 | E3 裸基座 gold500 | Δ |
+|---|---|---|---|
+| sentiment Macro-F1 | **91.14** | 81.85 | **+9.3pp** |
+| negative P / R / 误报率 | 87.98 / 96.99 / **12.02** | 62.65 / 99.05 / 37.35 | 精准率 +25pp，误报 −25pp |
+| neutral recall | 92.41 | 65.6 | +26.8pp |
+| hard_case Macro-F1 | **55.95** | 24.13 | **+31.8pp** |
+| risk Subset Acc | **73.2** | 63.2 | +10pp |
+| risk empty_precision | 92.42 | 84.85 | +7.6pp |
+| JSON 合法率 | **99.6%** | 0.0% | 全修 |
+| think 闭合 / evidence 子串 | 99.6% / 99.4% | 0% / 56.2% | |
+| gates | gate2 FAIL（irony 64.4<90）、gate4 FAIL（99.6<99.8） | 全崩 | |
+| verdict | FAIL | FAIL | |
+
+hard_case 分项（vs E3）：irony 68.2（R 64.4）、counterfactual 64.1、explicit 67.7、
+fact_implicit 58.7、comparative 55.7、multi_subject 42.9、**metaphor 34.4（仍最弱，R 低）**。
+risk 分项：product 86.3、service 81.1、marketing 71.7 拉起；短板 **governance 28.6、finance 30.8、general_negative 20.7**。
+
+### 分析
+
+1. **POC1 基准分健康**：格式三项 99.4~99.6（差 2~3 条到满），F1 全线大步甩开裸基座；
+   ep3 成绩显著好于 ep10 的 val75 参照（sent 91.1 vs 82.5、hc 56.0 vs 52.8）——
+   **「3 epoch 优于 10 epoch」在正式口径上坐实，过拟合确实在毁内容指标。**
+2. **ROI 主线成立**：负向误报 37.35% → 12.02%（等召回下），neutral recall +26.8pp。
+3. **gate2 的 irony 64.4%**：gold500 irony n=20+，不再是 val 的 4 条噪声——**真实短板**，
+   与 metaphor（34.4）并列「修辞/反讽」弱点群，是 POC3 字段加权与 GRPO reward 该针对的点。
+4. **gate4 差 0.2pp（99.6 vs 99.8，2 条）**：1 条契约违规 + 2 条 think 未闭合，量级已到噪声边缘；
+   R2 骨架掩码若把它推到 100，gate4 直接转绿。
+5. risk 短板集中 governance/finance/general_negative 三类——样本少（5~10）+ 类目难，
+   SFT 漏斗不必专门治，留给 GRPO reward（风险字段高权重）。
+
+### 漏斗推进
+
+- **POC1 基准分：sent 91.14 / hc 55.95 / risk 73.2 / gate4 99.6。**
+- R2 判据：JSON 合法率 ≥99.6 守住 + hard_case F1 提升；R3 判据：hard_case F1 + metaphor/irony 召回。
+- 起跑命令（EPOCHS=3 已定稿）：
+  `SFT_POC_STAGE=POC2 EPOCHS=3 DOMAIN_FILE=data/sft_round0_750.jsonl BG=1 ./scripts/run_sft_e2e.sh --tag=R2_POC2_lr1e4_d750 traintest`
+
+### 负面类专项（R1 ep3 gold500，2026-10-29 补）
+
+| 口径 | R1 ep3 | E3 裸基座 | Δ |
+|---|---|---|---|
+| **negative 精准率 P** | **87.98** | 62.65 | +25.3pp |
+| **negative 召回率 R** | **96.99** | 99.05 | −2.1pp（安全底线内，gate2 口径 96.99） |
+| negative F1 | 92.26 | 76.75 | +15.5pp |
+| **negative 误报率 FAR** | **12.02** | 37.35 | **−25.3pp** |
+| neutral recall（误报主要来源） | 92.41 | 65.6 | +26.8pp |
+| negative 切片 sentiment_acc（n=166） | 96.99 | 62.65 | — |
+
+误报结构读法：FAR 12.02% ≈ 每 8 条报负 1 条冤枉（基线近 3 条）；
+剩余误报主要不再是 neutral 混淆（已修到 92.4），残部流向 irony/metaphor 类负向错判
+（对应 hard_case 弱点群）——即 SFT 后误报从「量的问题」变成「难例的问题」，
+续降要靠 R3 加权与 GRPO，不是数据加量。
+风险侧联动：negative 切片 risk_exact 仅 55.4%——负向样本判对了情绪，风险字段仍漏一半，印证 GRPO 阶段风险 reward 是主战场。
+
+---
+
+## R2 · POC2（+骨架掩码）结果（2026-10-29，EPOCHS=3）
+
+Run：`run_20261029_092159_R2_POC2_lr1e4_d750_ep3`（255 步，train 2474 s ≈ 41 min）
+gold500 正式成绩产物：`/root/autodl-tmp/senti/output/R2_ep3/{pred_gold500.jsonl, eval.jsonl}`
+
+| 指标 | R2 POC2 | R1 POC1 | Δ |
+|---|---|---|---|
+| sentiment Macro-F1 | **92.04** | 91.14 | +0.9pp |
+| negative P / R / FAR | 87.17 / 98.19 / 12.83 | 87.98 / 96.99 / 12.02 | R +1.2、P −0.8（FAR 基本平） |
+| neutral recall | 90.71 | 92.41 | −1.7 |
+| hard_case Macro-F1 | **58.96** | 55.95 | **+3.0pp** |
+| irony recall | 62.22 | 64.44 | −2.2（gate2 仍 FAIL） |
+| risk Subset Acc | **73.8** | 73.2 | +0.6 |
+| JSON 合法率 | 99.6% | 99.6% | 平 |
+| **think 闭合率** | **100%** | 99.6% | 满 |
+| evidence 严格子串 | **99.6%** | 99.4% | +0.2 |
+| val_loss 收官 | 0.8297 | 0.7569 | 掩码使 loss 域不同，**不可跨枪比** |
+| gates / verdict | gate2+gate4 FAIL | 同 | |
+
+hard_case 分项（vs R1）：**fact_implicit 64.8(+6.1)、metaphor 44.1(+9.7)、multi_subject 48.2(+5.3)**，
+irony 68.3(平)、explicit 66.4(−1.3)、counterfactual 64.2(平)、comparative 56.7(+1.0)。
+
+### 分析
+
+1. **判据判定：R2 在主指标上胜出**（hc +3.0pp、sent +0.9pp），且格式副指标 think 100%/ev 99.6 不降。
+   增益兑现位置与机制预测一致：**隐式推理类**（fact_implicit）与**从失明中恢复的修辞类**（metaphor、multi_subject）
+   ——骨架掩码把死模板 token 的梯度预算让给了判别字段。
+2. **JSON 99.6 没再涨**：R1 剩的 2 条失败不是模板问题，掩码治不了；gate4 仍差 0.2pp。
+   注意 think 100% 但 JSON 仍 99.6 → 2 条失败在 JSON 侧（待从 pred_gold500.jsonl 定位，两枪同源则更像数据难例而非训练问题）。
+3. **metaphor 44.1 仍是全场最弱**（R 仍低），irony recall 62.2 距 90 底线远——POC3 字段加权正面对准这两类。
+4. risk SubAcc +0.6 基本平，短板照旧（governance/finance/general_negative），维持「SFT 不治、GRPO 治」判断。
+
+### 漏斗状态
+
+R1→R2 胜者：**POC2**。R3（POC3 字段加权）对照基准更新为 R2 的 92.04/58.96/73.8。
+R3 判据：hard_case F1 再涨 + metaphor/irony 召回，**且 evidence 子串率不掉**（0.4 权重是唯一降权字段）。
+
+---
+
+## R3 · POC3（+字段加权）结果（2026-10-29，EPOCHS=3）
+
+Run：`run_20261029_101756_R3_POC3_lr1e4_d750_ep3`（255 步，train 2441 s ≈ 41 min）
+gold500 产物：`/root/autodl-tmp/senti/output/R3_ep3/`
+
+| 指标 | R3 POC3 | R2 POC2 | Δ | R1 POC1 |
+|---|---|---|---|---|
+| sentiment Macro-F1 | **92.25** | 92.04 | +0.2 | 91.14 |
+| negative P / R / FAR | 88.83 / 95.78 / **11.17** | 87.17 / 98.19 / 12.83 | P+1.7、R−2.4 | 87.98/96.99/12.02 |
+| neutral recall | 92.92 | 90.71 | +2.2 | 92.41 |
+| hard_case Macro-F1 | 58.63 | **58.96** | **−0.3** | 55.95 |
+| irony recall | 60.0 | 62.22 | −2.2（gate2 仍 FAIL） | 64.44 |
+| risk Subset Acc | 72.75 | 73.8 | −1.1 | 73.2 |
+| **JSON 合法率** | **100%** | 99.6% | **gate4 转绿** | 99.6% |
+| think 闭合 / evidence 子串 | 100% / **98.8%** | 100% / 99.6% | ev **−0.8** | 99.6/99.4 |
+| evidence coverage | 100% | — | | |
+| gates / verdict | gate2 FAIL、**gate4 PASS** | gate2+gate4 FAIL | | |
+
+hard_case 分项（vs R2）：counterfactual 68.4(+4.2)、comparative 60.3(+3.6)、metaphor 45.1(+1.0)，
+fact_implicit 61.8(−3.0)、multi_subject 46.6(−1.6)、**explicit 60.7(−5.7)**、irony 67.5(−0.8)。
+risk 分项：governance 15.4(R2 30.8，腰斩)、general_negative 13.3、finance 40.0(+15)。
+
+### 分析
+
+1. **判据判定：R3 未胜出**。hard_case −0.3pp（58.63 vs 58.96），sentiment +0.2pp 噪声级；
+   且 R3 的专属风险兑现了——**evidence 子串率 99.6→98.8（唯一降权字段确实被压）**。
+2. **但 R3 拿到 gate4 PASS**：JSON 100%——史上第一次格式门全绿。结构上 POC3 用「换」的方式过门：
+   治好了 JSON 剩余 2 条（可能靠 4×hard_case 权重强化判别、间接稳住输出），代价是 evidence 掉 0.8pp。
+3. **加权内部出现了挤压效应**：explicit（R2 的第三强项 66.4）掉到 60.7——4×权重把梯度集中到难例，
+   简单类相对欠训。counterfactual/comparative/metaphor 三个加权受益类合计 +8.8pp，
+   被 explicit/fact_implicit/multi_subject 合计 −10.3pp 抵消。
+4. **R2 vs R3 取舍**：R2 的 58.96 无 evidence 代价、R3 的 58.63 换来 gate4 PASS + JSON 100%。
+   按 §2 判据「主指标最高者，POC3 胜出须确认 evidence 不掉」——**R2 胜，$STAGE=POC2**。
+   gate4 的 99.6 差 0.2pp 是 2 条样本的量级，且 R1/R2 同源（同数据同 seed 的 2 条难例），
+   报告里可作为「POC 系输出契约已到 99.6~100 平台」的素材，不为 0.2pp 牺牲主指标与 evidence。
+5. negative FAR 11.17%（三枪最低）但 R 95.78（三枪最低）——加权同样把情感推得略保守，P/R 天平移动方向一致。
+
+### 漏斗状态：R1→R2→R3 收敛，$STAGE = POC2（92.04 / 58.96 / 73.8 / ev 99.6）
+
+R4/R5（LR 5e-5 / 2e-4）起跑命令：
+`SFT_POC_STAGE=POC2 LR=5e-5 EPOCHS=3 CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl BG=1 ./scripts/run_sft_e2e.sh --tag=R4_lr5e5_d750_ep3 traintest`
+（R5 同构换 LR=2e-4；判据：主指标不降选 val_loss 无回弹者，相当取小 lr）
+
+---
+
+## R1_Anchor · 9:1 锚点防遗忘对照结果（2026-10-29，EPOCHS=3）
+
+Run：`run_20261029_124949_R1_POC1_Anchor_lr1e4_d750_ep3`（756 条 train（673 领域 + 83 anchor），train 2750 s ≈ 46 min，val_loss 收官 0.7265）
+gold500 产物：`/root/autodl-tmp/senti/output/R1_Anchor_ep3/`
+
+| 指标 | R1_Anchor (9:1) | R1 纯领域 | Δ | 判读 |
+|---|---|---|---|---|
+| sentiment Macro-F1 | 91.84 | 91.14 | **+0.7** | 无稀释，反微涨 |
+| negative P / R / FAR | 88.95 / 96.99 / **11.05** | 87.98 / 96.99 / 12.02 | FAR −1.0 | 召回持平、误报再降 |
+| neutral recall | **93.33** | 92.41 | +0.9 | 通用语言知识有帮助 |
+| hard_case Macro-F1 | **60.10** | 55.95 | **+4.2** | 意外显著正增益 |
+| irony recall | 55.56 | 64.44 | −8.9 | **唯一明显退化项** |
+| multi_subject F1 | **54.9** | 42.9 | **+12.0** | 大涨 |
+| fact_implicit F1 | 66.9 | 58.7 | +8.2 | 大涨 |
+| metaphor F1 | 41.4 | 34.4 | +7.0 | 大涨 |
+| risk Subset Acc | 74.0 | 73.2 | +0.8 | 平 |
+| JSON / ev / think | 99.4 / 99.2 / 99.8 | 99.6 / 99.4 / 99.6 | 各 −0.2~−0.4 | gate4 仍 FAIL（差 0.4pp） |
+| gates / verdict | gate2 FAIL（irony 55.6）、gate4 FAIL | 同 | | |
+
+### 分析（旁路组结论）
+
+1. **9:1 anchor 不稀释垂直指标，反而全面正增益**——hc F1 55.95→60.10（+4.2pp，超过 R2 的 +3.0 增益），
+   multi_subject +12.0、fact_implicit +8.2、metaphor +7.0。机制猜测：通用指令数据提供了语言多样性与
+   多主体指代消解的先验，缓解了纯领域 673 条的过拟合（val_loss 0.727 vs R1 0.757 也更低）。
+2. **代价明确且集中**：irony recall 64.4→55.6（−8.9pp，gate2 口径恶化最重的一枪）。
+   通用语料反讽表达分布与垂直舆情反讽错位，挤出效应集中在这一类。
+3. **决策含义**：anchor 的净收益（hc +4.2、FAR −1.0）明显大于代价（irony −8.9）。
+   **建议后续主线（R4~R6）切换到 9:1 anchor 配置**，与 R1_Anchor 同源；
+   irony 缺口本身反正要靠 GRPO 治。此决策需在 R4 起跑前定。
+4. 注意：此枪与 R1 的差异 = 数据一根轴（anchor 0.1），POC1 骨架同构，对照干净。
+
+---
+
+## E3 复测（max_new_tokens 512→1024，2026-10-29 更新）
+
+裸基座原 512 token 预算下 CoT 长样本被截断，吐不出 JSON；放宽到 1024 后重跑推理+评测，
+产物同路径覆盖：`output/baseline/`。**旧 E3 数字作废，以下为新口径**：
+
+| 指标 | E3 (1024) | E3 (512 旧) | 变化 |
+|---|---|---|---|
+| sentiment Macro-F1 | 80.79 | 81.85 | −1.1 |
+| hard_case Macro-F1 | 24.45 | 24.13 | +0.3 |
+| risk Subset Acc | 62.8 | 63.2 | −0.4 |
+| negative P / R / FAR | 65.74 / 99.4 / 34.26 | 62.65 / 99.05 / 37.35 | 误报略降 |
+| JSON 合法率 | **0.0%** | 0.0% | **不变** |
+| think 闭合 | 0.0% | 0.0% | 不变 |
+| evidence 子串 | 92.8% | 56.2% | **+36.6（截断修复）** |
+| 输出形态 | 500/500 宽解析 | 381/500 | — |
+
+### 判读：E3 复测对整体结论的影响
+
+1. **核心叙事不变且更干净**：预算 ×4 后 JSON 合法率依然 0.0%、think 闭合 0.0%——
+   裸基座的格式崩坏是**行为问题（`<tool_call>` 内嵌形态）而非长度问题**，
+   「SFT 必要性」论证反而更硬（排除了「多给点 token 就行」的混淆解释）。
+2. **数字微调**：sent 80.79 / hc 24.45 / risk 62.8（原 81.85/24.13/63.2），量级不变。
+   内容指标对比基准略有变化，但所有 Δ 结论（+9~32pp 级别）不受影响。
+3. **evidence 92.8% 的新读法**：放宽预算后子串率大幅回升——旧 56.2% 里大半是被截断打碎的。
+   剩余 7.2% 才是真实的抽取幻觉。R1~R3 的 99.2~99.6% 依然显著优于裸基座。
+4. **CoT 长度统计已落盘**：`output/gold500_stat_len_base_infer.json`（output p50=488/p95=751/p99=915 token）
+   ——**裸基座 CoT 即近千 token，而 SFT 后 p50=383/p95=522**，天然佐证「SFT 受控 CoT 经济性」叙事。
+5. E4（Thinking 基座）模型已下载（`Qwen3-4B-Thinking-2507`），推理/评测/长度统计**待执行**
+   （草稿命令已备，`--max_new_tokens 2048`），跑完后可补齐三线 CoT 膨胀对比（E4 vs E3 vs SFT）。
+
+### 状态一览表同步更新
+
+- E3：✅ 已完成（复测口径 1024）
+- R1_Anchor：✅ 已完成（旁路组结论：anchor 正收益，irony 代价，建议主线切换 9:1）
+- E4：⏳ 待执行（模型已就位）
+
+---
+
+## Negative Recall 跷跷板分析（2026-10-29，回应「目标 0.99 召回」）
+
+### 数据底账（gold500，negative support = 166 条，1pp ≈ 1.66 条）
+
+| 方案 | negative R | 漏检条数 | negative P | FAR | irony R（相关性锚点） |
+|---|---|---|---|---|---|
+| E3 裸基座 | 99.40 | 1 条 | 65.74 | 34.26 | — |
+| R2 (POC2) | **98.19** | 3 条 | 87.17 | 12.83 | 62.22 |
+| R1 / R1_Anchor | 96.99 | 5 条 | 87.98 / 88.95 | 12.02 / 11.05 | 64.44 / 55.56 |
+| R3 (POC3) | 95.78 | 7 条 | 88.83 | 11.17 | 60.0 |
+
+### 机制读法
+
+1. **召回没「坏」，是被精准买走的**：裸基座「见负面词就报」，用 34% 误报换 99.4% 召回；
+   SFT 学会克制（P 65.7→88），代价是把边界样本让出去——漏掉的 2~6 条几乎全是
+   irony/metaphor 类「正话反说」负面。irony R 与 negative R 各枪之间完全同向（跷跷板两端）。
+2. **目标口径要修正**：追求「99.4 召回」不能以回到 65.7 精准为代价（误报工单 ×3，业务不可用）。
+   真目标是 **R2 的 P 87.2 不动，召回补 2 条**（98.19 → 99+）。
+
+### 补召回路径（按性价比排序）
+
+| 路径 | 做法 | 成本 | 归属阶段 |
+|---|---|---|---|
+| ① GRPO reward 倾斜（主路径） | 标签阶梯给 negative 边界倾斜：gold=negative 且 pred=neutral 时给半奖，鼓励边界样本敢报负 | 零训练成本，改 reward_fns.py 一行 | GRPO（已立项战场） |
+| ② 数据侧补修辞负面 | round1_1500 造数时增加 irony/metaphor 类负面样本（gold500 irony support 仅 20） | 造数成本 | R6 数据轮 |
+| ③ 推理后处理 | 「neutral 但 evidence 含强负面词」触发复检 | 工程手段，有误伤风险 | 兜底，不排期 |
+
+**结论**：98.19 → 99 的最后 2 条不靠牺牲精准换，走 ①+②。
+
+---
+
+## E4 · 官方 Thinking 4B 裸基座结果（2026-10-29，不训练，max_new_tokens=2048）
+
+模型：`Qwen3-4B-Thinking-2507`（同尺寸同架构，ModelScope 直连）
+产物：`output/thinking_base/{pred.jsonl, eval.jsonl, infer.log}` + `output/gold500_stat_len_thinking_infer.json`
+
+| 指标 | E4 Thinking 裸基座 | E3 Non-thinking (1024) | SFT 最优 R2 (POC2) |
+|---|---|---|---|
+| sentiment Macro-F1 | **37.21** | 80.79 | **92.04** |
+| negative P / R / FAR | 38.6 / 39.76 / **61.4** | 65.74 / 99.4 / 34.26 | 87.17 / 98.19 / 12.83 |
+| hard_case Macro-F1 | **7.83** | 24.45 | 58.96 |
+| irony recall | 5.56 | — | 62.22 |
+| metaphor / multi_subject / counterfactual / fact_implicit F1 | 0 / 0 / 0 / 0 | 13.6 / 0 / 3.6 / 24.2 | 44.1 / 48.2 / 64.2 / 64.8 |
+| risk Subset Acc | 54.4（empty_precision 100%——几乎全判无风险） | 62.8 | 73.8 |
+| relevance | passing F1 = 0（通过类全军覆没） | — | — |
+| JSON 合法率 | **0.0%** | 0.0% | 99.6% |
+| think 闭合 | 0.0% | 0.0% | 100% |
+| evidence 子串 | 0.4% | 92.8% | 99.6% |
+| verdict | FAIL（gate4） | FAIL | FAIL(gate2) |
+
+**CoT 长度膨胀（核心数字）**：E4 output p50=**1357** / p95=1436 / max=1509 token（2048 预算下打满思考），
+vs E3 p50=488 / p99=915，vs SFT p50=383 / p95=522。**官方 Thinking 的思考长度是 SFT 的 3.5 倍。**
+
+### 分析
+
+1. **「官方通用 Thinking ≠ 垂直任务可用」——SFT 必要性叙事的最强一击**：
+   E4 在全部主指标上**大幅劣于** E3 Non-thinking 裸基座（sent 37.2 vs 80.8、hc 7.8 vs 24.5）。
+   官方 Thinking 把预算耗在通用反思上，6 字段 JSON 契约完全不会（JSON 0%、think 协议标签 0%——
+   它输出的是自己的 reasoning 形态而非我们的协议），negative FAR 61.4% 意味着每 5 条报负 3 条冤枉。
+2. **判别力被思考挤垮**：E4 empty_precision=100%（risk 几乎全空）+ relevance passing 类 F1=0——
+   长思考后给出的最终答案反而更保守更差；counterfactual/fact_implicit/metaphor/multi_subject 四类全零。
+3. **成本侧**：output p50=1357 token ≈ SFT 的 3.5 倍，推理时延与成本同比例放大，却换来更差的结果。
+4. **三线对比结论（报告主叙事定稿）**：
+   - E3：不训练 + 受控输出长度，但格式崩坏（行为问题，1024 预算也不治）
+   - E4：官方 Thinking 不训练，**更长（3.5×）+ 更贵 + 更差**
+   - SFT (POC2)：**最短 CoT + 最高分 + 格式契约 99.6~100%**——垂直冷启动 SFT 的经济性与效果双杀
+
+
+---
+
+## 阶段性全面审计（2026-10-29，等 R4 间隙执行）
+
+### A. 数字一致性核验（全部通过）
+
+- 六份 eval.jsonl 的 sentiment/hard_case Macro-F1 全部用 per_class 重算复核，**报告与草稿引用值无一错漏**。
+- R2 负向 F1 修正：报告写 92.36，实算 2PR/(P+R)=**92.35**（R1=92.26）——已属四舍五入噪声，不影响排序。
+- negative FAR 定义核验：FAR = 100 − negative_precision，各枪自洽。
+- E3 复测（1024）口径、E4（2048）口径与草稿/报告引用一致。
+
+### B. 发现一：R1 与 R2/R3/Anchor 的打分分母不一致（重要口径坑）
+
+| 枪 | json_valid | n_scored（情感打分分母） | 2 条失败样本的处置 |
+|---|---|---|---|
+| R1 | 99.6%（2 条失败） | **498** | 直接丢弃，不进分母 |
+| R2 | 99.6%（2 条失败） | **500** | 2 条走 baseline 宽解析兜底，**带伤进分母** |
+| R1_Anchor | 99.4% | 499 | 1 条兜底 |
+| R3 | 100% | 500 | 无失败 |
+
+**影响**：R1 vs R2 的对比中，R2 的 2 条兜底样本若判错，会拉低 R2 分数（对 R2 不利）；若判对则 R1 的 2 条被丢弃不惩罚（对 R1 略有利）。当前 Δ(hc +3.0pp) 远大于该口径噪声（2/500），**漏斗结论不受影响**，但正式报告需注明分母差异；后续枪建议统一「失败即丢弃」或「失败记 0 分」其中一种。
+失败样本定位：R1=#210（CoT 过长被 1024 预算截断，JSON 没吐出来）、#465（「新旧批次」重复循环）；R2=#245（截断）、#400（evidence 内层引号未转义）。**四条失败形态三种：截断 ×2、重复循环 ×1、引号转义 ×1**——截断是主因，R6 若换 1500 条建议顺手核 max_new_tokens 是否要 1024→1280。
+
+### C. 发现二：E4 的 37.21 是 192/500 幸存者口径
+
+E4 宽解析仅命中 200/500、可打分 192/500。**37.21 是幸存者偏差下的乐观值**——真实全口径只会更差。
+报告 §3.5 已按「崩盘」定性，此口径注记已补，叙事方向不变。
+
+### D. 发现三：irony R 与 negative R 的跷跷板在四枪间完全同向
+
+R1(64.4, 96.99) → R2(62.2, 98.19) → R3(60.0, 95.78) → Anchor(55.6, 96.99)——
+除 R1_Anchor 外单调反向。进一步坐实「负向漏检=修辞难例」的归因，GRPO reward 倾斜路径正确。
+
+### E. 待办清单（审计产出）
+
+1. R4 起跑前拍板：数据源是否切 9:1 anchor（证据支持切，irony 代价已有 GRPO 兜底方案）
+2. evaluate_sft 分母口径统一（丢弃 vs 兜底），避免 R 系列横向对比引入系统性偏差
+3. R6 换 1500 条时核 max_new_tokens（截断已是格式失败主因，扩数据后 CoT 分布可能更长）
+4. R2 #400 的 evidence 引号未转义：可在训练数据构造侧统一转义规范（低成本预防）
+5. E4 幸存者口径注记已补入报告，无需动作
+
+---
+
+## 分母口径统一（2026-10-29 落码，R4/R5 前完成）
+
+**改动**：`evaluate_sft.py` 模式 B 新增 `strict_denominator`（默认开启）——强解析失败样本按「丢弃」统一剔除，不再走宽解析兜底进分母；基线裸基座评测显式传 `--lenient_denominator` 保留旧行为。单测 +1（`test_parse_failed_dropped_from_denominator`，26 条全过）。
+
+**影响**：R2 打分分母 500→498（2 条兜底样本剔除），sent 92.04→92.02、hc 58.96→**59.09**（+0.13，兜底样本原本判错拖分）、negR 98.19→97.59。R1_Anchor 499→497，hc 60.10→60.16。**全部 Δ 结论与漏斗排序不变**。下文 R4/R5 起全部用统一口径，R1~R3/Anchor 表格数字以本次重测为准（差异 ≤0.2pp）。
+
+---
+
+## R4 · LR 5e-5 结果（2026-10-29，POC2，统一分母口径）
+
+Run：`run_20261029_145246_R4_lr5e5_d750_ep3`（train 2719 s ≈ 45 min）
+产物：`output/R4_lr5e5_d750_ep3/{eval_strict.jsonl, eval_strict.log}`
+
+| 指标 | R4 (5e-5) | R2 (1e-4，重测口径) | Δ |
+|---|---|---|---|
+| 分母 n_scored | 493 | 498 | R4 自身 7 条格式失败 |
+| sentiment Macro-F1 | 90.54 | 92.02 | **−1.5** |
+| hard_case Macro-F1 | 52.51 | 59.09 | **−6.6** |
+| negative R / FAR | 96.39 / 13.51 | 97.59 / 12.90 | 略差 |
+| risk SubAcc | 69.4 | 73.8 | −4.4 |
+| JSON / think / ev | 98.6 / 99.0 / 97.8 | 99.6 / 100 / 99.6 | 格式全面劣化 |
+| train_loss / val_loss | 1.0731 / 0.8541 | 0.9507 / 0.8297 | 均更差 |
+| gates | gate2+gate4 FAIL | 同 | |
+
+**判读**：5e-5 明确欠拟合——train_loss 没压下去（1.07 vs 0.95），全部指标低于 1e-4。
+下方区间结论：**1e-4 > 5e-5，lr 下界在 1e-4 附近或更高。**
+
+---
+
+## R5 · LR 2e-4 结果（2026-10-29，POC2，统一分母口径）
+
+Run：`run_20261029_154558_R5_lr2e4_d750_ep3`（train 2668 s ≈ 44 min）
+产物：`output/R5_lr2e4_d750_ep3/{eval_strict.jsonl, eval_strict.log}`
+
+| 指标 | R5 (2e-4) | R2 (1e-4，重测口径) | Δ |
+|---|---|---|---|
+| 分母 n_scored | **452** | 498 | **48 条格式失败！** |
+| sentiment Macro-F1 | 92.44 | 92.02 | +0.4 |
+| hard_case Macro-F1 | **61.12** | 59.09 | **+2.0** |
+| negative R / FAR | 96.39 / 11.11 | 97.59 / 12.90 | FAR 更低 |
+| risk SubAcc | 71.8 | 73.8 | −2.0 |
+| **JSON 合法率** | **92.2%** | 99.6% | **崩** |
+| think / ev | 100 / **91.8** | 100 / 99.6 | ev 崩 |
+| train_loss / val_loss | 0.8602 / 0.7796 | 0.9507 / 0.8297 | loss 更低 |
+| gates | gate2+gate4 FAIL | 同 | |
+
+**判读（本漏斗最关键的一枪）**：
+1. 2e-4 的**内容指标确实更强**（hc 61.12 全场最高、sent 92.44、FAR 11.11）——大 lr 学习能力强。
+2. **但格式契约崩了**：48/500 条 JSON 失败（92.2%）、evidence 子串 91.8%。
+   幸存样本的分数是「过滤后幸存者成绩」——按判据「主指标不降前提下选 val_loss 无回弹者」，
+   R5 的 val_loss 0.7796 虽低，但 **gate4 92.2% 距 99.8 门限差 7.6pp，属一票否决级劣化**。
+3. **结论：$LR = 1e-4$ 定稿**。LR 曲线呈「倒 U」：5e-5 欠拟合、1e-4 契约/效果平衡点、2e-4 学得快但输出稳定性崩。
+   这与「GRPO 起点要稳」的诉求一致——1e-4 同时是内容分和格式分的帕累托点。
+
+### 漏斗状态更新
+
+- $STAGE=POC2、$LR=1e-4、$EP=3 全部定稿。
+- R1_Anchor 证据（hc +4.2/FAR 最低）+ R5 教训（格式对 lr 敏感）→ **R6 建议配置：9:1 anchor + 1e-4 + ep3 + round1_1500**，
+  起跑前需重跑 mix 并核 1500 条 CoT 长度分布（决定 max_new_tokens 是否 1024→1280）。
+
+---
+
+## R6 起跑配置（2026-10-29 定稿）
+
+- **数据集**：`sft_round_1_anchor_0.1`（1541 条 train，anchor 9:1，CoT p95=444 与 750 条一致——1024 预算无截断风险）
+- **代码改动**：`run_sft_e2e.sh` 新增 `MAX_NEW_TOKENS` 环境变量（默认 1024，vllm/hf 两路径均已透传）。
+  ⚠️ R1~R5 历史成绩为 512 隐式预算，R6 起为 1024——对比时注明「R6 格式指标含解除截断的红利」。
+- **判据**：vs R1_Anchor（同 anchor 口径：sent 91.81 / hc 60.16 / risk 74.0 / FAR 11.17，统一分母重测口径）。
+  增益 ≥2pp → 数据还在 scale；<2pp → 转 GRPO。

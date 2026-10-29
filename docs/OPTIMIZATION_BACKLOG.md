@@ -72,6 +72,13 @@
 - **⚠️ 契约改动流程**：须先落真理源（`SFT负面精判_MVP设计架构.md` + 数据手册 §五）再改代码，`assert_contract_invariants` 单调链同步加档；-0.5 档位值与 0.5 阈值为设计值，待拍板。
 - **决策实验（AutoDL 上做）**：跑 50 条探针 → `summarize_buckets` 看 risk/hard_case 难例在 keep 桶的分布。risk 难例未被系统性 drop → 现状可容忍，推迟到正式 3000 条；被误杀 → 按候选改法先改文档再动代码。
 
+### S · neutral↔positive 互错降档 -1.0 → -0.5（候选，未拍板）
+
+- **现状**：`reward_fns.r_accuracy` 中情感判错三场景（误报 / 漏报 / neutral↔positive 互错）全部挤在 -1.0 档，组内采样拉不开优势差，模型学不到「negative 边界比非负边界更重要」。
+- **候选改法（未实施）**：仅 neutral↔positive 互错降到 -0.5（新增常量 `R_POLARITY_DRIFT`）。**「判成 negative」的误报必须保持 -1.0 不动**——降了它，判负期望收益占优，误报率会回升（历史 70%~90% 老路）。
+- **⚠️ 契约改动流程**：同 R 条目——先落真理源（架构文档 + 数据手册 §五）再改代码，`assert_contract_invariants` 单调链插入 -0.5 并加 `R_FALSE_ALARM > R_POLARITY_DRIFT` 断言。
+- **验证实验**：暂缓（用户 2026-10-28 拍板先不做；拍板实施时再补「梯度区分度 + 误报漂移」探针验证）。
+
 ### P · 推理侧加速（探针 / eval 熔断）——默认不实施
 
 - **对象**：`run_probe`（逐条逐次生成，50×4≈200 条）与 `_eval_reward_mean`（训练内逐条 batch=1，每次 eval 全量重跑）。

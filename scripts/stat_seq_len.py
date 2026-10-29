@@ -158,17 +158,64 @@ def _report_cot_buckets(cots, unit, say=print):
             say("     R_length 本批数据上恒为 0 —— 该维暂时没有塑形效果（不影响判别正确性）。")
 
 
+def load_rows(train_file, pred_file=None, gold_file=None):
+    """读入两种口径的样本，统一成 {instruction, input, output, meta} 行。
+
+    - 默认: 训练集 jsonl (instruction/input/output 完整行)
+    - --pred_file: 推理产物 (每行一段裸生成文本)。pred.jsonl 只有 output 没有输入，
+      需要 --gold_file 提供同序的 instruction/input（sft_infer 写 pred 时行序
+      与 --data_file 对齐，所以直接 zip 即可）；output 侧还需要补回模板里的
+      ASSISTANT_SUFFIX / THINK_PREFIX，保持与训练口径同源。
+    """
+    if not pred_file:
+        return [json.loads(l) for l in open(train_file, encoding="utf-8") if l.strip()]
+
+    preds = [l.rstrip("\n") for l in open(pred_file, encoding="utf-8") if l.strip()]
+    if not gold_file:
+        raise SystemExit("--pred_file 需要配套 --gold_file（提供 instruction/input，"
+                         "如 sft_infer --data_file 所指的数据集 jsonl）")
+    golds = [json.loads(l) for l in open(gold_file, encoding="utf-8") if l.strip()]
+    if len(preds) != len(golds):
+        raise SystemExit(f"--pred_file ({len(preds)} 条) 与 --gold_file ({len(golds)} 条) "
+                         f"行数不一致，无法按行配对")
+
+    rows = []
+    for g, pred in zip(golds, preds):
+        output = pred.strip()
+        # sft_infer 写盘前把换行压成空格且 strip 过，这里补回模板约定，与训练侧一致
+        if pt.USE_THINK_PREFIX and not output.startswith(pt.THINK_PREFIX):
+            output = pt.THINK_PREFIX + output
+        output += pt.ASSISTANT_SUFFIX
+        rows.append({"instruction": g.get("instruction", ""),
+                     "input": g.get("input", ""),
+                     "output": output,
+                     "meta": g.get("meta") or {}})
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser(description="训练数据序列长度统计（domain/anchor 分账）")
-    ap.add_argument("--train_file", required=True, help="训练集 jsonl（建议混合后的 sft_train.jsonl）")
+    ap.add_argument("--train_file", default=None, help="训练集 jsonl（建议混合后的 sft_train.jsonl）")
+    ap.add_argument("--pred_file", default=None,
+                    help="推理产物 pred.jsonl（每行一段裸生成文本）；与 --gold_file 成对使用，"
+                         "此时 --train_file 不给也可")
+    ap.add_argument("--gold_file", default=None,
+                    help="与 pred 同序的数据集 jsonl（sft_infer 的 --data_file），"
+                         "提供 instruction/input 与 meta 做分账")
     ap.add_argument("--tokenizer", default=None,
                     help="tokenizer/基座路径；不给或加载失败则退化为字符级近似")
+    ap.add_argument("--think_prefix", action="store_true",
+                    help="pred 口径专用：与 sft_infer --think_prefix 取同一值，"
+                         "output 侧补回 '<think>\\n' 前缀保持口径一致")
     ap.add_argument("--top_n", type=int, default=5, help="打印最长 Top-N 样本索引")
     ap.add_argument("--out", default=None,
                     help="统计结果落盘路径 (json)。不给则只打印 stdout，不落盘")
     ap.add_argument("--log", default=None,
                     help="追加写日志文件 (整份 stdout 副本 tee 进去)。不给则只打印 stdout")
     args = ap.parse_args()
+
+    if not args.train_file and not args.pred_file:
+        ap.error("--train_file 与 --pred_file 至少给一个")
 
     # --log: tee 模式, stdout 原样打印 + 整份副本追加进日志 (可复跑不覆盖, 留存时间线)
     log_f = None
@@ -181,8 +228,12 @@ def main():
         if log_f:
             log_f.write(msg + "\n")
 
-    rows = [json.loads(l) for l in open(args.train_file, encoding="utf-8") if l.strip()]
-    say(f"数据: {args.train_file}  共 {len(rows)} 条")
+    # 推理产物模式下补前缀的开关必须和 sft_infer 跑的时候一致，否则口径分叉
+    if args.pred_file:
+        pt.set_think_prefix(args.think_prefix)
+    rows = load_rows(args.train_file, args.pred_file, args.gold_file)
+    say(f"数据: {args.pred_file or args.train_file}  共 {len(rows)} 条" +
+        ("  (pred 口径, gold 提供 instruction/input)" if args.pred_file else ""))
 
     encode = None
     tok = None
@@ -257,7 +308,8 @@ def main():
     # --out: 机器可读统计落盘 (stdout 是人读版, 这是回填/留存用的结构版)
     if args.out:
         report = {
-            "train_file": args.train_file,
+            "train_file": args.pred_file or args.train_file,
+            "mode": "pred_infer" if args.pred_file else "train",
             "n_rows": len(rows),
             "tokenizer": args.tokenizer,
             "unit": unit,
@@ -284,8 +336,6 @@ def main():
         out_p.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         say(f"\n统计已落盘: {args.out}")
     if log_f:
-        if args.out:
-            log_f.write(f"统计已落盘: {args.out}\n")
         log_f.close()
         print(f"日志已追加: {args.log}")
 
