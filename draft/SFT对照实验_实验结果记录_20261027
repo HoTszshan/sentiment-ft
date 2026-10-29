@@ -385,21 +385,21 @@ python3 scripts/stat_seq_len.py \
 
 **traintest**
 
-SFT_POC_STAGE=POC2 EPOCHS=3 LR=2e-4 \
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=1e-4 \
 DATA_DIR=/root/autodl-tmp/datasets/sft_round_1_anchor_0.1 \
 CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
 BG=1 ./scripts/run_sft_e2e.sh --tag=R6_d1500_anchor_0.1_ep3 traintest
 
 
 
-SFT_POC_STAGE=POC2 EPOCHS=3 LR=2e-4 \
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=1e-4 \
 DATA_DIR=/root/autodl-tmp/datasets/sft_round_1_anchor_0.1_val_0.2 \
 CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
 BG=1 ./scripts/run_sft_e2e.sh --tag=R6_d1500_anchor_0.1_val_0.2_ep3 traintest
 
 
 
-SFT_POC_STAGE=POC2 EPOCHS=3 LR=2e-4 \
+SFT_POC_STAGE=POC2 EPOCHS=3 LR=1e-4 \
 DATA_DIR=/root/autodl-tmp/datasets/sft_round_1_anchor_0.05 \
 CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
 BG=1 ./scripts/run_sft_e2e.sh --tag=R6_d1500_anchor_0.05_ep3 traintest
