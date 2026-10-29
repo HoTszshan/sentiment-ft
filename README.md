@@ -721,7 +721,7 @@ python3 scripts/eval_four_tier.py --gold data/gold500_test.jsonl \
 |---|---|
 | `缺少依赖: torch transformers peft` | `pip install torch transformers peft accelerate wandb` |
 | 推理报 `Expected all tensors to be on the same device, but found at least two devices, cuda:1 and cuda:0!` | 多卡环境下 PEFT `trainable_tokens` 跨卡切分 bug。切回默认方案 1 单卡跑：`INFER_BACKEND=hf INFER_GPU=0`（或直跑前加 `CUDA_VISIBLE_DEVICES=0`） |
-| GRPO 报 `No module named 'trl'` | `pip install -r requirements.txt`（trl==0.14.0 + transformers==5.15.0 真机锚定组合，**别手装升级版**；踩坑见 `notes/GRPO环境踩坑实录_20261027.md`） |
+| GRPO 报 `No module named 'trl'` | `pip install -r requirements.txt`（trl==0.14.0 + transformers==4.51.0 真机锚定组合，**别手装升级版**；踩坑见 `notes/GRPO环境踩坑实录_20261027.md`） |
 | GRPO 启动就报「batch 不能被 G 整除」 | `--per_device_train_batch_size` 必须是 G 的倍数（默认 4，G=4 合法） |
 | GRPO 日志提示「无 temperature 字段」 | TRL 版本与 `requirements.txt` 锚定组合不符；TRL 太老时 T 若为 0，组内方差恒 0，RL 会退化成更贵的 SFT |
 | GRPO 慢 / rollout 占时间 | 双卡走 `NPROC=2` 自动开 vLLM（✅ 已跑通，utilization 0.9 / 并发 ~35x）；单卡自动降级 HF generate |
