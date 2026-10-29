@@ -29,6 +29,7 @@ npm install -g @anthropic-ai/claude-code
 ```bash
 mkdir -p .claude && cat > .claude/settings.json <<'EOF'
 {
+  "allowedProviders": ["customEndpoint"],
   "env": {
     "ANTHROPIC_AUTH_TOKEN":  "<API_KEY>",
     "ANTHROPIC_BASE_URL": "https://vectide.cn",
@@ -52,6 +53,16 @@ mkdir -p .claude && cat > .claude/settings.json <<'EOF'
   "includeCoAuthoredBy": false
 }
 EOF
+```
+
+**Claude Code 启动硬连 api.anthropic.com 鉴权，settings.json 的 base_url 只管对话请求，拦不住初始化校验**
+```bash
+# 先在当前终端导出
+export ANTHROPIC_BASE_URL="https://vectide.cn"
+export ANTHROPIC_AUTH_TOKEN="<API_KEY>"
+export allowedProviders='["customEndpoint"]'
+# 再启动
+claude
 ```
 
 ## 学术加速

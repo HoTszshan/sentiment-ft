@@ -1,7 +1,7 @@
 # SFT 探针实验 · 快速启动 TODO 清单
 
 > **定位**：AutoDL 单卡（RTX 4090/3090 24GB）上把 SFT 探针（POC1→POC2→POC3 消融）从零跑通并回填实测数字的**一步步操作清单**。
-> **口径权威源**：`notes/舆情负面精判_SFT训练实战手册.md`（训练）、`notes/舆情负面精判_评估手册_SFT_GRPO.md`（评估）、`tests/README.md`（脚本用法）。冲突以上游为准。
+> **口径权威源**：`notes/舆情负面精判_SFT训练实战手册.md`（训练）、`notes/舆情负面精判_评估手册_SFT_GRPO.md`（评估）、`README.md`（脚本用法）。冲突以上游为准。
 > **纪律**：跑出来的数才回填；没跑的一律标 `[待实测]`，不编数。本清单勾完即把训练手册 §1.4.6 的「从未实跑」红线解除。
 
 ---
@@ -11,16 +11,15 @@
 > **不建多个虚拟环境**：SFT 与 GRPO 依赖栈兼容（GRPO 只比 SFT 多 `trl`），统一装一份即可。
 
 - [ ] **0.1** 租卡：AutoDL 单卡 RTX 4090 24GB（镜像选 PyTorch 2.x + CUDA 12.x + Python 3.10+）
-- [ ] **0.2** 进入实例后**只装一次依赖**（单环境，含 GRPO 需求，一步到位）：
+- [ ] **0.2** 进入实例后**只装一次依赖**（单环境，SFT/GRPO 共用，一步到位）：
   ```bash
-  pip install "torch>=2.1" "transformers>=4.55" "trl>=0.19" "peft>=0.12" \
-      accelerate datasets modelscope wandb
+  pip install -r requirements.txt
   ```
-  验证版本：`python3 -c "import transformers, trl, peft; print(transformers.__version__, trl.__version__, peft.__version__)"`
-  （Qwen3 要 transformers≥4.51；trl≥0.19 才认 `temperature`/`processing_class`）
+  - 版本全部 == 锚定（2026-10-27 真机验证组合），不要自行升级 `trl` / `vllm` / `torch`
+  - 验证：`python3 -c "import torch, transformers, trl, peft; print(torch.__version__, transformers.__version__, trl.__version__)"`
 - [ ] **0.3**（可选但推荐）`wandb login` 登录；不登录则自动降级只写本地日志。
   > **开关：`SYNC_WANDB=1` 才上传**。探针实验默认只落本地日志（`logs/train_probe*.log`），不污染 wandb 项目；正式跑或想看曲线时在命令前加 `SYNC_WANDB=1`（例：`SYNC_WANDB=1 SFT_POC_STAGE=POC1 ./scripts/run_sft_e2e.sh train`）。登录态认两条路径：`WANDB_API_KEY` 环境变量 或 `~/.netrc` 里 `api.wandb.ai` 凭据（`wandb login` 写入的即是后者）。上传目标项目固定为 `sentiment-sft-probe`，run 名 `probe_<时间戳>`。
-- [ ] **0.4** 上传 `tests/` 目录（或 git clone 仓库），`cd tests && chmod +x scripts/*.sh`
+- [ ] **0.4** 上传仓库目录（或 git clone），`cd /root/autodl-tmp/senti && chmod +x scripts/*.sh`
 - [ ] **0.5** 零依赖自检：`python3 -m unittest discover -s unit -p "test_*.py"` —— 全绿才继续
 
 > **路径约定（AutoDL）**：模型下到 `/root/autodl-tmp/models`、公开数据集下到 `/root/autodl-tmp/datasets`（数据盘，容量大）。脚本已适配：
@@ -68,10 +67,13 @@
   ```bash
   python3 scripts/stat_seq_len.py \
       --train_file /root/autodl-tmp/datasets/mixed/sft_train.jsonl \
-      --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 --top_n 5
+      --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 --top_n 5 \
+      --out /root/autodl-tmp/models/sft_senti/seq_len_stats.json \
+      --log /root/autodl-tmp/models/sft_senti/seq_len_stats.log
   ```
   看三处：① domain / anchor 两桶 max 谁更长（定位长尾来源）；② total max 是否逼近 `max_seq_length 2560`（超过则该样本会被截断）；③ Top-N 清单定位具体样本行号。
   判据：total max ≈ 1821（已知领域极值，实测过）→ 维持 batch 1×8 配置即可；若 anchor 桶冒出 2500+ token 长样本 → 收紧锚点采样量或加长度过滤（见 `download_assets.py --anchor_samples`）。
+  - `--out` 落统计 json（回填前存档）；`--log` 追加写日志；都不给 = 只打印，零副作用
 - [ ] **2.3** 离线 dry-run 验证加权逻辑（无 GPU 成本，三档都要跑）：
   ```bash
   SFT_POC_STAGE=POC1 python3 scripts/train_sft_lora.py --dry_run --train_file /root/autodl-tmp/datasets/mixed/sft_train.jsonl
@@ -84,7 +86,7 @@
 ## Step 3 · SFT 探针训练（POC1→POC3 消融，一次只动一个变量）
 
 > 三档共用同一份代码，只切 `SFT_POC_STAGE`。探针规模 82 条 / 33 步 / 3 epoch（探针 B）。
-> `run_sft_e2e.sh` 会自动从 `MODEL_DIR` 找基座、从 `DATA_DIR/mixed` 找数据，adapter 按时间戳落盘（`output/probe_lora_<时间戳>`，不互相覆盖），路径记录在 `output/latest_adapter_path.txt`。
+> `run_sft_e2e.sh` 会自动从 `MODEL_DIR` 找基座、从 `DATA_DIR/mixed` 找数据，adapter 落在 `run_<时间戳>/sft_lora/`（run 目录互不覆盖），路径记录在 `<OUTPUT_DIR>/latest_adapter_path.txt`（AutoDL: `/root/autodl-tmp/models/sft_senti/latest_adapter_path.txt`，本机退回 `output/`）。
 
 - [ ] **3.1 POC1（baseline：仅前缀掩码）**：
   ```bash
@@ -98,7 +100,7 @@
   ```bash
   SFT_POC_STAGE=POC3 ./scripts/run_sft_e2e.sh train
   ```
-  > 每档 adapter 目录带时间戳自动区分；回填时用 `cat output/latest_adapter_path.txt` 找到当前档，或直接取各时间戳目录。
+  > 每档 adapter 目录带时间戳自动区分；回填时用 `cat /root/autodl-tmp/models/sft_senti/latest_adapter_path.txt` 找到当前档，或直接取各时间戳目录。
   > 不想分步跑训练+推理+评测时，可用一键模式（**复用已有混合数据与本地基座，不重复下载/混合**）：
   > ```bash
   > SFT_POC_STAGE=POC3 ./scripts/run_sft_e2e.sh traintest
@@ -118,13 +120,13 @@
 
 ## Step 4 · 推理与评估（每档都要跑）
 
-> 以下 `<MODEL>` = `/root/autodl-tmp/models/Qwen3-4B-Instruct-2507`，`<MIXED>` = `/root/autodl-tmp/datasets/mixed`，`<ADAPTER>` = 对应 POC 档的 `output/probe_lora_<时间戳>`。
+> 以下 `<MODEL>` = `/root/autodl-tmp/models/Qwen3-4B-Instruct-2507`，`<MIXED>` = `/root/autodl-tmp/datasets/mixed`，`<ADAPTER>` = 对应 POC 档的 `/root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora`（`cat /root/autodl-tmp/models/sft_senti/latest_adapter_path.txt` 直接拿）。
 
 - [ ] **4.1** 推理（以 POC3 为例；POC1/POC2 换对应 adapter 路径）：
   ```bash
   python3 scripts/sft_infer.py \
       --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-      --adapter_path output/probe_lora_<POC3时间戳> \
+      --adapter_path /root/autodl-tmp/models/sft_senti/run_<POC3时间戳>/sft_lora \
       --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \
       --out output/pred_val_poc3.jsonl
   ```
@@ -168,7 +170,7 @@
   # T3 · SFT 后
   python3 scripts/sft_infer.py \
       --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-      --adapter_path output/probe_lora_<POC3时间戳> \
+      --adapter_path /root/autodl-tmp/models/sft_senti/run_<POC3时间戳>/sft_lora \
       --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \
       --out output/pred_sft.jsonl
   ```

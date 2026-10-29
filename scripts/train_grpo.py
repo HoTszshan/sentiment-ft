@@ -31,11 +31,14 @@
 """
 
 import argparse
+import inspect
 import json
 import math
 import os
 import sys
 import time
+import textwrap
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
@@ -88,6 +91,41 @@ def make_reward_fn(g: int = 4):
     return reward_fn
 
 
+def _patch_scale_rewards_none(trainer, g: int) -> None:
+    """运行时把 trl 0.14 GRPOTrainer.compute_loss 的优势计算改为「只减均值、不除 std」。
+
+    trl 0.14 源文件中该行唯一出现，直接对源码做锚点替换后重新编译绑定到实例/类。
+    若未来 trl 升级导致锚点失配（find 返回 -1），立即 raise——scale_rewards 语义
+    是奖励契约的一部分（见 d371a25），静默回退到「除 std」会悄悄改变实验口径。
+    """
+    import types
+    import trl.trainer.grpo_trainer as _gt
+
+    anchor = "advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)"
+    replacement = "advantages = rewards - mean_grouped_rewards  # [scale_rewards=none patch]"
+    src = inspect.getsource(_gt.GRPOTrainer.compute_loss)
+    if src.count(anchor) != 1:
+        raise RuntimeError(
+            f"trl 0.14 advantage 锚点失配（出现 {src.count(anchor)} 次，期望 1 次）。"
+            "请检查新版 trl 的 scale_rewards 参数是否已支持 \"none\"，"
+            "若有则删除本 patch 改回配置式；否则更新锚点。")
+    patched = textwrap.dedent(src).replace(anchor, replacement)
+    # super() 零参形式依赖 __class__ 闭包 cell，exec 出来的顶层函数没有它，
+    # 走到 super()._prepare_inputs 时会炸 "super(): __class__ cell not found"。
+    # compute_loss 里该调用仅 2 处且都是 Trainer 方法（单继承链），直接显式化：
+    # super()._prepare_inputs(x) → Trainer._prepare_inputs(self, x)。
+    # 注意必须落到 Trainer（基类实现：转 tensor + 搬 GPU），不能是 GRPOTrainer——
+    # GRPOTrainer 自己 override 的 _prepare_inputs 是「原样 return」，
+    # 用它 prompt_inputs 留在 CPU，后续与 cuda 采样结果 cat 时 device 不匹配。
+    patched = patched.replace("super()._prepare_inputs(",
+                              "Trainer._prepare_inputs(self, ")
+    ns = {}
+    exec(compile(patched, inspect.getsourcefile(_gt.GRPOTrainer.compute_loss), "exec"),
+         _gt.__dict__, ns)
+    trainer.compute_loss = types.MethodType(ns["compute_loss"], trainer)
+    print("[PATCH] scale_rewards=none 已生效（优势 = r - 组均值，不除 std）")
+
+
 def load_merge_manifest(model_path: str):
     """只读：抽取起点模型的 SFT 合并证据（不动 manifest 本身），进 metrics 留血缘。
     真正执行合并的是 merge_sft_adapter.py，此处只读取其产物。"""
@@ -110,6 +148,42 @@ def print_budget(h: GrpoHyper, n: int, use_vllm: bool) -> None:
           "loss_type=grpo；scale_rewards=none（只减均值、不除 std）")
     print(f"prompt 上限 {h.max_prompt_length}；{budget_note(h)}")
     print(f"vLLM: {'开' if use_vllm else '关（HF generate）'}")
+    print("=" * 74)
+
+
+def print_hyperparams(h: GrpoHyper, args: argparse.Namespace, config) -> None:
+    """训练前全量落盘超参——一个 run 目录拷走即可复现，不用翻代码。
+    在 GRPOConfig 构造后、trainer.train() 前调用。"""
+    import torch
+    print("=" * 74)
+    print("[HP] 全量超参（*= 本次命令行覆盖或非常规项）")
+    print("-" * 74)
+    print(f"[HP] 采样/rollout: G={h.num_generations} T={h.temperature} "
+          f"max_prompt={h.max_prompt_length} max_completion={h.max_completion_length}")
+    print(f"[HP] 优化器: lr={h.lr} scheduler=cosine warmup_ratio={h.warmup_ratio} "
+          f"adam_beta1=0.9 adam_beta2=0.99 weight_decay=0.01 "
+          f"max_grad_norm={args.max_grad_norm} seed={h.seed}")
+    print(f"[HP] RL: β_KL={h.beta_kl} scale_rewards=none* (patch, 只减均值不除std) "
+          f"epsilon={h.epsilon}* (仅文档口径, trl 0.14 无clip)")
+    print(f"[HP] 批次拓扑: per_device={h.per_device} grad_accum={h.grad_accum} "
+          f"→ {h.per_device * h.grad_accum} prompt/步 × G{h.num_generations} "
+          f"= {h.per_device * h.grad_accum * h.num_generations} 轨迹/步 "
+          f"epochs={h.num_train_epochs}")
+    print(f"[HP] LoRA: r={args.lora_r} alpha={args.lora_alpha} dropout={args.lora_dropout} "
+          f"target=q/k/v/o/gate/up/down_proj(7) bias=none")
+    print(f"[HP] vLLM: use={args.use_vllm} "
+          f"utilization={config.vllm_gpu_memory_utilization} "
+          f"max_model_len={h.max_prompt_length + h.max_completion_length} (patch④注入) "
+          f"device={args.vllm_device or '自动(双卡=cuda:1)'}")
+    print(f"[HP] 精度: bf16={torch.cuda.is_available()} "
+          f"梯度检查点={getattr(config, 'gradient_checkpointing', False)} "
+          f"alloc_conf={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '默认')}")
+    print(f"[HP] eval/熔断: eval_file={args.eval_file or '训练池自动抽'} "
+          f"eval_n={args.eval_n} eval_steps={args.eval_steps} "
+          f"fuse_threshold={args.fuse_threshold} fuse_hard={args.fuse_hard}")
+    print(f"[HP] 保存: strategy={config.save_strategy} steps={config.save_steps} "
+          f"output_dir={args.output_dir}")
+    print(f"[HP] 版本: trl={trl_ver} transformers={tf_ver} torch={torch.__version__}")
     print("=" * 74)
 
 
@@ -138,8 +212,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--beta_kl", type=float, default=0.04)
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    parser.add_argument("--gradient_checkpointing", action="store_true",
+                        help="激活检查点换显存：前向不存激活、反向重算。"
+                             "省 ~30-40%% 激活显存，换 ~20-30%% 训练减速。"
+                             "LoRA 下基座权重已冻结，配合 use_reentrant=False 安全。")
     parser.add_argument("--num_train_epochs", type=float, default=1.0)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--max_prompt_length", type=int, default=2048)
@@ -161,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--use_vllm", action="store_true")
+    parser.add_argument("--vllm_device", default=None,
+                        help="trl 0.14: vLLM 采样卡, 如 cuda:1 (双卡 colocate); 不传走 auto")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--dry_run", action="store_true")
@@ -230,6 +310,26 @@ def main():
         from datasets import Dataset
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        # 环境怪癖补丁: 本环境 (trl 0.14 + transformers 5.x) 下 trl 检测 vllm
+        # 返回 (bool, version) 元组而非 bool, 恒 truthy → 未装 vllm 时
+        # grpo_trainer 无条件 import vllm 而崩。import trl 前把元组修回 bool。
+        try:
+            import trl.import_utils as _trl_iu
+            if isinstance(getattr(_trl_iu, "_vllm_available", None), tuple):
+                _trl_iu._vllm_available = _trl_iu._vllm_available[0]
+        except Exception:
+            pass
+        # 环境怪癖补丁③: vllm 0.7.3 读 tokenizer.all_special_tokens_extended,
+        # transformers 5.x 已删除该属性 (实测 Qwen2Tokenizer AttributeError)。
+        # vLLM 只做缓存/集合运算, 挂基类 property 返回 str 列表语义等价。
+        try:
+            from transformers.tokenization_utils_base import PreTrainedTokenizerBase as _PTB
+            if not hasattr(_PTB, "all_special_tokens_extended"):
+                _PTB.all_special_tokens_extended = property(
+                    lambda self: list(self.all_special_tokens))
+        except Exception:
+            pass
         from trl import GRPOConfig, GRPOTrainer
         from peft import LoraConfig, TaskType
         dataset = Dataset.from_list(rows)
@@ -264,22 +364,34 @@ def main():
             max_completion_length=h.max_completion_length,
             num_train_epochs=h.num_train_epochs, beta=h.beta_kl,
             max_grad_norm=args.max_grad_norm,
+            # 激活检查点（--gradient_checkpointing 开启）：LoRA 冻结基座下安全，
+            # 显存紧（如 24G 卡跑 4B+GRPO）时的首选开关
+            gradient_checkpointing=args.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+                if args.gradient_checkpointing else None,
             save_strategy="steps" if args.save_steps > 0 else args.save_strategy,
             save_steps=args.save_steps if args.save_steps > 0 else 500,
             seed=h.seed, report_to="wandb" if wandb_on else "none",
-            # scale_rewards="none": 优势只减均值、不除 std——固定离散阶梯分除 std
-            # 会放大噪声组（见 grpo_common.assert_zam_equivalence ③）
-            # TRL 1.16 已移除 max_prompt_length / vllm_device：prompt 截断改由数据侧保证
-            # （resolve_prompt_limit 已实测并对齐），vllm_device 由 vllm_mode 接管
+            # 优势口径 scale_rewards="none"（只减均值、不除 std）不在 config 传——
+            # trl 0.14 无此参数，由 _patch_scale_rewards_none 在 trainer 构造后打补丁。
+            # trl 0.14 已移除 max_prompt_length / vllm_mode：prompt 截断由数据侧
+            # （resolve_prompt_limit 已实测并对齐）保证，vllm_device 由 --vllm_device 接管
             log_on_each_node=False, use_vllm=args.use_vllm,
-            eval_strategy="steps" if eval_rows else "no",
+            # eval_strategy 必须为 no：Trainer 内置 eval 走 prediction_step，
+            # GRPOTrainer 未 override，list 形态 eval batch 会炸（见 trainer 构造处注释）。
+            # reward 监控/熔断由 fuse_callback 的 on_evaluate 自行采样实现。
+            eval_strategy="no",
             eval_steps=args.eval_steps if eval_rows else 500,
             per_device_eval_batch_size=h.per_device,
-            vllm_gpu_memory_utilization=0.3,
+            # vLLM 独占 cuda:1（双卡拓扑）：0.9 让 KV cache ~12.3G、并发 ~29x，
+            # 32 条 rollout 一波发完（0.7 只有 ~21x，要分两波）；
+            # 单卡 colocate 同卡模式才需要 0.3（给训练留 70%）
+            vllm_gpu_memory_utilization=0.9,
             max_steps=args.max_steps or 0, temperature=h.temperature,
-            loss_type="grpo", scale_rewards="none",
-            # ε固定0.2(TRL默认单侧clip)：规则reward无重尾；β=0.04 KL控漂移，避免双重约束扼杀G=4组内方差；探针阶段减少超参
-            epsilon=h.epsilon,
+            # ε/clip：trl 0.14 无 epsilon 参数，其 per_token_loss 直接用
+            # exp(logps - logps.detach())（无截断的 policy-gradient 形式，等价 ε→∞），
+            # 概率比截断由 β=0.04 的常数 KL 承担。h.epsilon 保留仅作文档口径。
+            # 注：0.14 该形式实为 importance-ratio 无 clip 版本，升级 trl 后可恢复 epsilon=h.epsilon。
         )
 
         # 3. 加载模型；tokenizer 已在步骤 2 加载并测长。
@@ -289,6 +401,28 @@ def main():
             args.model_name_or_path,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             trust_remote_code=True)
+        # 环境怪癖补丁②: trl 0.14 写 model.warnings_issued[...] (transformers
+        # 5.x 已删该属性 → AttributeError)。预挂空 dict, 仅影响警告抑制。
+        if not hasattr(model, "warnings_issued"):
+            model.warnings_issued = {}
+
+        # 环境怪癖补丁④: trl 0.14 内部 LLM(...) 不传 max_model_len → vLLM 按
+        # 模型原始上下文 262144 做 profiling dummy run，4D causal mask 要 128GiB
+        # 直接 OOM（trl 0.14 的 GRPOConfig 也没有 vllm_max_model_len 旋钮）。
+        # 包装 vllm.LLM：未显式指定时注入 max_model_len = prompt 上限 + 输出预算
+        # （本任务 2048+512=2560，实测 max prompt 795，余量充足）。
+        if args.use_vllm:
+            import vllm as _vllm
+            _orig_llm_init = _vllm.LLM.__init__
+            _vllm_max_len = h.max_prompt_length + h.max_completion_length
+
+            def _patched_llm_init(self, *a, **kw):
+                if kw.get("max_model_len") is None and "max_model_len" not in kw:
+                    kw["max_model_len"] = _vllm_max_len
+                    print(f"[PATCH] vLLM max_model_len 注入 {_vllm_max_len} "
+                          f"(prompt {h.max_prompt_length} + completion {h.max_completion_length})")
+                return _orig_llm_init(self, *a, **kw)
+            _vllm.LLM.__init__ = _patched_llm_init
 
         # 4. 创建 Trainer（可选注册评估熔断 callback）
         peft_config = LoraConfig(
@@ -299,12 +433,38 @@ def main():
         trainer = GRPOTrainer(
             model=model, peft_config=peft_config,
             reward_funcs=make_reward_fn(h.num_generations), args=config,
-            train_dataset=dataset, eval_dataset=Dataset.from_list(eval_rows) if eval_rows else None,
+            train_dataset=dataset,
+            # eval 熔断不走 Trainer 内置 eval：eval_dataset 传 None、eval_strategy=no。
+            # 原因：GRPOTrainer 未 override prediction_step，Trainer 的 evaluation_loop
+            # 会拿 eval batch（list 形态、含 gold list 列）喂 model.forward ——
+            # 'list' object has no attribute 'get'（实测 run_20261028_114227，第 2 步
+            # eval_steps 触发）。reward 监控由 fuse_callback 自行采样打分（见下），
+            # 与 Trainer 的 eval 机制完全解耦。
+            eval_dataset=None,
             processing_class=tokenizer)
+
+        # trl 0.14 无 scale_rewards 开关：compute_loss 硬编码优势 = (r-组均值)/(组std+1e-4)。
+        # 我们要「只减均值、不除 std」（固定离散阶梯分除 std 会放大噪声组，
+        # 见 lib/reward_fns.group_advantages 注释；reward 侧预乘在代数上无法精确抵消——
+        # 分子分母被同时缩放，eps 项权重反而失真，已实测否决）。
+        # → 运行时 monkeypatch compute_loss：源码中该行仅一处
+        #   advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+        # 改为 advantages = rewards - mean_grouped_rewards（等价新版 scale_rewards="none"）。
+        # 同分/全对/全错组中心化后全 0，优势自然清零，与 ZAM 语义一致。
+        # 升级 trl 后此 patch 的锚字符串可能失配 → fail-loud，不许静默跳过。
+        _patch_scale_rewards_none(trainer, h.num_generations)
+
+        # 训练前全量落盘超参（config 已构造、patch 已生效，此时打印的是真实值）
+        import trl as _trl, transformers as _tf
+        global trl_ver, tf_ver
+        trl_ver, tf_ver = _trl.__version__, _tf.__version__
+        print_hyperparams(h, args, config)
+
         if eval_rows:
             fuse_callback = build_fuse_callback(
                 fuse_threshold=args.fuse_threshold, fuse_hard=args.fuse_hard,
-                reward_fn=make_reward_fn(h.num_generations), g=h.num_generations)
+                reward_fn=make_reward_fn(h.num_generations), g=h.num_generations,
+                eval_rows=eval_rows)
             fuse_callback._attach(trainer)
             fuse_callback.initialize_baseline(trainer)
             trainer.add_callback(fuse_callback)
