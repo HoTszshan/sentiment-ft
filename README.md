@@ -204,7 +204,7 @@ python3 scripts/align_sft_data.py \
 
 ### 步骤 1.6 · Schema v1 批次转换（通用转换器 convert_sft_data.py）
 
-> 适用任何 Schema v1 标注批次。转换只动三处：CoT 标签（`<|begin_of_thought|>`→`<think>`）、
+> 适用任何 Schema v1 标注批次。**完整转换指南 见 `README_数据格式转换.md`**。转换只动三处：CoT 标签（`<|begin_of_thought|>`→`<think>`）、
 > 补 instruction/题面（同训练模板）、meta 白名单瘦身（provenance dict 归一为 source 字符串，
 > 完整审计信息挪 `provenance_detail`）；gold 六字段逐字继承（实测与 output 内嵌 JSON 零冲突）。
 
