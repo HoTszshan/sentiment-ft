@@ -83,3 +83,17 @@
 - **要验证**：canary 每 20 / 30 / 60 步，对训练耗时与「发现问题的及时性」的影响。
 - **现状**：默认已从 20 调到 **30**（60 步下测 2 次）。
 - **触发条件**：需要比较不同 lr 的收敛速度时（要拿到更密的曲线）。
+
+## E7 · test_grpo_probe 6 条 ERROR 修复（遗留测试债）
+
+- **现状**：`python3 -m unittest discover -s unit` 全套件 346 条中 6 条 ERROR，
+  全部集中在 `unit/test_grpo_probe.py` 的 `TestFuseCallbackBuildAndFuse`——
+  测试期望 `_FuseCallback` 存在 `on_evaluate` 方法，但 `lib/format_canary.py`（含 git HEAD 版本）
+  **从未实现过该方法**（`git log -S "on_evaluate"` 无任何提交痕迹）。
+- **来源**：`d371a25`（GRPO 奖励契约阶梯式改版）提交时测试先行/实现缺失，先于 750 条 SFT 实验就坏，
+  与 SFT 漏斗（R1~R6）无关；2026-10-29 审计时通过 git stash 验证与本轮改动无关。
+- **修法二选一（GRPO 启动前必须清掉，否则无法用单测验证 GRPO callback 行为）**：
+  1. **补实现**：GRPO 融合逻辑确实需要「每次 eval 后对比 pretrain 基线决定熔断」的话，
+     在 `format_canary.py` 的 `_FuseCallback` 上补 `on_evaluate`（读 6 条测试的行为断言反推接口）；
+  2. **改测试**：GRPO 熔断已改走 `on_log`/`on_step_end` 路径的话，把 6 条测试改成对现有入口的断言或删除。
+- **验收**：`python3 -m unittest discover -s unit` 全绿（346/346）。
