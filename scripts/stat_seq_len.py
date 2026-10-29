@@ -336,8 +336,6 @@ def main():
         out_p.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         say(f"\n统计已落盘: {args.out}")
     if log_f:
-        if args.out:
-            log_f.write(f"统计已落盘: {args.out}\n")
         log_f.close()
         print(f"日志已追加: {args.log}")
 
