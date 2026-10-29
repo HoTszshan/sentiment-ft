@@ -70,6 +70,17 @@ class TestMacroF1(unittest.TestCase):
         self.assertEqual(st["macro_f1"], 0.0)
         self.assertEqual(st["n_scored"], 0)
 
+    def test_parse_failed_dropped_from_denominator(self):
+        """解析失败（pred=None）整条剔除，不计入 n_scored 分母——
+        统一「丢弃」口径：崩 JSON 不得既不记对也不记错地白送，也不得改变分母语义。"""
+        golds = ["negative", "negative", "neutral", "positive"]
+        preds = ["negative", None, "neutral", "positive"]
+        st = macro_f1(golds, preds, sorted(VALID_SENTIMENT), VALID_SENTIMENT)
+        self.assertEqual(st["n_parse_failed"], 1)
+        self.assertEqual(st["n_scored"], 3)
+        self.assertAlmostEqual(st["per_class"]["negative"]["recall"], 100.0)
+        self.assertAlmostEqual(st["macro_f1"], 100.0)
+
 
 class TestSubsetAccuracy(unittest.TestCase):
     def test_exact_match_only(self):

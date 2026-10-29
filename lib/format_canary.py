@@ -219,8 +219,7 @@ def build_callback(torch, tokenizer, rows: Sequence[Dict[str, Any]],
                     try:
                         import wandb
                         if wandb.run is not None:
-                            wandb.log({f"canary/{k}": v for k, v in m.items()},
-                                      step=state.global_step)
+                            wandb.log({f"canary/{k}": v for k, v in m.items()})
                     except Exception:
                         pass  # wandb 未启用时静默跳过
             except Exception as e:

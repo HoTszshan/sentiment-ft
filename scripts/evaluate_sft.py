@@ -513,11 +513,19 @@ def run_single_file_check(file_path: str, out_path: Optional[str] = None) -> boo
 
 def run_dual_file_eval(gold_file: str, pred_file: str,
                        out_path: Optional[str] = None,
-                       old_error_list: Optional[str] = None) -> bool:
+                       old_error_list: Optional[str] = None,
+                       strict_denominator: bool = True) -> bool:
+    """
+    strict_denominator（默认 True）：强解析失败的样本按「丢弃」处理，
+    不走 baseline 宽解析兜底进分母 —— 统一各枪的打分分母口径
+    （R1 曾按丢弃计 498，R2/Anchor 按兜底计 500，横向对比引入分母偏差）。
+    传 False 时保留旧的兜底行为（仅基线裸基座评测需要：强解析会全量失败）。
+    """
     print("=" * 70)
     print("模式 B · 模型对照评测")
     print(f"  gold: {gold_file}")
     print(f"  pred: {pred_file}")
+    print(f"  分母口径: {'强解析失败即丢弃' if strict_denominator else '宽解析兜底（基线口径）'}")
     print("=" * 70)
 
     with open(gold_file, encoding="utf-8") as f:
@@ -573,8 +581,11 @@ def run_dual_file_eval(gold_file: str, pred_file: str,
         # 有效字段参与字段对比。基线未微调，强解析会全量失败把指标清零，
         # 对基线不公平；但 valid_json 协议口径不放宽（仍按强解析记 False），
         # 格式门槛照实反映「基线格式不合规」这一事实。
+        # strict_denominator 模式（微调模型对照评测的默认）：不做兜底，
+        # 失败样本保持 pred=None，由 macro_f1 的「解析失败即丢弃」口径统一剔除，
+        # 保证各枪打分分母一致。
         baseline_extracted = False
-        if pred is None:
+        if pred is None and not strict_denominator:
             bp_text = unwrap_output_text(pline) if form == "text" else pline
             bp = extract_baseline_pred(bp_text)
             if bp:
@@ -894,6 +905,9 @@ def main():
                     help="[模式B] 门 1 用的上一版错题 id 列表（每行一个 id）")
     ap.add_argument("--log", default="",
                     help="日志落盘路径（stdout 全量 tee）；不给则只打印")
+    ap.add_argument("--lenient_denominator", action="store_true",
+                    help="[模式B] 允许宽解析兜底进打分分母（基线裸基座评测用）；"
+                         "默认关闭：强解析失败样本按「丢弃」统一分母口径")
     args = ap.parse_args()
 
     # 日志 tee：所有 print 走统一 _print，给了 --log 就同步落盘
@@ -915,7 +929,8 @@ def main():
         if args.gold_file and args.pred_file:
             ok = run_dual_file_eval(args.gold_file, args.pred_file,
                                     out_path=args.out,
-                                    old_error_list=args.old_error_list)
+                                    old_error_list=args.old_error_list,
+                                    strict_denominator=not args.lenient_denominator)
         else:
             ok = run_single_file_check(args.test_file, out_path=args.out)
     finally:

@@ -35,6 +35,7 @@
 #   PER_DEV_BATCH=2       单卡 batch (默认 2; 有效 batch 恒 8, accum 自动折算; OOM 时设 1)
 #   INFER_BACKEND=auto    推理后端: auto (默认, 探测到 vLLM 用 vllm, 否则回退 hf) | hf | vllm
 #   INFER_DATA=...        推理数据 (默认 $MIXED_DIR/sft_val.jsonl; 黄金集: INFER_DATA=data/gold500_test.jsonl)
+#   MAX_NEW_TOKENS=1024   推理生成预算 (默认 1024; 旧隐式默认 512 会截断长 CoT, R4/R5 有顶格实锤)
 #   ADAPTER_DIR=...       显式指定 adapter 目录 (默认读 latest_adapter_path.txt 指针; 多 run 对照必用)
 #   CLEAN_MERGE=1         评测完成后删除合并模型 (~7.6G; adapter/报告/预测保留, 可重新 merge 复原)
 #   INFER_GPU=0           方案 1 (hf) 时绑定的单卡编号 (默认 0)
@@ -421,6 +422,9 @@ sys.exit(0 if arch in ('LlamaForCausalLM','MistralForCausalLM','Qwen2ForCausalLM
   # 后端选择: 未显式指定时自动探测 —— 有 vLLM 就走 vLLM (高吞吐批量推理),
   # 没有再回退 hf 原生; 显式 INFER_BACKEND=hf|vllm 仍可强制覆盖。
   INFER_GPU="${INFER_GPU:-0}"
+  # 推理生成预算: 默认 1024 (CoT p95=447 + JSON~150 + 余量；旧默认 512 会截断
+  # 长 CoT 样本 —— R4/R5 共 9 条顶格 512 的预测即为截断实锤)。MAX_NEW_TOKENS 可覆盖。
+  MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-1024}"
   if [ -z "${INFER_BACKEND:-}" ]; then
     if python3 -c "import vllm" 2>/dev/null; then
       INFER_BACKEND="vllm"
@@ -430,7 +434,7 @@ sys.exit(0 if arch in ('LlamaForCausalLM','MistralForCausalLM','Qwen2ForCausalLM
       log "推理后端: 未指定, 未安装 vLLM → 回退 hf (装 vllm 后自动切换)"
     fi
   fi
-  log "步骤 5/6 · 批量推理 $INFER_DATA (后端: $INFER_BACKEND, 底模: $INF_BASE)"
+  log "步骤 5/6 · 批量推理 $INFER_DATA (后端: $INFER_BACKEND, 底模: $INF_BASE, max_new_tokens=$MAX_NEW_TOKENS)"
   # 渲染协议必须与训练侧一致：THINK_PREFIX=1 时训练把 <think>\n 写进了前缀，
   # 推理侧不加同一 flag 就会「训练有前缀、推理没前缀」，格式立刻崩。
   THINK_PREFIX_ARG=""
@@ -443,6 +447,7 @@ sys.exit(0 if arch in ('LlamaForCausalLM','MistralForCausalLM','Qwen2ForCausalLM
       --adapter_path "$INF_ADAPTER" \
       --data_file "$INFER_DATA" \
       --out "$RUN_DIR/$PRED_NAME" \
+      --max_new_tokens "$MAX_NEW_TOKENS" \
       $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
   else
     # 方案 1: 显式单卡环境绑定，避免 PEFT trainable_tokens 多卡切分张量不一致 bug
@@ -452,6 +457,7 @@ sys.exit(0 if arch in ('LlamaForCausalLM','MistralForCausalLM','Qwen2ForCausalLM
       --adapter_path "$INF_ADAPTER" \
       --data_file "$INFER_DATA" \
       --out "$RUN_DIR/$PRED_NAME" \
+      --max_new_tokens "$MAX_NEW_TOKENS" \
       $THINK_PREFIX_ARG 2>&1 | tee -a "$RUN_LOG"
   fi
   echo "$RUN_DIR/$PRED_NAME" > "$OUTPUT_DIR/latest_pred_path.txt"
@@ -541,7 +547,7 @@ log "              UNFREEZE_PROTOCOL_TOKENS=${UNFREEZE_PROTOCOL_TOKENS:-1}  THIN
 log "              TRAINER_BACKEND=${TRAINER_BACKEND:-auto}  NPROC=${NPROC:-自动}"
 log "              CANARY_EVERY=${CANARY_EVERY:-30}  CANARY_N=${CANARY_N:-3}  CANARY_MAX_NEW=${CANARY_MAX_NEW:-400}"
 # mix 比例只在上面 mix 分支里打印（traintest 复用产物时，比例来自当时的混合，不在本脚本手里）
-log "  混合/推理 : INFER_BACKEND=${INFER_BACKEND:-auto}  INFER_GPU=${INFER_GPU:-0}  INFER_DATA=${INFER_DATA:-默认val}"
+log "  混合/推理 : INFER_BACKEND=${INFER_BACKEND:-auto}  INFER_GPU=${INFER_GPU:-0}  INFER_DATA=${INFER_DATA:-默认val}  MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-1024}"
 log "  wandb     : SYNC_WANDB=${SYNC_WANDB:-0}  WANDB_PROJECT=${WANDB_PROJECT:-sentiment-sft}"
 log "              WANDB_RUN_NAME=${WANDB_RUN_NAME:-probe_${TS}${TAG:+_${TAG}}}"
 log "  输出      : RUN_DIR=$RUN_DIR"
