@@ -2,7 +2,7 @@
 
 这是 SFT + GRPO 方案的**最小可执行闭环**：下载 → 混合 → 训练 → 推理 → 评测，全程落盘日志，训练指标同步 wandb。
 
-> 本目录是自包含的：所有默认路径都指向 `tests/` 内部，**不需要**依赖上层目录。
+> 本目录是仓库根（`/root/autodl-tmp/senti`）：默认路径 AutoDL 上指向数据盘（`/root/autodl-tmp/models` / `/root/autodl-tmp/datasets`），本机自动退回仓库内 `models/`、`data/`。
 > 目标环境：AutoDL 单卡（RTX 4090 24GB / RTX 3090 24GB），Linux + Python 3.10+
 
 ---
@@ -10,7 +10,7 @@
 ## 0. 目录结构
 
 ```
-MVP/tests/
+<仓库根>/                       （AutoDL: /root/autodl-tmp/senti）
 ├── README.md                       ← 本文件
 ├── config/
 │   └── accelerate_grpo.yaml        ← GRPO 双卡 accelerate 基线（DDP+bf16；仅 GRPO 用，SFT 走 NPROC；num_processes 占位，由 run_grpo_train.sh 覆盖）
@@ -19,8 +19,7 @@ MVP/tests/
 │   ├── AutoDL上常用指令.md
 │   └── experiments/                ← 实验报告与实验待办
 ├── data/
-│   ├── train_synth_81.jsonl        ← 真实金标语料 81 条（异族打标 + 四查全过）
-│   ├── probe_test_sft_train_synth.jsonl ← 上者经 align 重写 instruction（显式输出协议版，当前探针用）
+│   ├── probe_test_sft_train_synth.jsonl ← SFT 探针训练数据 81 条（train_synth_81 经 align 重写 instruction，显式输出协议版；源文件已删，重跑 align 可再生成）
 │   ├── probe_test_grpo_train_synth.jsonl    ← GRPO 探针数据 50 条：{prompt, gold, input_text, meta}
 │   ├── gold500_test.jsonl           ★ 500 条冻结金标（seed500_final 经 convert_sft_data 转换，评测唯一成绩单）
 │   └── round1_train_aligned.jsonl   ← round1 训练批次 1524 条（10 行业，convert_sft_data 转换）
@@ -57,17 +56,21 @@ MVP/tests/
 │   └── test_sft_dataset.py         ★ SFT 专用 Dataset 单测（长度/掩码/权重三不变量 + parity gate）
 ├── prompts/                        ← gen/anno 双端提示词（单主体隔离锁在内）
 ├── scripts/                        ← 只放 CLI 入口（可执行脚本）
-│   ├── run_sft_e2e.sh            ★ 一键串跑（5 步）
+│   ├── run_sft_e2e.sh              ★ 一键串跑（5 步）
 │   ├── run_grpo_train.sh           ★ GRPO 后台启动（nohup + 时间戳日志 + PID + 拓扑选择）
+│   ├── run_grpo_probe.sh           ★ GRPO rollout 探针启动（与 run_grpo_train.sh 同产物布局）
+│   ├── convert_sft_data.py         ★ Schema v1 批次转换（金标/训练批次 → 评测链路格式）
+│   ├── human_recheck_kappa.py      ★ 人工复核 κ 一致性门禁
+│   ├── business_verify.py          业务规则校验
 │   ├── download_assets.py          1 下载：COIG-CQIA Anchor + 基座模型
 │   ├── align_sft_data.py           1.5 对齐：原文+meta → {instruction(显式输出协议), input, output} + 质检（纯规则零 LLM，模板唯一源 lib/task_template.py）
 │   ├── mix_sft_dataset.py          2 混合：9:1 + 分层切分 train/val
 │   ├── train_sft_lora.py           3 训练：LoRA + 覆写 compute_loss（掩码/加权随 POC 阶段切换）
-│   ├── sft_infer.py              4 推理：加载 Adapter 批量生成
+│   ├── sft_infer.py                4 推理：加载 Adapter 批量生成
 │   ├── check_format.py             格式 canary 独立检查（不启动训练，测任意「基座+adapter」组合）
 │   ├── evaluate_sft.py             5 评测：五段式（解析→指标→分桶→门禁→落盘 --out report.json）
 │   ├── inspect_sft_dataset.py      数据模板预览（原文→messages→渲染文本→token/权重四层；--check_parity 只跑字节比对）
-│   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；无 tokenizer 退化为字符级近似）
+│   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；--out 落统计 json / --log 追加日志，均可选；无 tokenizer 退化为字符级近似）
 │   ├── pick_hard_cases.py          难例选样（按 hard_case_type 过滤打印行号+摘要，对比样张/四档对照选样用）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
@@ -88,10 +91,10 @@ MVP/tests/
 ## 1. 一键跑通（推荐）
 
 ```bash
-cd MVP/tests
+cd /root/autodl-tmp/senti          # 本机则在仓库根
 chmod +x scripts/run_sft_e2e.sh
 
-# （可选）登录 wandb，登录后训练曲线会同步在线；不登录则只写本地日志
+# （可选）登录 wandb：仅当想在线看曲线时才需要，且要 SYNC_WANDB=1 才上传（见下表）
 wandb login
 
 ./scripts/run_sft_e2e.sh          # 全流程：download → mix → train → infer → test
@@ -115,11 +118,16 @@ wandb login
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WANDB_API_KEY` | 未设 | 设了就同步 wandb，不设只写本地日志 |
-| `MODEL_NAME` | `Qwen/Qwen3-4B-Instruct` | 换基座（对比 7B 消融时用） |
+| `SYNC_WANDB` | `0` | **wandb 开关**：`0`=探针默认不上传，只落本地日志；`=1` 且已登录（`WANDB_API_KEY` 或 `wandb login` 写入的 `~/.netrc`）才同步 wandb，项目 `sentiment-sft-probe` |
+| `BG` | 未设 | `BG=1` 训练转后台：nohup + PID 文件 + 日志重定向，断 SSH 不死 |
+| `MODEL_NAME` | `Qwen/Qwen3-4B-Instruct-2507` | 换基座（对比 7B 消融时用；注意 ModelScope 无裸名 `Qwen3-4B-Instruct`，必须带 `-2507` 后缀） |
+| `MODEL_DIR` | 自动 | 模型存放目录（AutoDL 默认 `/root/autodl-tmp/models`，本机退回仓库内 `models/`） |
+| `DATA_DIR` | 自动 | 公开数据集与混合产物目录（AutoDL 默认 `/root/autodl-tmp/datasets`，本机退回仓库内 `data/`） |
 | `EPOCHS` | `3` | 训练轮数 |
 | `SFT_POC_STAGE` | `POC1` | **Loss 消融阶段**：`POC1`=仅前缀掩码 / `POC2`=+骨架掩码 / `POC3`=+字段加权 FIELD_W（详见 §训练 与 `sft_weight_planner.POC_STAGE`） |
 | `TRAINER_BACKEND` | `auto` | 训练器后端：`auto`=有 trl 用 `trl.SFTTrainer` 否则 `transformers.Trainer` / `trl`=强制 trl（缺库报错）/ `hf`=强制 HF Trainer（同一份 compute_loss 覆写，加权口径一致） |
+| `INFER_BACKEND` | `hf` | **推理后端**：`hf`=方案1 单卡 PyTorch 原生（默认，避免 PEFT 多卡切分设备不一致 bug）/ `vllm`=方案3 高并发批量推理引擎 |
+| `INFER_GPU` | `0` | 方案 1 (hf) 绑定的单卡 GPU 编号（默认 0） |
 | `UNFREEZE_PROTOCOL_TOKENS` | `1` | **协议 token 解冻**：给 `<think>` / `</think>` 两行 embedding 挂可训练偏移（约 10 KB，随 adapter 落盘）。设 `0` 关闭，用于消融对照。详见「步骤 3c」 |
 | `THINK_PREFIX` | `0` | **前缀预置**：把 `<think>\n` 写进 assistant 前缀。默认关（已证实无额外收益，且会让 adapter 依赖推理端复现同一前缀）。设 `1` 开启 |
 | `CANARY_EVERY` | `30` | 格式 canary 检测间隔（优化步）；`0` 关闭 |
@@ -132,7 +140,7 @@ wandb login
 
 ```bash
 # 例子：7B 基座对照 + 强制重下 + 训练 2 轮
-MODEL_NAME=Qwen/Qwen2.5-7B-Instruct FORCE=1 EPOCHS=2 ./scripts/run_sft_e2e.sh
+MODEL_NAME=Qwen/Qwen3-4B-Instruct FORCE=1 EPOCHS=2 ./scripts/run_sft_e2e.sh
 
 # 例子：跑 POC2 消融（只开骨架掩码、字段仍等权）
 SFT_POC_STAGE=POC2 ./scripts/run_sft_e2e.sh train
@@ -143,7 +151,7 @@ SFT_POC_STAGE=POC2 ./scripts/run_sft_e2e.sh train
 三档共用同一份代码、只切一个环境变量，一次只动一个变量。
 
 ```bash
-cd tests/
+cd /root/autodl-tmp/senti          # 仓库根
 
 # 离线干跑：无 GPU 验证权重分配
 SFT_POC_STAGE=POC1 python3 scripts/train_sft_lora.py --dry_run --train_file data/mixed/sft_train.jsonl
@@ -173,9 +181,10 @@ python3 scripts/download_assets.py --download_anchor --anchor_samples 100 --data
 #   → data/coig_cqia_anchor.jsonl（已过滤任何带情感倾向的脏标）
 
 # 1b. 基座模型（AutoDL 用 ModelScope 国内直连，不需梯子）
-python3 scripts/download_assets.py --model Qwen/Qwen3-4B-Instruct \
-    --model_dir models --source modelscope
-#   → models/Qwen3-4B-Instruct/
+python3 scripts/download_assets.py --model Qwen/Qwen3-4B-Instruct-2507 \
+    --model_dir /root/autodl-tmp/models --source modelscope
+#   → /root/autodl-tmp/models/Qwen3-4B-Instruct-2507/
+#   ⚠️ ModelScope 上没有裸名 Qwen/Qwen3-4B-Instruct（404），必须带 -2507 后缀
 #   换 HuggingFace 源：--source huggingface
 ```
 
@@ -248,10 +257,10 @@ Val 分布: negative 4 / positive 3 / neutral 1（正负中齐备）
 
 ```bash
 python3 scripts/train_sft_lora.py \
-    --model_name_or_path models/Qwen3-4B-Instruct \
+    --model_name_or_path /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
     --train_file data/mixed/sft_train.jsonl \
     --val_file data/mixed/sft_val.jsonl \
-    --output_dir output/probe_lora \
+    --output_dir /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
     --num_train_epochs 3 \
     --per_device_train_batch_size 2 --gradient_accumulation_steps 4 \
     --learning_rate 1e-4 --lr_scheduler_type cosine \
@@ -267,7 +276,7 @@ python3 scripts/train_sft_lora.py \
 
 - **日志落盘**：`--log_file` 把终端输出**双写**到文件（`print` / transformers logging / tqdm 一并覆盖），中断也能回看。
 - **wandb**：设了 `WANDB_API_KEY` 自动同步（超参、FIELD_W、数据血缘进 config，每步 loss 上报）；不想同步加 `--no_wandb`，未装 wandb 会自动降级不报错。
-- **收尾产物**：`output/probe_lora/adapter_model.safetensors` + `output/probe_lora/train_metrics.json`（含 `train_loss` / 耗时 / 样本数）。
+- **收尾产物**：`<OUTPUT_DIR>/run_<时间戳>/sft_lora/adapter_model.safetensors` + 同目录 `train_metrics.json`（含 `train_loss` / 耗时 / 样本数）。OUTPUT_DIR：AutoDL 默认 `/root/autodl-tmp/models/sft_senti`（本机退回 `output/`）；adapter 全路径 `cat <OUTPUT_DIR>/latest_adapter_path.txt` 直接拿。历史 run 目录里目录名是 `probe_lora`，新训的才是 `sft_lora`。
 - **步数与停止口径**（启动时会打印「训练规模预算」区块）：
 
 | | 单卡 batch | 梯度累积 | 实际(有效) batch | 训练样本 | 每 epoch 优化器步 | 总步数 |
@@ -318,8 +327,8 @@ python3 scripts/train_sft_lora.py \
 ```bash
 python3 scripts/check_format.py \
     --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-    --adapter_path output/probe_lora \
-    --data_file data/mixed/sft_val.jsonl
+    --adapter_path /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
+    --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl
 ```
 
 **判读**
@@ -365,15 +374,26 @@ token id 通过 tokenizer（`format_canary.resolve_protocol_ids`）动态解析�
 ### 步骤 4 · 推理
 
 ```bash
+# 方案 1（默认推荐）：单卡 PyTorch 原生推理（自动绑单卡，避开多卡张量不一致 bug）
 python3 scripts/sft_infer.py \
-    --base_model models/Qwen3-4B-Instruct \
-    --adapter_path output/probe_lora \
-    --data_file data/mixed/sft_val.jsonl \
+    --backend hf \
+    --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter_path /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
+    --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \
+    --out output/pred_val.jsonl
+
+# 方案 3（大数据量 / 高并发）：vLLM 引擎（带 LoRA 批处理，需 pip install vllm）
+python3 scripts/sft_infer.py \
+    --backend vllm \
+    --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter_path /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
+    --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl \
     --out output/pred_val.jsonl
 ```
 
 实时输出三项合规率：**CoT 标签闭合率 / JSON 解析合法率 / evidence 原文命中率**。
 `--adapter_path` 留空可跑**裸基座对照**，用来量化 SFT 带来的增益。
+一键脚本中也可通过环境变量切换：`INFER_BACKEND=vllm ./scripts/run_sft_e2e.sh test`。
 
 ### 步骤 5 · 评测
 
@@ -396,6 +416,13 @@ python3 scripts/stat_seq_len.py \
     --train_file data/mixed/sft_train.jsonl \
     --tokenizer models/Qwen3-4B-Instruct-2507 --top_n 5
 
+# 可选产物（不给 = 只打印，零副作用）：
+#   --out <json>  统计结果存档   --log <file>  日志追加写
+python3 scripts/stat_seq_len.py \
+    --train_file data/mixed/sft_train.jsonl \
+    --tokenizer models/Qwen3-4B-Instruct-2507 \
+    --out output/seq_len_stats.json --log logs/seq_len_stats.log
+
 # 无 tokenizer 环境：字符级近似（1 汉字 ≈ 1.4 token）
 python3 scripts/stat_seq_len.py --train_file data/probe_test_sft_train_synth.jsonl
 ```
@@ -409,7 +436,7 @@ python3 scripts/stat_seq_len.py --train_file data/probe_test_sft_train_synth.jso
 
 ## 3. GRPO 探针（第二阶段：四维规则打分器）
 
-> 真理源：`MVP/notes/舆情负面精判_GRPO数据准备实战手册.md` §0.2 落盘契约 + §五 四维 Reward 契约。
+> 真理源：`notes/舆情负面精判_GRPO数据准备实战手册.md` §0.2 落盘契约 + §五 四维 Reward 契约（※ 手册暂未随仓库提交，引用以实际入库位置为准）。
 > 最终交付三样：`grpo_prompts_*.jsonl` + `reward_fns.py` + **零离线 completion**。
 
 ### 3.1 数据：题面 + 判卷标准，不带解题过程
@@ -519,16 +546,16 @@ python3 scripts/build_grpo_probe.py \
 **起点是一个完整模型目录，不是 adapter。** 先用 `merge_sft_adapter.py` 把 `base + ΔSFT` 合成一次：
 
 ```bash
-# 0) 合并 SFT adapter（一次性操作；产出 models/Qwen3-4B-Instruct-SFT）
+# 0) 合并 SFT adapter（一次性操作；产出 /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test）
 python3 scripts/merge_sft_adapter.py --dry_run \
-    --base models/Qwen3-4B-Instruct \
-    --adapter output/probe_lora_<时间戳> \
-    --out models/Qwen3-4B-Instruct-SFT
+    --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
+    --out /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test
 
 python3 scripts/merge_sft_adapter.py \
-    --base models/Qwen3-4B-Instruct \
-    --adapter output/probe_lora_<时间戳> \
-    --out models/Qwen3-4B-Instruct-SFT
+    --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
+    --out /root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test
 ```
 
 **为什么必须合并，而不是在训练脚本里 `load_adapter`**：TRL 算 KL 时走 `model.disable_adapter()`，它会关掉**全部** adapter。若 SFT adapter 与待训 GRPO LoRA 叠在同一个模型上，reference 会退化成裸基座 —— KL 惩罚变成「把策略往回忘掉 SFT」，β 越大坏得越快。合并以后 reference 天然就是 base+SFT，KL 才有意义。
@@ -542,11 +569,11 @@ python3 scripts/merge_sft_adapter.py \
 python3 scripts/train_grpo.py --data data/probe_test_grpo_train_synth.jsonl --dry_run
 
 # 2) 真实训练（AutoDL，需 pip install trl）
-./scripts/run_grpo_train.sh                       # 默认读 models/Qwen3-4B-Instruct-SFT
+./scripts/run_grpo_train.sh                       # 默认读 $MODEL（run_grpo_train.sh 默认 models/Qwen3-4B-Instruct-SFT）
 GRPO_ARGS="--limit 8 --max_steps 3" ./scripts/run_grpo_train.sh   # 先冒烟再放量
 
 # 对照实验：从原厂基座起训（不要 SFT 底子）
-MODEL=models/Qwen3-4B-Instruct ./scripts/run_grpo_train.sh
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 ./scripts/run_grpo_train.sh
 ```
 
 **干跑会打印这张超参表（每个数都能算出来源，不是拍的）**：
@@ -580,7 +607,8 @@ MODEL=models/Qwen3-4B-Instruct ./scripts/run_grpo_train.sh
 
 
 
-**版本要求**：`transformers>=4.55`（Qwen3 架构要 4.51+，TRL 0.14 不认 Qwen3）、`trl>=0.19`（本入口直接使用 `processing_class=`、`temperature` 与 `scale_rewards="none"`；不再兼容旧参数名/缺字段版本，配置字段不支持时应升级依赖而不是静默回退）。双卡 vLLM 拓扑（对齐参考实现 `12S2W10_rlhf/GRPO/run_train_2gpu.sh`）：走 `config/accelerate_grpo.yaml`（单机 DDP + bf16 基线，`num_processes: 1` 为占位值）+ 启动脚本 `--num_processes 1` 覆盖 → 1 训练进程占 cuda:0，colocate vLLM（`vllm_device="auto"`、`vllm_gpu_memory_utilization=0.3`）独占 cuda:1。
+**版本要求**（2026-10-28 真机锚定，以 `requirements.txt` 为准）：`trl==0.14.0` + `transformers==4.51.0`（Qwen3 支持下限，勿装 5.x——trl 0.14 不兼容）+ `torch==2.5.1` + `peft==0.20.0`；**deepspeed 必须卸载**（与 transformers 4.51 循环导入）。安装一律 `pip install -r requirements.txt`，**不要自行升级 `trl` / `vllm` / `torch`**。`train_grpo.py` 内置 5 个环境补丁（vllm 检测元组 / scale_rewards=none 运行时 patch / vLLM max_model_len 注入 / 显存预算），换版本前先过 `notes/GRPO环境踩坑实录_20261027.md`。
+**双卡 vLLM 采样（✅ 2026-10-28 已跑通，run_20261028_115727_smoke）**：`NPROC=2`（或机器 ≥2 卡自动）走「accelerate 1 训练进程 cuda:0 + vLLM 独占 cuda:1」。显存三件套已固化默认值：batch `2×4`（每步拓扑不变 8 题×G4）、`--gradient_checkpointing`、vLLM utilization `0.9`（KV 12.3G / 并发 ~35x，32 条 rollout 一波发完）；`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 由 `run_grpo_train.sh` 自动 export。vllm 0.7.3 不在 requirements，需手动装（见文件头注释）。单卡环境自动降级 HF generate + `CUDA_VISIBLE_DEVICES=0`（DataParallel 防呆保留）。
 
 
 ### 3.6 难度分流：`run_grpo_probe.py`（只留 k∈{1,2,3}）
@@ -589,11 +617,12 @@ MODEL=models/Qwen3-4B-Instruct ./scripts/run_grpo_train.sh
 # 干跑：用 gold 反构「标准答案」当采样结果，验数据 + 打分器 + 分桶全链路
 python3 scripts/run_grpo_probe.py --data data/probe_test_grpo_train_synth.jsonl --dry_run
 
-# 真实 rollout（SFT 探针训完后）
+# 真实 rollout（SFT 探针训完后；裸基座 + adapter 分体挂载。k 分布是「合并 SFT 模型」口径的话，
+# 请先跑 §3.5 的 merge，再 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test 且不传 --adapter）
 python3 scripts/run_grpo_probe.py \
     --data data/probe_test_grpo_train_synth.jsonl \
-    --base_model models/Qwen3-4B-Instruct \
-    --adapter output/probe_lora \
+    --base_model /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter /root/autodl-tmp/models/sft_senti/run_<时间戳>/sft_lora \
     --g 4 --temperature 0.7 --max_new_tokens 512 \
     --out output/grpo/grpo_probe_kstats.json
 ```
@@ -627,9 +656,9 @@ python3 scripts/run_grpo_probe.py \
 
 | 产物 | 位置 | 用途 |
 |---|---|---|
-| LoRA Adapter | `output/probe_lora*/` | 下一步 GRPO 的起点 |
+| LoRA Adapter | `/root/autodl-tmp/models/sft_senti/run_*/sft_lora/`（本机 `output/run_*/`） | 下一步 GRPO 的起点 |
 | 训练日志 | `logs/train_probe_*.log` | 断点回看、面试演示 |
-| 训练指标 | `output/probe_lora*/train_metrics.json` | 多轮探针对比 |
+| 训练指标 | `<OUTPUT_DIR>/run_*/sft_lora/train_metrics.json` | 多轮探针对比 |
 | wandb 曲线 | `sentiment-sft-probe` 项目 | loss 收敛可视化 |
 | 预测文件 | `output/pred_*.jsonl` | 喂给 `evaluate_sft` 模式 B |
 | 评测报告 | 终端 + `logs/probe_e2e_*.log` | 难点/行业分桶准确率 |
@@ -643,9 +672,8 @@ python3 scripts/run_grpo_probe.py \
 **全量自检一条命令**（零外部依赖，任何机器都能跑）：
 
 ```bash
-cd MVP/tests
-python3 -m unittest unit.test_reward_fns unit.test_weight_planner unit.test_grpo_probe unit.test_eval_metrics unit.test_evaluate_sft unit.test_rubric_check unit.test_release_gate unit.test_align_sft_data
-# （test_build_eval_set 已随脚本归档；test_align_sft_data 为对齐器单测）
+cd /root/autodl-tmp/senti          # 仓库根
+python3 -m unittest discover -s unit -p "test_*.py"   # 342 项，当前全绿
 ```
 
 ### 5.1 评测与发布门（评估手册缺口 1~5、11~18 已落地）
@@ -692,12 +720,14 @@ python3 scripts/eval_four_tier.py --gold data/gold500_test.jsonl \
 | 现象 | 处理 |
 |---|---|
 | `缺少依赖: torch transformers peft` | `pip install torch transformers peft accelerate wandb` |
-| GRPO 报 `No module named 'trl'` | `pip install 'transformers>=4.55' 'trl>=0.19' 'peft>=0.12' datasets`（Qwen3 要 4.51+，TRL 0.14 不认） |
+| 推理报 `Expected all tensors to be on the same device, but found at least two devices, cuda:1 and cuda:0!` | 多卡环境下 PEFT `trainable_tokens` 跨卡切分 bug。切回默认方案 1 单卡跑：`INFER_BACKEND=hf INFER_GPU=0`（或直跑前加 `CUDA_VISIBLE_DEVICES=0`） |
+| GRPO 报 `No module named 'trl'` | `pip install -r requirements.txt`（trl==0.14.0 + transformers==5.15.0 真机锚定组合，**别手装升级版**；踩坑见 `notes/GRPO环境踩坑实录_20261027.md`） |
 | GRPO 启动就报「batch 不能被 G 整除」 | `--per_device_train_batch_size` 必须是 G 的倍数（默认 4，G=4 合法） |
-| GRPO 日志提示「无 temperature 字段」 | TRL 太老；不升级的话 T 若为 0，组内方差恒 0，RL 会退化成更贵的 SFT |
-| GRPO 慢 / rollout 占时间 | 单卡默认 HF generate；有 2 卡用 `run_grpo_train.sh`（自动开 vLLM，走 `config/accelerate_grpo.yaml` + `--num_processes 1` 覆盖：1 训练进程占 cuda:0 + vLLM 独占 cuda:1。`--num_processes N` = accelerate 启动 N 个训练进程各绑一张卡，双卡拓扑下 N=GPU−1，留一张卡给 colocate vLLM） |
+| GRPO 日志提示「无 temperature 字段」 | TRL 版本与 `requirements.txt` 锚定组合不符；TRL 太老时 T 若为 0，组内方差恒 0，RL 会退化成更贵的 SFT |
+| GRPO 慢 / rollout 占时间 | 双卡走 `NPROC=2` 自动开 vLLM（✅ 已跑通，utilization 0.9 / 并发 ~35x）；单卡自动降级 HF generate |
+| GRPO OOM（24G 卡） | 默认已固化 batch 2×4 + `--gradient_checkpointing` + `expandable_segments:True`；仍 OOM 再降 `--per_device_train_batch_size 1 --gradient_accumulation_steps 8` |
 | COIG-CQIA 拉取超时 | 脚本已自动落盘内置兜底包；或 `pip install modelscope` 后重试 |
 | wandb 提示未登录 | `wandb login`，或加 `--no_wandb` 关掉 |
 | OOM | 降 `--per_device_train_batch_size 1 --gradient_accumulation_steps 8` |
-| 想换 7B 对照 | `MODEL_NAME=Qwen/Qwen2.5-7B-Instruct ./scripts/run_sft_e2e.sh all` |
+| 想换 7B 对照 | `MODEL_NAME=Qwen/Qwen3-4B-Instruct ./scripts/run_sft_e2e.sh all` |
 | `loss_weights` 被 Trainer 丢掉 | 训练命令里必须保留 `--remove_unused_columns false` |

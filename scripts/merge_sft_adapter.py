@@ -20,13 +20,13 @@ SFT adapter 合并：base + ΔSFT → 一个可直接当基座读的完整模型
   # 体检（不 import torch，任何机器可跑）
   python3 scripts/merge_sft_adapter.py \
       --base models/Qwen3-4B-Instruct \
-      --adapter output/probe_lora_20261022_101500 \
+      --adapter output/run_20261022_101500/sft_lora \
       --out models/Qwen3-4B-Instruct-SFT --dry_run
 
   # 合并（含合并前后 logits 一致性校验）
   python3 scripts/merge_sft_adapter.py \
       --base models/Qwen3-4B-Instruct \
-      --adapter output/probe_lora_20261022_101500 \
+      --adapter output/run_20261022_101500/sft_lora \
       --out models/Qwen3-4B-Instruct-SFT
 """
 

@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from reward_fns import extract_input_text                              # noqa: E402
+from reward_fns import extract_input_text, split_completion           # noqa: E402
 from grpo_common import (                                              # noqa: E402
     bucket_label, k_of, score_one,
 )
@@ -75,6 +75,7 @@ def score_group(prompt: str, completions: Sequence[str], gold: Dict[str, Any],
         totals.append(r["total"])
         details.append(r["detail"])
         d = r["detail"]
+        # 逐条标签级对错 + 各 reward 分量 (调 reward_fns 权重时逐轨迹看哪一维吃亏)
         flags.append({
             "short_circuit": d.get("short_circuit"),
             "sentiment_ok": bool(d.get("sentiment_ok")),
@@ -84,6 +85,14 @@ def score_group(prompt: str, completions: Sequence[str], gold: Dict[str, Any],
             "accuracy_pass": bool(d.get("accuracy_pass")),
             "miss_severe": bool(d.get("miss_severe")),
             "false_alarm": bool(d.get("false_alarm")),
+            # 四维 reward 分量 (门禁短路时 r_accuracy/r_length 恒 0)
+            "r_format": r.get("r_format"),
+            "r_grounding": r.get("r_grounding"),
+            "r_accuracy": r.get("r_accuracy"),
+            "r_length": r.get("r_length"),
+            # 模型原始预测 (与 gold 逐字段对看; 门禁短路时为 None)
+            "pred": d.get("pred"),
+            "parse_flags": split_completion(comp)[2],
         })
     k = k_of(details)
     return {"totals": totals, "k": k, "bucket": bucket_label(k, g),
@@ -117,10 +126,25 @@ def run_probe(records: Sequence[Dict[str, Any]], sampler: Sampler,
             "industry": rec.get("meta", {}).get("industry"),
             "totals": res["totals"],
             "flags": res["flags"],
+            # 调 reward 用原始材料: gold 全字段 + 原文 + G 条 completion 原文,
+            # 配合 flags[].pred / r_* 分量逐轨迹定位「哪一维 reward 咬掉了这条」
+            "gold": gold,
+            "input_text": res["input_text"],
+            "completions": list(comps),
         })
-        # 逐条回显：每题 G 份生成是最耗时的部分，无回显时像卡死
-        k = rows[-1]["k"]
-        print(f"[PROBE {i+1}/{n}] k={k} ({rows[-1]['bucket']})", flush=True)
+        # 逐条回显：每题 G 份生成是最耗时的部分，无回显时像卡死。
+        # 尾部摘要 = G 条轨迹的标签对错计数，log 里直接看出这题各字段战绩
+        # (明细仍以 rows.jsonl 的 flags[].pred / r_* 为准)
+        fg = res["flags"]
+        n_pass = sum(1 for f in fg if f["accuracy_pass"])
+        n_gate = sum(1 for f in fg if f["short_circuit"])
+        label_sum = {name: sum(1 for f in fg if f[name])
+                     for name in ("sentiment_ok", "risk_ok",
+                                  "hard_case_ok", "relevance_ok")}
+        rows[-1]["_echo"] = (f"k={res['k']} ({rows[-1]['bucket']})  "
+                             f"判对{n_pass}/{g} 门禁短路{n_gate}  "
+                             + " ".join(f"{n}×{ln}" for ln, n in label_sum.items()))
+        print(f"[PROBE {i+1}/{n}] {rows[-1]['_echo']}", flush=True)
     return rows
 
 

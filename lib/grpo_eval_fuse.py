@@ -12,7 +12,8 @@ from typing import Any, Dict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: int):
+def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: int,
+                        eval_rows=None):
     """
     建立 eval reward 熔断 callback；超阈值时告警，可选停止训练。
 
@@ -30,12 +31,18 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
     holder: Dict[str, Any] = {"trainer": None}        # 闭包状态：trainer 引用
 
     class _FuseCallback(TrainerCallback):
-        def on_evaluate(self, args, trainer_state, control, **kwargs):
+        # 用 on_step_end 周期触发而不是 on_evaluate：Trainer 内置 eval 已关
+        # （eval_strategy=no，prediction_step 会炸 list batch），on_evaluate 永远
+        # 不会被调用。本 callback 自带采样打分，按 state.global_step % eval_steps 节流。
+        def on_step_end(self, args, state, control, **kwargs):
             trainer = holder.get("trainer")
-            if trainer is None:
+            if trainer is None or state.global_step == 0:
+                return control
+            eval_steps = getattr(args, "eval_steps", 0) or 0
+            if eval_steps <= 0 or state.global_step % eval_steps != 0:
                 return control
             try:
-                current = _eval_reward_mean(trainer, reward_fn, g)
+                current = _eval_reward_mean(trainer, reward_fn, g, eval_rows)
             except Exception as exc:
                 print(f"[WARN] eval 打分失败，跳过本轮熔断判定: {exc}")
                 return control
@@ -61,7 +68,7 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
     def initialize_baseline(trainer):
         """训练前用当前策略评估一次，避免把首个训练中 eval 错当基线。"""
         holder["trainer"] = trainer
-        baseline = _eval_reward_mean(trainer, reward_fn, g)
+        baseline = _eval_reward_mean(trainer, reward_fn, g, eval_rows)
         fuse_state["baseline"] = baseline
         print(f"[EVAL] pre-train baseline reward 均值 = {baseline:.4f}")
         return baseline
@@ -71,17 +78,20 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
     return callback
 
 
-def _eval_reward_mean(trainer, reward_fn, g: int) -> float:
+def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
     """
-    对 eval_dataset 逐题采一条 completion，用 reward_fn 打分取均值。
+    对 eval 集逐题采一条 completion，用 reward_fn 打分取均值。
 
     与训练同一个 reward_fn —— 「退化」的定义就是奖励分本身在掉。
     每题只采 1 条（eval 求稳定均值，无需 G 组内对比）。
+
+    eval_rows: 元数据行列表（含 gold_* 列），必传——trainer.eval_dataset 已置 None
+    （Trainer 内置 eval 走 prediction_step 会炸 list batch，见 train_grpo 注释），
+    prompt 与 gold 全部从这里拿。
     """
     import torch
 
     tokenizer = trainer.processing_class
-    dataset = trainer.eval_dataset
     cfg = trainer.args
     max_new = getattr(cfg, "max_completion_length", 200) or 200
     temperature = getattr(cfg, "temperature", 0.7) or 0.7
@@ -91,7 +101,12 @@ def _eval_reward_mean(trainer, reward_fn, g: int) -> float:
     totals = []
     try:
         with torch.no_grad():
-            for row in dataset:
+            if not eval_rows:
+                raise ValueError("eval_rows 为空：独立 eval callback 需要 eval_rows "
+                                 "(pre-train baseline 或 eval_file)，不能依赖 "
+                                 "trainer.eval_dataset（已置 None）")
+            meta_rows = eval_rows
+            for row in meta_rows:
                 prompt = row["prompt"]
                 if not isinstance(prompt, str):
                     raise TypeError("独立 eval callback 只接受字符串 prompt")

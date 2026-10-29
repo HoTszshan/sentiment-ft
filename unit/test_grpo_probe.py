@@ -189,10 +189,14 @@ class TestBudget(unittest.TestCase):
         self.assertIn("JSON", budget_note(GrpoHyper()))
 
     def test_generation_shape_valid_and_invalid(self):
+        # trl 0.14 语义: per_device=prompt 数, 无整除约束 (任意 ≥1 合法);
+        # 整除报错只在 trl>=1.x 有意义 (validate_generation_shape 已按版本语义放宽)
         self.assertIsNone(validate_generation_shape(51, 4, 4, 1))
-        self.assertIsNotNone(validate_generation_shape(51, 4, 2, 1))   # 2 不能被 4 整除
-        self.assertIsNotNone(validate_generation_shape(51, 0, 4, 1))
+        self.assertIsNone(validate_generation_shape(51, 4, 2, 1))      # 0.14: 合法
+        self.assertIsNone(validate_generation_shape(51, 4, 1, 1))      # 0.14: 合法 (冒烟实测)
         self.assertIsNone(validate_generation_shape(51, 4, 4, 2))      # 8 % 4 == 0
+        self.assertIsNotNone(validate_generation_shape(51, 0, 4, 1))   # G 必须 ≥1
+        self.assertIsNotNone(validate_generation_shape(51, 4, 0, 1))   # per_device ≥1
 
     def test_zam_equivalence(self):
         self.assertTrue(assert_zam_equivalence())
@@ -481,7 +485,7 @@ class TestFuseCallbackBuildAndFuse(unittest.TestCase):
         it = iter(seq)
         calls = []
 
-        def eval_mean(tr, rf, g):
+        def eval_mean(tr, rf, g, eval_rows=None):
             calls.append(True)
             value = next(it)
             if isinstance(value, Exception):

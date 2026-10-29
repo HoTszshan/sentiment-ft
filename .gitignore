@@ -18,3 +18,5 @@ data/*_report.json
 data/report/
 .claude/tmp*
 data/grpo
+train_grpo_pid.txt
+notes/

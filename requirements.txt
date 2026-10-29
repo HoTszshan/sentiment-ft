@@ -1,0 +1,35 @@
+# 舆情负面精判 · 探针环境 (SFT + GRPO 共用)
+# 安装: pip install -r requirements.txt
+# 基座模型 Qwen3 要 transformers>=4.51; 实测组合以 == 锚定 (2026-10-27 真机验证)
+#
+# vllm 0.7.3 如需手动安装 (阿里云镜像):
+#   pip install vllm==0.7.3 -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+# ⚠️ vllm 0.7.3 需手动安装 (清华镜像):
+#   pip install vllm==0.7.3 -i https://pypi.tuna.tsinghua.edu.cn/simple
+# ✅ 2026-10-28 已跑通双卡拓扑 (run_20261028_115727_smoke):
+#  - vllm 0.7.3 + trl 0.14 + transformers 4.51 可用, 前提:
+#    a) transformers 4.51 而非 5.x (Qwen3 支持 + trl 0.14 兼容)
+#    b) 双卡: 训练 cuda:0 + vLLM 独占 cuda:1 (单卡 colocate 显存仍超限)
+#    c) train_grpo.py 内置 5 个环境补丁 (max_model_len 注入等)
+#  - deepspeed 必须 pip uninstall (与 transformers 4.51 循环导入)
+
+# torch 三件套: 先加 cu124 源再装 (CUDA 12.4 轮子不在默认 PyPI)
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt   (其余包)
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# transformers==5.15.0
+transformers==4.51.0
+trl==0.14.0
+peft==0.20.0
+accelerate==1.14.0
+datasets==5.0.1
+safetensors==0.8.0
+tokenizers==0.22.2
+numpy==1.26.4
+
+# 工具链
+modelscope==1.39.1
+wandb==0.28.2

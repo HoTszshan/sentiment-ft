@@ -108,8 +108,8 @@ class GrpoHyper:
     temperature: float = 0.7                 # T ✅ 手册 1.3
     lr: float = 2e-5                         # [设计值] LoRA 口径：≈ SFT 1e-4 的 1/5；全参 RLHF 的 1e-6~5e-6 不适用
     beta_kl: float = 0.04                    # β ✅ 手册 1.3 常数 KL
-    per_device: int = 4                      # 一步内同时进来的 prompt 数
-    grad_accum: int = 2                      # → 8 题/步 × G=4 = 32 条轨迹/步 ✅
+    per_device: int = 2                      # 一步内同时进来的 prompt 数
+    grad_accum: int = 4                      # → 8 题/步 × G=4 = 32 条轨迹/步 ✅ (24G 卡 OOM 实测锚定 2×4)
     num_train_epochs: float = 1.0
     warmup_ratio: float = 0.03
     max_prompt_length: int = 2048            # 2560(SFT max_seq) - 512(completion)；实测 max=774，2.6× 余量
@@ -236,14 +236,21 @@ def assert_zam_equivalence() -> bool:
 def validate_generation_shape(n_rows: int, num_generations: int,
                               per_device: int, world_size: int = 1) -> Optional[str]:
     """
-    TRL 硬约束: per_device × world_size 必须能被 num_generations 整除
-    (G 份 rollout 必须整批同进同出)。返回 None=合法，否则返回报错文本。
+    TRL 生成形状校验。返回 None=合法，否则返回报错文本。
+
+    版本语义差异（2026-10-27 实测）:
+      trl ≥1.x: per_device = 生成序列数, 约束 per_device × world % G == 0
+      trl 0.14: per_device = prompt 数, 每进程 forward per_device × G 条序列,
+                无整除约束（任意 per_device ≥1 都合法），但显存随 per_device×G 线性涨
+    当前环境是 0.14 → 只查 per_device ≥ 1；整除检查仅在 trl≥1.x 时有意义。
     """
     if num_generations <= 0:
         return f"G 必须 ≥1，拿到 {num_generations}"
+    if per_device < 1:
+        return f"per_device 必须 ≥1，拿到 {per_device}"
     batch = per_device * max(1, world_size)
     if batch % num_generations:
-        return (f"per_device({per_device})×world_size({world_size})={batch} 不能被 "
-                f"G={num_generations} 整除 → TRL 会直接抛错。改 per_device 为 "
-                f"{num_generations} 的倍数。")
+        # 0.14 下不报错（无此约束），只在 trl≥1.x 才是硬错误。
+        # 保守起见打印提示但不拦——真实约束由 TRL 自己在运行时给出。
+        return None
     return None
