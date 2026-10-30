@@ -83,16 +83,56 @@ def _messages(instruction: str, input_text: str,
     return msgs
 
 
-def render_prompt(tokenizer: Any, instruction: str, input_text: str) -> str:
-    """渲染 生成前缀（训练掩码区 = 推理输入），止于 `<|im_start|>assistant\n`。训练与推理必须同源调用。"""
+def render_prompt(tokenizer: Any, instruction: str, input_text: str,
+                  few_shot: Optional[List[Dict[str, str]]] = None,
+                  few_shot_mode: str = "full") -> str:
+    """渲染 生成前缀（训练掩码区 = 推理输入），止于 `<|im_start|>assistant\n`。训练与推理必须同源调用。
+
+    few_shot（可选，T2 提示词加固专用）：每条 {"instruction","input","output"}。
+    仅推理侧传参使用；训练侧任何调用不得传入（保持与训练模板同源）。
+
+    few_shot_mode 控制示例的注入形态（few-shot 示例含完整 CoT 时 token 膨胀严重，
+    实测 3 条 full 注入 prompt 达 4000+ token，故提供紧凑档）：
+      "full"    —— 每条示例完整三段（system 指令 → user 输入 → assistant 金标全量），
+                   3 条约 +3350 token；最贴近训练分布，格式示范最完整。
+      "compact" —— 指令只注入一次（首条 system），示例折叠为
+                   「user: 目标主体+原文 → assistant: 仅金标 JSON（去 CoT）」，
+                   3 条约 +450 token；格式示范保留（JSON 形态可见），CoT 示范放弃。
+    """
     if tokenizer is not None and has_chat_template(tokenizer):
-        prompt = _chat(tokenizer, _messages(instruction, input_text),
+        msgs: List[Dict[str, str]] = []
+        if few_shot:
+            if few_shot_mode == "compact":
+                # 指令只出现一次；示例不带 CoT（JSON 保留），防 token 膨胀
+                for k, ex in enumerate(few_shot):
+                    if k == 0:
+                        msgs.extend(_messages(ex.get("instruction", "") or "",
+                                              ex.get("input", "") or "",
+                                              _strip_cot(ex.get("output", "") or "")))
+                    else:
+                        msgs.append({"role": "user", "content": ex.get("input", "") or ""})
+                        msgs.append({"role": "assistant",
+                                     "content": _strip_cot(ex.get("output", "") or "")})
+            else:  # full
+                for ex in few_shot:
+                    msgs.extend(_messages(ex.get("instruction", "") or "",
+                                          ex.get("input", "") or "",
+                                          _assistant_content(ex.get("output", "") or "")))
+        msgs.extend(_messages(instruction, input_text))
+        prompt = _chat(tokenizer, msgs,
                        add_generation_prompt=True)
     else:
         prompt = _legacy_prompt(instruction, input_text)
     if USE_THINK_PREFIX:
         prompt += THINK_PREFIX
     return prompt
+
+
+def _strip_cot(output: str) -> str:
+    """去掉 output 里的 <think>…</think> CoT 段，只留 JSON（few-shot compact 模式用）。"""
+    import re
+    m = re.search(r"</think>\s*(.*)$", output, re.DOTALL)
+    return m.group(1).strip() if m else output
 
 
 def _strip_think_prefix(output: str) -> str:

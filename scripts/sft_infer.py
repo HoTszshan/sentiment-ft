@@ -49,6 +49,13 @@ def main():
     ap.add_argument("--think_prefix", action="store_true",
                     help="前缀预置：在 assistant 前缀尾部追加 '<think>\\n'。"
                          "必须与训练侧一致（训练默认关；训练开过才加此 flag）")
+    ap.add_argument("--few_shot_file", default="",
+                    help="T2 提示词加固：few-shot 示例文件（JSONL，含 instruction/input/output）。"
+                         "提供时把示例以 multi-turn 对话形式插入 system/user 之前的消息序列，"
+                         "只影响本次推理的 prompt，不动训练与评测链路")
+    ap.add_argument("--few_shot_mode", choices=["full", "compact"], default="full",
+                    help="few-shot 注入形态：full=完整三段（含 CoT，3 条约 +3350 token）；"
+                         "compact=指令一次+示例仅 JSON（3 条约 +1340 token，需 max_model_len≈3100）")
     ap.add_argument("--backend", choices=["hf", "vllm"], default="hf",
                     help="推理引擎: hf (单卡 PyTorch 原生，默认稳定) | vllm (高吞吐批量推理)")
     ap.add_argument("--gpu_memory_utilization", type=float, default=0.7,
@@ -71,6 +78,15 @@ def main():
 
     # 渲染协议开关：与训练侧同源（prompt_template.set_think_prefix）
     pt.set_think_prefix(args.think_prefix)
+
+    # T2 提示词加固：加载 few-shot 示例（不训练，只改 prompt；不触碰训练/评测链路）
+    few_shot_rows: list = []
+    if args.few_shot_file:
+        if not Path(args.few_shot_file).exists():
+            raise SystemExit(f"[FATAL] 找不到 few-shot 文件: {args.few_shot_file}")
+        few_shot_rows = [json.loads(l) for l in open(args.few_shot_file, encoding="utf-8")
+                         if l.strip()]
+        _say(f"[T2] few-shot 示例: {len(few_shot_rows)} 条 (来自 {args.few_shot_file})")
 
     try:
         import torch
@@ -112,7 +128,9 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True,
                                                   padding_side="left")
         prompts = [
-            pt.render_prompt(tokenizer, r.get("instruction", "") or "", r.get("input", "") or "")
+            pt.render_prompt(tokenizer, r.get("instruction", "") or "", r.get("input", "") or "",
+                             few_shot=few_shot_rows or None,
+                             few_shot_mode=args.few_shot_mode)
             for r in rows
         ]
 
@@ -126,8 +144,9 @@ def main():
             max_lora_rank=64 if enable_lora else None,
             tensor_parallel_size=1,
             # 模型原生 max_position=256K，KV cache 装不下会直接拒启动；
-            # prompt p99≈840 token + 生成 512，2048 绰绰有余
-            max_model_len=2048,
+            # prompt p99≈840 token + 生成 512，2048 绰绰有余；
+            # few-shot full 模式下 prompt 可到 4000+，自动放宽（compact 也超 2048）
+            max_model_len=5120 if args.few_shot_file else 2048,
         )
         _say(f"[TIME] 引擎+模型加载: {time.time()-t_load:.1f}s")
 
@@ -198,7 +217,9 @@ def main():
                                    "[{elapsed}<{remaining}, {rate_fmt}{postfix}]")
             for i, row in enumerate(rows, 1):
                 prompt = pt.render_prompt(tokenizer, row.get("instruction", "") or "",
-                                          row.get("input", "") or "")
+                                          row.get("input", "") or "",
+                                          few_shot=few_shot_rows or None,
+                                          few_shot_mode=args.few_shot_mode)
                 # add_special_tokens=False: 模板首字符就是 <|im_start|>，再补 BOS 会与训练侧分叉
                 inputs = tokenizer(prompt, return_tensors="pt",
                                    add_special_tokens=False).to(device)
