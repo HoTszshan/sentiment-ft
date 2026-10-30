@@ -39,6 +39,43 @@ from grpo_common import (                                              # noqa: E
 # 采样器契约: (prompt, g) -> g 条 completion 文本
 Sampler = Callable[[str, int], List[str]]
 
+# 批量采样器契约: ([prompt...], g) -> List[List[g 条 completion]]，与 records 等长同序。
+# vLLM 批量进队专用：把生成与打分解耦，生成一次跑完，打分循环零改动。
+BatchSampler = Callable[[Sequence[str], int], List[List[str]]]
+
+
+def run_probe_batch(records: Sequence[Dict[str, Any]], batch_sampler: BatchSampler,
+                    g: int = 4) -> List[Dict[str, Any]]:
+    """
+    run_probe 的批量快路径: 所有 prompt 一次性进队 vLLM（连续批处理吃满吞吐），
+    生成完毕后按题切 G 份复用 score_group，打分与逐题行结构与 run_probe 完全一致。
+    """
+    prompts = [rec["prompt"] for rec in records]
+    groups = batch_sampler(prompts, g)
+    if len(groups) != len(records):
+        raise ValueError(f"批量采样器返回 {len(groups)} 组，期望 {len(records)} 组")
+    # 复用单题路径: 把每组 completions 包成逐题 sampler，行结构/回显逻辑一处维护
+    it = iter(groups)
+    return run_probe(records, lambda _prompt, n: next(it)[:n], g=g)
+
+
+def export_pool(records: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]],
+                g: int, out_path: str) -> Dict[str, int]:
+    """
+    按探针结果导出 GRPO 训练池: 只留 k∈{1..g-1} 的原题行 (k=0/k=g 组内零方差, RL 无梯度)。
+    行对齐用 rows[].idx（探针数据行无稳定 event_id，idx 是 records 的下标，恒可靠）。
+    返回统计 {kept, dropped_k0, dropped_kmax, total}; out_path 为空串则只统计不落盘。
+    """
+    keep_idx = {r["idx"] for r in rows if 1 <= r["k"] <= g - 1}
+    kept = [rec for i, rec in enumerate(records) if i in keep_idx]
+    stat = {"kept": len(kept), "dropped_k0": sum(1 for r in rows if r["k"] == 0),
+            "dropped_kmax": sum(1 for r in rows if r["k"] == g), "total": len(records)}
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
+            for rec in kept:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return stat
+
 
 # ============================================================
 # 纯逻辑 (可单测)
