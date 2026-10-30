@@ -47,6 +47,7 @@ from grpo_common import (                                            # noqa: E40
 from grpo_probe_core import (                                        # noqa: E402
     Sampler, oracle_sampler, run_probe,
 )
+# run_probe_batch 延迟导入（仅 --backend vllm 用），保持 HF/dry_run 路径零新依赖
 
 
 def print_summary(summary: Dict[str, Any], g: int, elapsed: float) -> None:
@@ -135,6 +136,68 @@ def build_model_sampler(base_model: str, adapter: Optional[str], g: int,
     return _sampler
 
 
+def build_vllm_batch_sampler(base_model: str, adapter: Optional[str], g: int,
+                             temperature: float, max_new_tokens: int,
+                             gpu_memory_utilization: float = 0.9):
+    """
+    vLLM 批量采样器（对齐 sft_infer.py 的引擎参数，含踩坑结论）:
+    ([prompt...], g) -> 每条 prompt g 份 completion。一次性全部进队，
+    连续批处理吃满吞吐——1098 题 × G=4 约 4400 次生成，HF generate 1~3 小时，
+    vLLM 分钟级。
+    """
+    from vllm import LLM, SamplingParams
+    from vllm.lora.request import LoRARequest
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True,
+                                        padding_side="left")
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    enable_lora = bool(adapter)
+    t_load = time.time()
+    llm = LLM(
+        model=base_model,
+        trust_remote_code=True,
+        gpu_memory_utilization=gpu_memory_utilization,
+        enable_lora=enable_lora,
+        max_lora_rank=64 if enable_lora else None,
+        tensor_parallel_size=1,
+        # 防坑 (train_grpo.py 补丁④同源): 模型原生 max_position 256K，
+        # 不限 max_model_len 时 KV profiling 直接 OOM。
+        # prompt p99≈840 + 生成 512，2048 绰绰有余 (sft_infer 实测口径)。
+        max_model_len=2048,
+    )
+    print(f"[PROBE] vLLM 引擎+模型加载: {time.time()-t_load:.1f}s")
+
+    sampling_params = SamplingParams(
+        n=g,
+        temperature=temperature,
+        top_p=0.9 if temperature > 0 else 1.0,
+        max_tokens=max_new_tokens,
+    )
+    lora_req = LoRARequest("probe_adapter", 1, adapter) if enable_lora else None
+
+    def _batch_sampler(prompts, n):
+        t_gen = time.time()
+        outputs = llm.generate(list(prompts), sampling_params, lora_request=lora_req)
+        dt = time.time() - t_gen
+        print(f"[PROBE] 批量生成 {len(prompts)} 题 × G={n}: {dt:.1f}s "
+              f"(吞吐 {len(prompts)*n/max(dt,1e-9):.1f} 轨迹/s)")
+        groups = []
+        for out in outputs:
+            texts = [c.text for c in out.outputs][:n]
+            if len(texts) != n:
+                raise ValueError(f"vLLM 返回 {len(texts)} 份，期望 G={n}")
+            # 截尾部 pad，保留 CoT 标签（与 HF 路径同一清洗口径）
+            groups.append([
+                re.sub(r"(?:<\|im_end\|>|<\|endoftext\|>)+\s*$", "", t or "").strip()
+                for t in texts])
+        return groups
+
+    return _batch_sampler
+
+
 # ============================================================
 # main
 # ============================================================
@@ -146,6 +209,14 @@ def main():
     ap.add_argument("--rows_out", default=None, help="逐题明细 jsonl（默认与 --out 同名 .rows.jsonl）")
     ap.add_argument("--base_model", default=None, help="基座路径/名（--dry_run 时可不给）")
     ap.add_argument("--adapter", default=None, help="SFT LoRA adapter 目录；留空 = 裸基座对照")
+    ap.add_argument("--backend", default="hf", choices=["hf", "vllm"],
+                    help="hf=transformers 逐题 generate（兼容旧路径）；"
+                         "vllm=批量进队（1098 题 × G=4 分钟级，推荐）")
+    ap.add_argument("--gpu_memory_utilization", type=float, default=0.9,
+                    help="vLLM KV cache 显存占比（仅 --backend vllm 生效）")
+    ap.add_argument("--pool_out", default=None,
+                    help="训练池导出路径: 只留 k∈{1..G-1} 的原题行落盘"
+                         "（G0 探针 → G1 训练池的一步导出）")
     ap.add_argument("--g", type=int, default=4)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--max_new_tokens", type=int, default=512,
@@ -177,21 +248,29 @@ def main():
     print("=" * 74)
 
     t0 = time.time()
+    rows = None
     if args.dry_run:
         # 逐题各建一个 oracle 采样器 (gold 因题而异)
         def sampler(prompt, n):
             rec = next(r for r in records if r["prompt"] == prompt)
             return oracle_sampler(rec["gold"])(prompt, n)
+        rows = run_probe(records, sampler, g=args.g)
     else:
         if not args.base_model:
             raise SystemExit("[FATAL] 非 dry_run 必须给 --base_model")
-        sampler = build_model_sampler(
-            args.base_model, args.adapter, args.g,
-            args.temperature, h.max_completion_length)
-
-    rows = run_probe(records, sampler, g=args.g)
+        if args.backend == "vllm":
+            from grpo_probe_core import run_probe_batch
+            batch_sampler = build_vllm_batch_sampler(
+                args.base_model, args.adapter, args.g,
+                args.temperature, h.max_completion_length,
+                args.gpu_memory_utilization)
+            rows = run_probe_batch(records, batch_sampler, g=args.g)
+        else:
+            sampler = build_model_sampler(
+                args.base_model, args.adapter, args.g,
+                args.temperature, h.max_completion_length)
+            rows = run_probe(records, sampler, g=args.g)
     elapsed = time.time() - t0
-
     summary = summarize_buckets(rows, g=args.g)
     summary.update({"data": str(path), "base_model": args.base_model,
                     "adapter": args.adapter, "dry_run": bool(args.dry_run),
@@ -209,6 +288,12 @@ def main():
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     print(f"\n  统计: {out}\n  逐题: {rows_out}")
+
+    if args.pool_out:
+        from grpo_probe_core import export_pool
+        stat = export_pool(records, rows, g=args.g, out_path=args.pool_out)
+        print(f"  训练池导出: {args.pool_out}  "
+              f"(留 {stat['kept']} / 丢 k=0 {stat['dropped_k0']} + k={args.g} {stat['dropped_kmax']})")
 
     if args.dry_run:
         print("\n⚠️ dry_run 的 k 只证明「数据 + 打分器 + 分桶」链路通，**不是模型成绩**。")
