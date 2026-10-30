@@ -94,7 +94,11 @@ def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
     tokenizer = trainer.processing_class
     cfg = trainer.args
     max_new = getattr(cfg, "max_completion_length", 200) or 200
-    temperature = getattr(cfg, "temperature", 0.7) or 0.7
+    # [P0 20261030] greedy 解码：eval 是「考试」不是「抽签」。原 do_sample=True 时
+    # 单次采样噪声（粗估 >0.1）远大于 2% 熔断阈值，基线与每轮 eval 各掷一次骰子，
+    # 熔断判定被噪声淹没（TODO_GRPO Step 3.2 / GRPO 对照实验清单 §0）。改 greedy 后
+    # 同一策略反复 eval 分数恒定，残余噪声只剩浮点级，2% 阈值才有意义。
+    # 探针脚本 run_grpo_probe.py 的采样不动——k 分布量的是探索多样性，必须采样。
     model = getattr(trainer, "model_wrapped", None) or trainer.model
     was_training = model.training
     model.eval()
@@ -115,7 +119,7 @@ def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
                     max_length=getattr(cfg, "max_prompt_length", 2048) or 2048)
                 encoded = {key: value.to(model.device) for key, value in encoded.items()}
                 output = model.generate(
-                    **encoded, do_sample=True, temperature=temperature,
+                    **encoded, do_sample=False,
                     max_new_tokens=max_new,
                     pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id)
                 # 只 decode 新生成部分（跳过 prompt 前缀）
