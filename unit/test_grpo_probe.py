@@ -433,9 +433,13 @@ class TestShouldFuse(unittest.TestCase):
     def test_none_current_means_no_fuse(self):
         self.assertFalse(should_fuse(1.0, None))               # 缺数据不是退化
 
-    def test_nonpositive_baseline_uses_abs_diff(self):
-        self.assertTrue(should_fuse(-2.0, -2.1, 0.02))         # 绝对差 0.1 > 0.02
-        self.assertFalse(should_fuse(-2.0, -1.9, 0.02))
+    def test_nonpositive_baseline_no_silent_absdiff_branch(self):
+        # [P0 20261030] 旧实现在 baseline ≤ 0 时退化为「绝对差 > 0.02」，负分区的
+        # 0.02 绝对变化是噪声级，静默熔断。改为统一走相对跌幅判据（baseline=0 不动作）。
+        self.assertTrue(should_fuse(-2.0, -2.2, 0.02))          # 相对跌幅 10%
+        self.assertTrue(should_fuse(-2.0, -2.1, 0.02))          # 相对跌幅 5% > 2%
+        self.assertFalse(should_fuse(-2.0, -2.02, 0.02))        # 相对跌幅 1%：噪声不熔断
+        self.assertFalse(should_fuse(0.0, -0.5, 0.02))          # 基线恰为 0：测度零，不动作
 
     def test_exactly_threshold_does_not_fuse(self):
         self.assertFalse(should_fuse(1.0, 0.98))               # 恰 2%：严格大于才熔断
@@ -447,14 +451,24 @@ class TestShouldFuse(unittest.TestCase):
 # ============================================================
 
 class _FakeTrainerState:
-    """模拟 HF 递进 on_evaluate 的 TrainerState：**不可下标**。
+    """模拟 HF 递进回调的 TrainerState：**不可下标**。
 
-    熔断 callback 的闭包状态若与 on_evaluate 形参同名，第一次 `state["baseline"]`
+    熔断 callback 的闭包状态若与回调形参同名，第一次 `state["baseline"]`
     就会抛 TypeError —— 本类专门把这种遮蔽钉死。
     """
 
     def __getitem__(self, key):
         raise TypeError(f"TrainerState 不可下标（疑似闭包状态被形参遮蔽）: {key}")
+
+    def __init__(self, global_step=1):
+        self.global_step = global_step
+
+
+class _FakeArgs:
+    """on_step_end 触发只看 args.eval_steps（Trainer 内置 eval 已关）。"""
+
+    def __init__(self, eval_steps=1):
+        self.eval_steps = eval_steps
 
 
 class TestFuseCallbackBuildAndFuse(unittest.TestCase):
@@ -501,41 +515,47 @@ class TestFuseCallbackBuildAndFuse(unittest.TestCase):
         self.assertEqual(len(calls), 1, "训练前 baseline 应只生成一次")
         return cb
 
+    def _fire(self, cb, eval_steps=1, global_step=1):
+        """on_step_end 周期触发一次（callback 改为自带 eval 节流的接线方式）。"""
+        return cb.on_step_end(_FakeArgs(eval_steps), _FakeTrainerState(global_step),
+                              self._ctrl)
+
     def test_callback_instantiates_and_sets_pretrain_baseline(self):
         cb = self._build(fuse_hard=True, seq=[1.0, 1.0])
-        self.assertTrue(callable(cb.on_evaluate))
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self.assertTrue(callable(cb.on_step_end))
+        self._fire(cb)
         self.assertFalse(self._ctrl.should_training_stop)
 
     def test_first_training_eval_compares_against_pretrain_baseline(self):
         cb = self._build(fuse_hard=True, seq=[1.0, 0.90])
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
-        self.assertTrue(self._ctrl.should_training_stop)
-
-        cb = self._build(fuse_hard=True, seq=[1.0, 0.90])       # 跌 10% > 2%
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self._fire(cb)                                          # 跌 10% > 2%
         self.assertTrue(self._ctrl.should_training_stop)
 
     def test_soft_fuse_only_warns(self):
         cb = self._build(fuse_hard=False, seq=[1.0, 0.90])
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self._fire(cb)
         self.assertFalse(self._ctrl.should_training_stop)
 
     def test_drop_within_threshold_keeps_training(self):
         cb = self._build(fuse_hard=True, seq=[1.0, 0.995])      # 跌 0.5%
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)
+        self._fire(cb)
         self.assertFalse(self._ctrl.should_training_stop)
 
     def test_no_trainer_attached_is_noop(self):
-        gef._eval_reward_mean = lambda tr, rf, g: 0.0
+        gef._eval_reward_mean = lambda tr, rf, g, eval_rows=None: 0.0
         cb = gef.build_fuse_callback(fuse_threshold=0.02, fuse_hard=True,
                                     reward_fn=object(), g=4)
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)   # 未 _attach
+        self._fire(cb)                                          # 未 _attach
         self.assertFalse(self._ctrl.should_training_stop)
 
     def test_eval_error_does_not_crash_training(self):
         cb = self._build(fuse_hard=True, seq=[1.0, RuntimeError("generate 炸了")])
-        cb.on_evaluate(None, _FakeTrainerState(), self._ctrl)   # 后续 eval 异常只 WARN
+        self._fire(cb)                                          # 后续 eval 异常只 WARN
+        self.assertFalse(self._ctrl.should_training_stop)
+
+    def test_eval_steps_throttle_skips_non_multiple_steps(self):
+        cb = self._build(fuse_hard=True, seq=[1.0, 0.90])
+        self._fire(cb, eval_steps=4, global_step=2)             # 非倍数步：不触发
         self.assertFalse(self._ctrl.should_training_stop)
 
 

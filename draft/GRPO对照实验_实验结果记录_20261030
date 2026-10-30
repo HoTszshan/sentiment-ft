@@ -1,0 +1,121 @@
+#  GRPO  对比实验
+
+base_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+sft_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01_SFT-bf16
+
+
+
+## 准备数据
+
+python3 scripts/mix_sft_dataset.py \
+	--domain_file data/rl_candidates_v1.jsonl \
+	--anchor_file /dev/null \
+	--anchor_ratio 0 \
+	--val_ratio 0.0551 \
+	--seed 42 \
+	--out_dir /root/autodl-tmp/datasets/rl_round1_split_holdout64
+
+（64/1162 ≈ 0.05508，val_ratio 取 0.0551 → round(1162×0.0551)=64，stratified_split的目标值精确命中 64。）
+
+
+跑完立刻冻结（重命名）
+
+mkdir /root/autodl-tmp/datasets/rl_round1/
+mv /root/autodl-tmp/datasets/rl_round1_split_holdout64/sft_train.jsonl /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl
+mv /root/autodl-tmp/datasets/rl_round1_split_holdout64/sft_val.jsonl /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl
+rm -rf /root/autodl-tmp/datasets/rl_round1_split_holdout64
+
+wc -l /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl
+wc -l /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl
+
+
+长度统计：
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --out output/data/rl_round1_grpo_train_stat_len.json  \
+  --log output/data/rl_round1_grpo_train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --out output/data/rl_round1_grpo_eval_stat_len.json  \
+  --log output/data/rl_round1_grpo_eval_stat_len.log
+
+
+格式转换：
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl
+
+
+从冻结训练池分层抽 100 条 → 探针池
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
+  --sample 100 --seed 42 
+
+
+
+---
+
+## G0 · 起点体检：merge parity + k 分布 rollout
+
+### baseline
+k 分布 rollout ×2 份数据（探针 50 条 + 新题抽样 100 条）
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+DATA=data/probe_test_grpo_train_synth.jsonl \
+./scripts/run_grpo_probe.sh --tag=baseline_kdist_probe50
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
+./scripts/run_grpo_probe.sh --tag=baseline_kdist_new100
+
+### SFT-winner adapter 
+
+合并
+
+CUDA_VISIBLE_DEVICES=1 python3 scripts/merge_sft_adapter.py --dtype fp32 \
+    --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter /root/autodl-tmp/models/r6a01_adapter \
+    --out /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01
+
+fp32 → bf16 转存
+
+MERGE_SRC=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01 python3 - <<'PYEOF'
+import os, sys, json, time, torch
+from pathlib import Path
+from transformers import AutoModelForCausalLM, AutoTokenizer
+src = Path(os.environ["MERGE_SRC"]); dst = Path(str(src) + "-bf16")
+model = AutoModelForCausalLM.from_pretrained(src, torch_dtype=torch.bfloat16)
+tok = AutoTokenizer.from_pretrained(src)
+model.save_pretrained(dst, safe_serialization=True); tok.save_pretrained(dst)
+cfg = json.loads((dst/"config.json").read_text()); cfg["torch_dtype"] = "bfloat16"
+(dst/"config.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+m = json.loads((src/"merge_manifest.json").read_text())
+m["bf16_cast"] = {"cast_from": str(src), "cast_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "parity_vs_fp32": m["parity"],
+                  "note": "fp32 合并校验通过后 cast bf16; bf16 目录为 GRPO 基座正式产物"}
+(dst/"merge_manifest.json").write_text(json.dumps(m, indent=2, ensure_ascii=False))
+import shutil; shutil.rmtree(src)
+print(f"[OK] bf16 产物: {dst} (fp32 中间件已清理)")
+PYEOF
+
+
+k 分布 rollout ×2 份数据（探针 50 条 + 新题抽样 100 条）
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+DATA=data/probe_test_grpo_train_synth.jsonl \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_probe50
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_new100

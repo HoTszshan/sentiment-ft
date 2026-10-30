@@ -182,15 +182,19 @@ def should_fuse(baseline: Optional[float], current: Optional[float],
     eval 基线集 reward 均值相对首次 eval 的跌幅超过 threshold（默认 2%）→ 熔断。
     None 的语义：baseline 未建立（首轮 eval）或当前 eval 缺数 → 不熔断，
     缺数据不能当成退化，也不能当成健康，只能不动作。
+
+    变更说明【P0 20261030】：
+    删掉旧逻辑：baseline ≤ 0 时改用绝对差判断熔断。
+    原因：奖励范围 [-2.5, 2.0]，负数区间里 0.02 的波动基本是噪声，容易误触发熔断。
+    如果基线奖励本身是负数，代表模型/奖励函数已经有结构性问题（比如输出格式错误、门禁扣分），
+    不能偷偷放宽标准，要沿用同一套相对跌幅规则，异常直接暴露出来。
     """
     if baseline is None or current is None:
         return False
-    drop = baseline - current
-    if baseline <= 0:
-        # 基线非正（比如全在罚分区）时跌幅比率无意义，退化为绝对差判定
-        return drop > threshold
+    if baseline == 0:
+        return False
     # 浮点噪声容差：跌幅恰在阈值 ±1e-9 内不熔断
-    return drop / abs(baseline) > threshold + 1e-9
+    return (baseline - current) / abs(baseline) > threshold + 1e-9
 
 
 def assert_zam_equivalence() -> bool:
