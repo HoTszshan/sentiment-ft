@@ -151,6 +151,12 @@
 
 > **目的**：指标是抽象的，样张是直观的——选 1~2 条难例（优先 `irony` 反讽 / `multi_subject` 主体错挂 / `counterfactual`），把**裸基座输出**和**SFT 后输出**并排落盘，肉眼对比差异。这也是评估手册 §2 四档对照（T1 vs T3）的样本级直观版，可直接当面试演示素材。
 
+- [ ] **4.5.0**（新增工具）单条样本透视：一条数据 → 训练格式全文 → 掩码可视化 → 模型真实生成：
+  ```bash
+  python3 scripts/inspect_sample.py --data_file <train.jsonl> --line 3 --stage POC2
+  # 连推理: 加 --model <merged目录> --backend hf
+  ```
+  用途：核对「这条样本训练时到底在学什么」（output 段 token 还原）、抽查单条生成效果、few-shot prompt 预览。详见 README 步骤 4b。
 - [ ] **4.5.1** 从 val 里挑难例样本（按 `hard_case_type` 过滤），确认其原文与金标：
   ```bash
   python3 scripts/pick_hard_cases.py --data_file /root/autodl-tmp/datasets/mixed/sft_val.jsonl
