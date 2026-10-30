@@ -1,0 +1,32 @@
+数据: output/thinking_base/pred.jsonl  共 500 条  (pred 口径, gold 提供 instruction/input)
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       709     802     835     859
+  output      1357    1436    1481    1509
+  total       2063    2100    2134    2148
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #426 domain   2148 token  hard_case=metaphor  source=synthetic
+    #125 domain   2138 token  hard_case=explicit  source=synthetic
+    #326 domain   2137 token  hard_case=comparative  source=synthetic
+    #339 domain   2135 token  hard_case=comparative  source=synthetic
+    #413 domain   2134 token  hard_case=metaphor  source=synthetic
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       709     802     835     859
+  output      1357    1436    1481    1509
+  total       2063    2100    2134    2148
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #426 domain   2148 token  hard_case=metaphor  source=synthetic
+    #125 domain   2138 token  hard_case=explicit  source=synthetic
+    #326 domain   2137 token  hard_case=comparative  source=synthetic
+    #339 domain   2135 token  hard_case=comparative  source=synthetic
+    #413 domain   2134 token  hard_case=metaphor  source=synthetic
+
+统计已落盘: output/gold500_stat_len_thinking_infer.json
+统计已落盘: output/gold500_stat_len_thinking_infer.json

@@ -1,0 +1,106 @@
+{
+  "train_file": "/root/autodl-tmp/datasets/sft_round_1_anchor_0.1_val_0.2/mixed/sft_train.jsonl",
+  "mode": "train",
+  "n_rows": 1388,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 714,
+        "p95": 814,
+        "p99": 839,
+        "max": 889
+      },
+      "output": {
+        "p50": 379,
+        "p95": 515,
+        "p99": 558,
+        "max": 635
+      },
+      "total": {
+        "p50": 1096,
+        "p95": 1289,
+        "p99": 1347,
+        "max": 1407
+      },
+      "cot": {
+        "p50": 311,
+        "p95": 444,
+        "p99": 484,
+        "max": 562
+      }
+    },
+    "anchor": {
+      "prompt": {
+        "p50": 87,
+        "p95": 427,
+        "p99": 617,
+        "max": 800
+      },
+      "output": {
+        "p50": 15,
+        "p95": 183,
+        "p99": 584,
+        "max": 598
+      },
+      "total": {
+        "p50": 108,
+        "p95": 554,
+        "p99": 802,
+        "max": 873
+      },
+      "cot": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 363,
+      "bucket": "domain",
+      "total": 1407,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    },
+    {
+      "idx": 818,
+      "bucket": "domain",
+      "total": 1399,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 1360,
+      "bucket": "domain",
+      "total": 1396,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 24,
+      "bucket": "domain",
+      "total": 1375,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 686,
+      "bucket": "domain",
+      "total": 1369,
+      "hard_case": "multi_subject",
+      "source": "synthetic"
+    }
+  ],
+  "r_length_buckets": {
+    "short(<120)": 0,
+    "ideal(120~200)": 88,
+    "decay(200~320)": 581,
+    "dead(>=320)": 550,
+    "n": 1219
+  }
+}

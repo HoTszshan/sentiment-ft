@@ -1,0 +1,73 @@
+{
+  "train_file": "output/thinking_base/pred.jsonl",
+  "mode": "pred_infer",
+  "n_rows": 500,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Thinking-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 709,
+        "p95": 802,
+        "p99": 835,
+        "max": 859
+      },
+      "output": {
+        "p50": 1357,
+        "p95": 1436,
+        "p99": 1481,
+        "max": 1509
+      },
+      "total": {
+        "p50": 2063,
+        "p95": 2100,
+        "p99": 2134,
+        "max": 2148
+      },
+      "cot": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 426,
+      "bucket": "domain",
+      "total": 2148,
+      "hard_case": "metaphor",
+      "source": "synthetic"
+    },
+    {
+      "idx": 125,
+      "bucket": "domain",
+      "total": 2138,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 326,
+      "bucket": "domain",
+      "total": 2137,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    },
+    {
+      "idx": 339,
+      "bucket": "domain",
+      "total": 2135,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    },
+    {
+      "idx": 413,
+      "bucket": "domain",
+      "total": 2134,
+      "hard_case": "metaphor",
+      "source": "synthetic"
+    }
+  ]
+}

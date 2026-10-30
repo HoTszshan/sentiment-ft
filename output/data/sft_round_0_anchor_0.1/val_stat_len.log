@@ -1,0 +1,72 @@
+数据: /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_val.jsonl  共 75 条
+
+--- domain (75 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       710     826     834     834
+  output       386     506     568     568
+  total       1106    1288    1350    1350
+  cot          315     444     506     506   <- R_length 只量这一段
+  Top5 最长样本:
+    #59 domain   1350 token  hard_case=explicit  source=synthetic
+    #12 domain   1327 token  hard_case=explicit  source=synthetic
+    #41 domain   1293 token  hard_case=explicit  source=synthetic
+    #24 domain   1288 token  hard_case=metaphor  source=synthetic
+    #40 domain   1288 token  hard_case=comparative  source=synthetic
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120          0 ( 0.0%)    n/COT_SHORT − 1，越短越负
+  满分 120~200        5 ( 6.7%)  ██  +1.0
+  衰减 200~320       33 (44.0%)  █████████████  线性 1 → 0
+  归零 ≥320          37 (49.3%)  ███████████████  0
+
+--- 全量 Top-N（不分 domain/anchor） (75 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       710     826     834     834
+  output       386     506     568     568
+  total       1106    1288    1350    1350
+  cot          315     444     506     506   <- R_length 只量这一段
+  Top5 最长样本:
+    #59 domain   1350 token  hard_case=explicit  source=synthetic
+    #12 domain   1327 token  hard_case=explicit  source=synthetic
+    #41 domain   1293 token  hard_case=explicit  source=synthetic
+    #24 domain   1288 token  hard_case=metaphor  source=synthetic
+    #40 domain   1288 token  hard_case=comparative  source=synthetic
+
+统计已落盘: output/data/sft_round_0_anchor_0.1/val_stat_len.json
+统计已落盘: output/data/sft_round_0_anchor_0.1/val_stat_len.json
+数据: /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_val.jsonl  共 75 条
+
+--- domain (75 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       710     826     834     834
+  output       386     506     568     568
+  total       1106    1288    1350    1350
+  cot          315     444     506     506   <- R_length 只量这一段
+  Top5 最长样本:
+    #59 domain   1350 token  hard_case=explicit  source=synthetic
+    #12 domain   1327 token  hard_case=explicit  source=synthetic
+    #41 domain   1293 token  hard_case=explicit  source=synthetic
+    #24 domain   1288 token  hard_case=metaphor  source=synthetic
+    #40 domain   1288 token  hard_case=comparative  source=synthetic
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120          0 ( 0.0%)    n/COT_SHORT − 1，越短越负
+  满分 120~200        5 ( 6.7%)  ██  +1.0
+  衰减 200~320       33 (44.0%)  █████████████  线性 1 → 0
+  归零 ≥320          37 (49.3%)  ███████████████  0
+
+--- 全量 Top-N（不分 domain/anchor） (75 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       710     826     834     834
+  output       386     506     568     568
+  total       1106    1288    1350    1350
+  cot          315     444     506     506   <- R_length 只量这一段
+  Top5 最长样本:
+    #59 domain   1350 token  hard_case=explicit  source=synthetic
+    #12 domain   1327 token  hard_case=explicit  source=synthetic
+    #41 domain   1293 token  hard_case=explicit  source=synthetic
+    #24 domain   1288 token  hard_case=metaphor  source=synthetic
+    #40 domain   1288 token  hard_case=comparative  source=synthetic
+
+统计已落盘: output/data/sft_round_0_anchor_0.1/val_stat_len.json
+统计已落盘: output/data/sft_round_0_anchor_0.1/val_stat_len.json

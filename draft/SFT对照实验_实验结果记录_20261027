@@ -559,6 +559,13 @@ CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl  \
 BG=1 ./scripts/run_sft_e2e.sh --tag=R7_d2880_val_0.1_ep4 traintest
 
 
+python3 scripts/evaluate_sft.py \
+    --gold_file data/gold500_test.jsonl \
+    --pred_file /root/autodl-tmp/models/sft_senti/run_20261030_141100_R7_d2880_val_0.1_ep4/pred_gold500_test.jsonl \
+    --out output/R7_d2880_val_0.1_ep4/eval.jsonl \
+    --log output/R7_d2880_val_0.1_ep4/eval.log
+
+
 
 
 =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -582,6 +589,7 @@ BG=1 ./scripts/run_sft_e2e.sh --tag=R7_d2880_val_0.1_ep4 traintest
 | **R6-a005** | `R6_d1500_anchor_0.05_ep3` | 同上，anchor 5% | 🛑 **已完成（格式崩）** | sent 94.13 但 JSON 97.2%（14 条失败，分母 486）——「高 sent+低格式」与 R5 同构，gate4 一票否决 |
 | **R6-ep2** | `R6_d1500_anchor_0.1_ep2` | 同 R6-a01，EPOCHS=2 | 🛑 **已完成（欠拟合）** | hc 61.93（−9.5）、risk −4.8——1500 条下 ep3 仍不过拟合；**R7 建议试 ep4** |
 | **R7** | `R7_d2880_val_0.1_ep3` | round2_2880（2912 train），ep3 | 🔄 **已完成（增益 +0.65 < 2pp）** | sent 94.92 / hc 72.05 / negP 90.56 首破 90 / FAR 9.44 首个位数 / ironyR 85（距门限 5pp）/ JSON 100%；**先补 R7-ep4 再定「见顶」** |
+| **R7-ep4** | `R7_d2880_val_0.1_ep4` | 同 R7，EPOCHS=4 | 🏆 **已完成（SFT 收官配置）** | 业务口径 ep3→ep4 净持平（sent −0.38/negP −0.45/negR +0.61/risk +1.4）；风控取 **ep4**（negR 98.80 最高）；**出口判定：数据未到顶 → 造 round3**；comparative 回弹 +13.1、finance 20→72.7 |
 
 ---
 
@@ -1411,3 +1419,85 @@ DATA_DIR=/root/autodl-tmp/datasets/sft_round_2_val_0.1 \
 CLEAN_MERGE=1 INFER_DATA=data/gold500_test.jsonl \
 BG=1 ./scripts/run_sft_e2e.sh --tag=R7_d2880_val_0.1_ep4 traintest
 ```
+
+---
+
+## R7-ep4 结果 + 业务口径出口判定（2026-10-30，SFT 漏斗收口）
+
+Run：`run_20261030_141100_R7_d2880_val_0.1_ep4`（train 23414 s ≈ 6.5 h，val_loss 0.6807，与 ep3 的 0.6809 持平）
+产物：`/root/autodl-tmp/senti/output/R7_d2880_val_0.1_ep3/{eval.jsonl}`、`output/R7_d2880_val_0.1_ep4/`
+
+⚠️ **口径变更先行**：经业务确认，hard_case 是难度分类器（诊断仪表盘），业务交付指标是
+**情感 F1 / 负向精准率 / 负向召回率 / 风险标签准确率**。以下判定全部按业务口径，hc 降为副线。
+
+### 业务口径主表
+
+| 指标（业务优先） | R6-a01 (1541,ep3) | R7-ep3 (2912) | **R7-ep4 (2912)** | ep3→ep4 Δ |
+|---|---|---|---|---|
+| sent Macro-F1 | 93.21 | 94.92 | 94.54 | −0.38 |
+| **negP** | 89.44 | 90.56 | 90.11 | −0.45 |
+| **negR** | 96.99 | 98.19 | **98.80** | **+0.61** |
+| **risk SubAcc** | 77.60 | 77.20 | **78.60** | **+1.40** |
+| negP+negR+risk 组合 | — | — | — | 有涨有跌，净持平 |
+| hc（副） | 71.40 | 72.05 | **76.10** | +4.05 |
+| ironyR（诊断线） | 75.6 | 85.0 | 80.0 | −5.0 |
+| JSON / think / ev | 100/100/99.4 | 100/100/99.8 | 100/100/99.8 | 全满 |
+| gate4 | PASS | PASS | PASS | — |
+
+hard_case 分项（ep4）：counterfactual 87.1、irony 85.7、explicit 80.3、fact_implicit 79.6、
+multi_subject 71.7、comparative **67.3（ep3 的 54.2 回弹 +13.1，证实 round2 分布偏移被更多轮次矫正）**、
+metaphor 60.9。risk 分项：**finance 72.7（ep3 的 20.0 大幅修复）**、product 89.9、service 86.9、compliance 71.2。
+
+### 出口判定（业务口径）
+
+1. **ep3→ep4 的业务增量不成立**：sent −0.38 / negP −0.45 / risk +1.4 / negR +0.61——
+   有涨有跌、净持平。hc +4.05 是轮数继续补难例课，但那不是交付指标。
+2. **数据量净效应（R6-a01 → R7-ep4）**：sent +1.33 / negP +0.67 / negR +1.81 / risk +1.0 / FAR −0.67——
+   **业务指标在 1541→2912 段仍在改善，数据未到顶**。
+3. **【2026-10-30 终版判定：round3 砍掉，转 GRPO】**。数据量净效应虽为正
+   （R6-a01→R7-ep4：sent +1.33 / negP +0.67 / negR +1.81 / risk +1.0），但增量已降至
+   +1pp 级——按业务口径（sent/negP/negR/risk）每千条换约 0.7pp，投入产出比过低。
+   2912 条 × 4ep（R7-ep4）为 SFT 终点配置；剩余短板（risk SubAcc 78.6 vs 门限 90、
+   irony recall 80、general_negative 22.2、governance 46.2）移交 GRPO。
+4. **当前 SFT 收官配置（业务最优）**：POC2 + 1e-4 + 9:1 anchor + val 10% + 2912 条，
+   **ep3 与 ep4 二选一**：ep3 的 sent/negP 略高（94.92/90.56），ep4 的 negR/risk 略高（98.80/78.60）。
+   风控场景漏检代价 > 误报 → **建议 ep4**（negR 98.80 为最高，gate4 同为 PASS）。
+5. ironyR 80.0（ep4）< ep3 的 85.0——诊断线回落但两者都 <90 门槛，归 GRPO，不影响选型。
+
+
+---
+
+## E3b · 提示词加固结果（2026-10-30，T2 档，四档对照补全）
+
+产物：`/root/autodl-tmp/senti/output/bl_fewshot/{pred.jsonl, eval.jsonl}`
+配置：裸基座 + 3 条 few-shot（multi_subject/neutral、counterfactual/negative、fact_implicit/neutral，
+round2 训练集 215/2392/2131 行，compact 模式注入——示例仅 JSON 无 CoT）
+
+| 指标 | E3b (T2) | E3 (T1) | Δ | R7-ep4 (T3) |
+|---|---|---|---|---|
+| sent F1 | 82.31 | 80.79 | +1.52 | 94.54 |
+| negP | 70.69 | 65.74 | **+4.95** | 90.11 |
+| negR | 98.80 | 99.40 | −0.60 | 98.80 |
+| FAR | 29.31 | 34.26 | −4.95 | 9.89 |
+| risk SubAcc | **46.40** | 62.80 | **−16.40** | 78.60 |
+| risk 空表P | 50.0 | 74.2 | −24.2 | 92.8 |
+| hc F1（副） | 24.61 | 24.45 | +0.16 | 76.10 |
+| JSON | **100%** | 0% | +100 | 100% |
+| ev 子串 | 97.8% | 92.8% | +5.0 | 99.8% |
+| think | N/A（无 CoT） | 0% | — | 100% |
+| gates | gate4 PASS | gate4 FAIL | | gate4 PASS |
+
+输出形态：500/500 全部 dict 直出（few-shot 示例给了 JSON 形态，模型照抄），不再有 CoT。
+
+hc 分项变化（E3→E3b）：comparative 29→45.5、explicit 46.7→54.8、fact_implicit 24.2→45.2 大涨
+（示例直接覆盖了这些类型）；但 **irony 54→16、metaphor 13.6→0 反向崩塌**（示例未覆盖，硬套框架更差）
+——few-shot 的类型覆盖决定收益边界，未覆盖类型可能被带偏。
+
+### 判读（T2 档定位）
+
+1. **提示词拿得回格式**：JSON 0→100%（示例给形态即可），附带 ev +5、negP +4.95、FAR −4.95。
+2. **提示词拿不回判别力**：hc 持平、risk SubAcc −16.4（示例诱发「多打标签」的表面模仿）。
+3. **四档归因意义**：T3−T2（SFT 净功劳）= sent +12.2 / negP +19.4 / risk +32.2 / hc +51.5，
+   比 T3−T1 更干净——SFT 的价值在判别与风险抽取，不在格式。
+4. irony/metaphor 的反向崩塌提示：若 T2 要做正面贡献，示例需覆盖全部 7 类难例——
+   但那会让 prompt 膨胀到不可用，进一步佐证「提示词路线有天花板」。

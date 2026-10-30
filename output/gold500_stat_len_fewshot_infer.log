@@ -1,0 +1,31 @@
+数据: output/bl_fewshot/pred.jsonl  共 500 条  (pred 口径, gold 提供 instruction/input)
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       709     802     835     859
+  output        75     153     217     263
+  total        789     920    1032    1086
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #48 domain   1086 token  hard_case=explicit  source=synthetic
+    #272 domain   1084 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1065 token  hard_case=comparative  source=synthetic
+    #96 domain   1044 token  hard_case=explicit  source=synthetic
+    #371 domain   1032 token  hard_case=irony  source=synthetic
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       709     802     835     859
+  output        75     153     217     263
+  total        789     920    1032    1086
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #48 domain   1086 token  hard_case=explicit  source=synthetic
+    #272 domain   1084 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1065 token  hard_case=comparative  source=synthetic
+    #96 domain   1044 token  hard_case=explicit  source=synthetic
+    #371 domain   1032 token  hard_case=irony  source=synthetic
+
+统计已落盘: output/gold500_stat_len_fewshot_infer.json

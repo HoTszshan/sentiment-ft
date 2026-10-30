@@ -1,0 +1,79 @@
+{
+  "train_file": "data/gold500_test.jsonl",
+  "n_rows": 500,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 707,
+        "p95": 800,
+        "p99": 833,
+        "max": 857
+      },
+      "output": {
+        "p50": 378,
+        "p95": 531,
+        "p99": 664,
+        "max": 907
+      },
+      "total": {
+        "p50": 1097,
+        "p95": 1291,
+        "p99": 1402,
+        "max": 1616
+      },
+      "cot": {
+        "p50": 312,
+        "p95": 456,
+        "p99": 595,
+        "max": 837
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 449,
+      "bucket": "domain",
+      "total": 1616,
+      "hard_case": "counterfactual",
+      "source": "synthetic"
+    },
+    {
+      "idx": 40,
+      "bucket": "domain",
+      "total": 1514,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 352,
+      "bucket": "domain",
+      "total": 1444,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    },
+    {
+      "idx": 242,
+      "bucket": "domain",
+      "total": 1443,
+      "hard_case": "multi_subject",
+      "source": "synthetic"
+    },
+    {
+      "idx": 311,
+      "bucket": "domain",
+      "total": 1402,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    }
+  ],
+  "r_length_buckets": {
+    "short(<120)": 6,
+    "ideal(120~200)": 54,
+    "decay(200~320)": 200,
+    "dead(>=320)": 240,
+    "n": 500
+  }
+}

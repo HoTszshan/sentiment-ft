@@ -1,0 +1,68 @@
+======================================================================
+探针推理
+  基座    : /root/autodl-tmp/models/Qwen3-4B-Thinking-2507
+  Adapter : (无 — 裸基座对照)
+  数据    : data/gold500_test.jsonl (500 条)
+  产出    : output/thinking_base/pred.jsonl
+  日志    : output/thinking_base/infer.log
+======================================================================
+[TIME] 引擎+模型加载: 24.3s
+[TIME] prompt 渲染: 496.7s | 批量生成 500 条: 496.7s (吞吐 1.01 条/s, 均值 0.99s/条)
+  [10/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [20/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [30/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [40/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [50/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [60/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [70/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [80/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [90/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [100/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [110/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [120/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [130/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [140/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [150/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [160/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [170/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [180/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [190/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [200/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [210/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [220/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [230/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [240/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [250/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [260/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [270/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [280/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [290/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [300/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [310/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [320/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [330/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [340/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [350/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [360/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [370/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [380/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [390/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [400/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [410/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [420/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [430/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [440/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [450/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [460/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [470/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [480/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [490/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+  [500/500] tag合规 0 | JSON合法 0 | evidence 命中原文 0
+======================================================================
+[OK] 推理完成 500 条，总耗时 523.4s (均值 1.05s/条)
+     CoT 标签闭合率 : 0/500 (0.0%)
+     JSON 解析合法率: 0/500 (0.0%)
+     evidence 原文命中: 0/500 (0.0%)
+     预测文件: output/thinking_base/pred.jsonl
+======================================================================
+下一步: python evaluate_sft.py --gold_file data/gold500_test.jsonl --pred_file output/thinking_base/pred.jsonl
