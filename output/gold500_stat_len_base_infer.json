@@ -1,0 +1,73 @@
+{
+  "train_file": "output/baseline/pred.jsonl",
+  "mode": "pred_infer",
+  "n_rows": 500,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 707,
+        "p95": 800,
+        "p99": 833,
+        "max": 857
+      },
+      "output": {
+        "p50": 488,
+        "p95": 751,
+        "p99": 915,
+        "max": 992
+      },
+      "total": {
+        "p50": 1207,
+        "p95": 1490,
+        "p99": 1706,
+        "max": 1782
+      },
+      "cot": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 276,
+      "bucket": "domain",
+      "total": 1782,
+      "hard_case": "multi_subject",
+      "source": "synthetic"
+    },
+    {
+      "idx": 218,
+      "bucket": "domain",
+      "total": 1747,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 424,
+      "bucket": "domain",
+      "total": 1740,
+      "hard_case": "metaphor",
+      "source": "synthetic"
+    },
+    {
+      "idx": 255,
+      "bucket": "domain",
+      "total": 1731,
+      "hard_case": "multi_subject",
+      "source": "synthetic"
+    },
+    {
+      "idx": 330,
+      "bucket": "domain",
+      "total": 1706,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    }
+  ]
+}

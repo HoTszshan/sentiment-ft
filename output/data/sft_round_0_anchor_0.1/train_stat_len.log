@@ -1,0 +1,106 @@
+数据: /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_train.jsonl  共 756 条
+
+--- domain (673 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       711     812     838     878
+  output       383     522     570     639
+  total       1094    1294    1355    1399
+  cot          316     447     493     560   <- R_length 只量这一段
+  Top5 最长样本:
+    #31 domain   1399 token  hard_case=fact_implicit  source=synthetic
+    #528 domain   1396 token  hard_case=fact_implicit  source=synthetic
+    #449 domain   1378 token  hard_case=fact_implicit  source=synthetic
+    #255 domain   1375 token  hard_case=explicit  source=synthetic
+    #15 domain   1369 token  hard_case=multi_subject  source=synthetic
+
+--- anchor (83 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt        90     451     800     800
+  output        14     195     584     584
+  total        111     662     873     873
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #496 anchor    873 token  hard_case=general_anchor  source=COIG-CQIA
+    #251 anchor    802 token  hard_case=general_anchor  source=COIG-CQIA
+    #244 anchor    792 token  hard_case=general_anchor  source=COIG-CQIA
+    #296 anchor    786 token  hard_case=general_anchor  source=COIG-CQIA
+    #465 anchor    662 token  hard_case=general_anchor  source=COIG-CQIA
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120          0 ( 0.0%)    n/COT_SHORT − 1，越短越负
+  满分 120~200       52 ( 7.7%)  ██  +1.0
+  衰减 200~320      299 (44.4%)  █████████████  线性 1 → 0
+  归零 ≥320         322 (47.8%)  ██████████████  0
+
+--- 归因速读 ---
+  domain max = 1399 token, anchor max = 873 token
+  → 领域样本更长: OOM 长尾主要来自 domain 分账
+
+--- 全量 Top-N（不分 domain/anchor） (756 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       700     810     836     878
+  output       370     518     570     639
+  total       1078    1284    1354    1399
+  cot          302     444     493     560   <- R_length 只量这一段
+  Top5 最长样本:
+    #31 domain   1399 token  hard_case=fact_implicit  source=synthetic
+    #528 domain   1396 token  hard_case=fact_implicit  source=synthetic
+    #449 domain   1378 token  hard_case=fact_implicit  source=synthetic
+    #255 domain   1375 token  hard_case=explicit  source=synthetic
+    #15 domain   1369 token  hard_case=multi_subject  source=synthetic
+
+统计已落盘: output/data/sft_round_0_anchor_0.1/train_stat_len.json
+统计已落盘: output/data/sft_round_0_anchor_0.1/train_stat_len.json
+数据: /root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_train.jsonl  共 756 条
+
+--- domain (673 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       711     812     838     878
+  output       383     522     570     639
+  total       1094    1294    1355    1399
+  cot          316     447     493     560   <- R_length 只量这一段
+  Top5 最长样本:
+    #31 domain   1399 token  hard_case=fact_implicit  source=synthetic
+    #528 domain   1396 token  hard_case=fact_implicit  source=synthetic
+    #449 domain   1378 token  hard_case=fact_implicit  source=synthetic
+    #255 domain   1375 token  hard_case=explicit  source=synthetic
+    #15 domain   1369 token  hard_case=multi_subject  source=synthetic
+
+--- anchor (83 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt        90     451     800     800
+  output        14     195     584     584
+  total        111     662     873     873
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #496 anchor    873 token  hard_case=general_anchor  source=COIG-CQIA
+    #251 anchor    802 token  hard_case=general_anchor  source=COIG-CQIA
+    #244 anchor    792 token  hard_case=general_anchor  source=COIG-CQIA
+    #296 anchor    786 token  hard_case=general_anchor  source=COIG-CQIA
+    #465 anchor    662 token  hard_case=general_anchor  source=COIG-CQIA
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120          0 ( 0.0%)    n/COT_SHORT − 1，越短越负
+  满分 120~200       52 ( 7.7%)  ██  +1.0
+  衰减 200~320      299 (44.4%)  █████████████  线性 1 → 0
+  归零 ≥320         322 (47.8%)  ██████████████  0
+
+--- 归因速读 ---
+  domain max = 1399 token, anchor max = 873 token
+  → 领域样本更长: OOM 长尾主要来自 domain 分账
+
+--- 全量 Top-N（不分 domain/anchor） (756 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       700     810     836     878
+  output       370     518     570     639
+  total       1078    1284    1354    1399
+  cot          302     444     493     560   <- R_length 只量这一段
+  Top5 最长样本:
+    #31 domain   1399 token  hard_case=fact_implicit  source=synthetic
+    #528 domain   1396 token  hard_case=fact_implicit  source=synthetic
+    #449 domain   1378 token  hard_case=fact_implicit  source=synthetic
+    #255 domain   1375 token  hard_case=explicit  source=synthetic
+    #15 domain   1369 token  hard_case=multi_subject  source=synthetic
+
+统计已落盘: output/data/sft_round_0_anchor_0.1/train_stat_len.json
+统计已落盘: output/data/sft_round_0_anchor_0.1/train_stat_len.json

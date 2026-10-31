@@ -1,0 +1,456 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-29T06:50:30.207098+00:00",
+  "mode": "dual_file",
+  "inputs": {
+    "gold": "data/gold500_test.jsonl",
+    "pred": "output/thinking_base/pred.jsonl"
+  },
+  "n_samples": 500,
+  "protocol": {
+    "thought_tag_closure": 0.0,
+    "thought_tag_closure_applicable": 500,
+    "json_valid": 0.0,
+    "evidence_substr": 0.4,
+    "evidence_field_coverage": 0.4,
+    "contract_violations": 0,
+    "trailing_garbage": 0,
+    "n_samples": 500,
+    "n_pred_forms": {
+      "text": 500,
+      "baseline": 200
+    }
+  },
+  "illegal_labels": {
+    "sentiment": {},
+    "hard_case_type": {},
+    "risk_categories": {}
+  },
+  "sentiment": {
+    "macro_f1": 37.21,
+    "per_class": {
+      "negative": {
+        "precision": 38.59649122807017,
+        "recall": 100.0,
+        "f1": 55.69620253164557,
+        "support": 66
+      },
+      "neutral": {
+        "precision": 100.0,
+        "recall": 5.617977528089887,
+        "f1": 10.638297872340425,
+        "support": 89
+      },
+      "positive": {
+        "precision": 75.0,
+        "recall": 32.432432432432435,
+        "f1": 45.28301886792453,
+        "support": 37
+      }
+    },
+    "negative_recall": 39.76,
+    "false_alarm_rate": 61.4,
+    "negative_precision": 38.6,
+    "n_scored": 192,
+    "n_skipped_illegal": 0
+  },
+  "hard_case": {
+    "macro_f1": 7.83,
+    "per_class": {
+      "comparative": {
+        "precision": 6.802721088435375,
+        "recall": 100.0,
+        "f1": 12.738853503184714,
+        "support": 10
+      },
+      "counterfactual": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 21
+      },
+      "explicit": {
+        "precision": 46.15384615384615,
+        "recall": 24.0,
+        "f1": 31.57894736842105,
+        "support": 50
+      },
+      "fact_implicit": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 41
+      },
+      "irony": {
+        "precision": 100.0,
+        "recall": 5.555555555555555,
+        "f1": 10.526315789473683,
+        "support": 18
+      },
+      "metaphor": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 9
+      },
+      "multi_subject": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 25
+      }
+    },
+    "irony_recall": 5.56,
+    "n_scored": 174,
+    "n_skipped_illegal": 0
+  },
+  "risk": {
+    "subset_accuracy": 54.4,
+    "empty_support": 264,
+    "empty_precision": 100.0,
+    "per_key": {
+      "compliance": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 36
+      },
+      "finance": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 5
+      },
+      "general_negative": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 21
+      },
+      "governance": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 10
+      },
+      "marketing": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 78
+      },
+      "product": {
+        "precision": 100.0,
+        "recall": 4.761904761904762,
+        "f1": 9.09090909090909,
+        "support": 105
+      },
+      "service": {
+        "precision": 85.71428571428571,
+        "recall": 6.521739130434782,
+        "f1": 12.121212121212121,
+        "support": 92
+      }
+    },
+    "n_scored": 500,
+    "n_skipped_illegal": 0
+  },
+  "slices": {
+    "hard_case_type": {
+      "explicit": {
+        "n": 129,
+        "insufficient": false,
+        "risk_exact": 20.93,
+        "sentiment_acc": 31.01,
+        "hard_case_acc": 9.3
+      },
+      "fact_implicit": {
+        "n": 111,
+        "insufficient": false,
+        "risk_exact": 27.03,
+        "sentiment_acc": 1.8,
+        "hard_case_acc": 0.0
+      },
+      "multi_subject": {
+        "n": 80,
+        "insufficient": false,
+        "risk_exact": 25.0,
+        "sentiment_acc": 12.5,
+        "hard_case_acc": 0.0
+      },
+      "comparative": {
+        "n": 45,
+        "insufficient": false,
+        "risk_exact": 15.56,
+        "sentiment_acc": 13.33,
+        "hard_case_acc": 22.22
+      },
+      "irony": {
+        "n": 45,
+        "insufficient": false,
+        "risk_exact": 8.89,
+        "sentiment_acc": 28.89,
+        "hard_case_acc": 2.22
+      },
+      "metaphor": {
+        "n": 40,
+        "insufficient": false,
+        "risk_exact": 15.0,
+        "sentiment_acc": 7.5,
+        "hard_case_acc": 0.0
+      },
+      "counterfactual": {
+        "n": 50,
+        "insufficient": false,
+        "risk_exact": 28.0,
+        "sentiment_acc": 18.0,
+        "hard_case_acc": 0.0
+      }
+    },
+    "industry": {
+      "beauty_cosmetics": {
+        "n": 87,
+        "insufficient": false,
+        "risk_exact": 16.09,
+        "sentiment_acc": 11.49,
+        "hard_case_acc": 2.3
+      },
+      "finance_insurance": {
+        "n": 79,
+        "insufficient": false,
+        "risk_exact": 35.44,
+        "sentiment_acc": 27.85,
+        "hard_case_acc": 7.59
+      },
+      "electronics_3c": {
+        "n": 92,
+        "insufficient": false,
+        "risk_exact": 18.48,
+        "sentiment_acc": 17.39,
+        "hard_case_acc": 4.35
+      },
+      "automotive": {
+        "n": 90,
+        "insufficient": false,
+        "risk_exact": 13.33,
+        "sentiment_acc": 15.56,
+        "hard_case_acc": 4.44
+      },
+      "real_estate": {
+        "n": 73,
+        "insufficient": false,
+        "risk_exact": 21.92,
+        "sentiment_acc": 15.07,
+        "hard_case_acc": 6.85
+      },
+      "fmcg": {
+        "n": 79,
+        "insufficient": false,
+        "risk_exact": 26.58,
+        "sentiment_acc": 12.66,
+        "hard_case_acc": 2.53
+      }
+    },
+    "relevance": {
+      "passing": {
+        "n": 136,
+        "insufficient": false,
+        "risk_exact": 33.09,
+        "sentiment_acc": 11.76,
+        "hard_case_acc": 2.94
+      },
+      "core": {
+        "n": 328,
+        "insufficient": false,
+        "risk_exact": 15.55,
+        "sentiment_acc": 19.51,
+        "hard_case_acc": 3.35
+      },
+      "foil": {
+        "n": 36,
+        "insufficient": false,
+        "risk_exact": 33.33,
+        "sentiment_acc": 8.33,
+        "hard_case_acc": 22.22
+      }
+    },
+    "sentiment": {
+      "positive": {
+        "n": 108,
+        "insufficient": false,
+        "risk_exact": 36.11,
+        "sentiment_acc": 11.11,
+        "hard_case_acc": 12.96
+      },
+      "negative": {
+        "n": 166,
+        "insufficient": false,
+        "risk_exact": 3.61,
+        "sentiment_acc": 39.76,
+        "hard_case_acc": 3.61
+      },
+      "neutral": {
+        "n": 226,
+        "insufficient": false,
+        "risk_exact": 27.88,
+        "sentiment_acc": 2.21,
+        "hard_case_acc": 1.33
+      }
+    }
+  },
+  "errors_top5": [
+    {
+      "idx": 11,
+      "industry": "finance_insurance",
+      "gold_sentiment": "neutral",
+      "pred_sentiment": "negative",
+      "gold_risk": [],
+      "pred_risk": [],
+      "gold_hc": "explicit",
+      "pred_hc": null,
+      "input_head": "【目标主体】招商银行零售金融\n【输入文本】\n兄弟们，车先放一边，今天聊点正经的。作为业内人，我刚刚把"
+    },
+    {
+      "idx": 13,
+      "industry": "beauty_cosmetics",
+      "gold_sentiment": "negative",
+      "pred_sentiment": "negative",
+      "gold_risk": [
+        "governance"
+      ],
+      "pred_risk": [],
+      "gold_hc": "explicit",
+      "pred_hc": "comparative",
+      "input_head": "【目标主体】雅诗兰黛小棕瓶\n【输入文本】\n做季度传播复盘时，我会把代言争议的治理信息单独列项：行业常"
+    },
+    {
+      "idx": 18,
+      "industry": "automotive",
+      "gold_sentiment": "positive",
+      "pred_sentiment": "negative",
+      "gold_risk": [],
+      "pred_risk": [],
+      "gold_hc": "explicit",
+      "pred_hc": "comparative",
+      "input_head": "【目标主体】长安 深蓝系列\n【输入文本】\n开长安 深蓝系列跑了趟高速，满电出发，全程空调加120巡航"
+    },
+    {
+      "idx": 22,
+      "industry": "electronics_3c",
+      "gold_sentiment": "positive",
+      "pred_sentiment": null,
+      "gold_risk": [],
+      "pred_risk": [],
+      "gold_hc": "explicit",
+      "pred_hc": "comparative",
+      "input_head": "【目标主体】OPPO\n【输入文本】\n3月12日，记者在某商场消费维权服务站采访时，一位用户展示了维修"
+    },
+    {
+      "idx": 25,
+      "industry": "beauty_cosmetics",
+      "gold_sentiment": "negative",
+      "pred_sentiment": "negative",
+      "gold_risk": [
+        "general_negative"
+      ],
+      "pred_risk": [],
+      "gold_hc": "explicit",
+      "pred_hc": null,
+      "input_head": "【目标主体】珀莱雅双抗系列\n【输入文本】\n#化妆品抽检通报# 刚刷到监管部门这期抽检结果，真的火大！"
+    }
+  ],
+  "gates": {
+    "gate1": "N/A",
+    "gate2": "N/A",
+    "gate3": "N/A",
+    "gate4": "FAIL"
+  },
+  "verdict": "FAIL",
+  "fail_reasons": [
+    "思考标签闭合率 0.0% < 100%",
+    "JSON 合法率 0.0% < 99.8%",
+    "evidence 严格子串率 0.4% < 100.0%",
+    "门 4 格式合规未过"
+  ],
+  "relevance": {
+    "macro_f1": 30.3,
+    "per_class": {
+      "core": {
+        "precision": 63.35078534031413,
+        "recall": 100.0,
+        "f1": 77.56410256410255,
+        "support": 121
+      },
+      "foil": {
+        "precision": 50.0,
+        "recall": 7.6923076923076925,
+        "f1": 13.333333333333336,
+        "support": 13
+      },
+      "passing": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 59
+      }
+    }
+  },
+  "gold_source_conflicts": {
+    "count": 0,
+    "examples": []
+  },
+  "gate_details": {
+    "gate1": {
+      "status": "N/A",
+      "reason": "未提供旧错题集（--old_error_list）"
+    },
+    "gate2": {
+      "current": {
+        "negative_recall": 39.75903614457831,
+        "irony_recall": 5.555555555555555,
+        "macro_f1": 7.834873808725635,
+        "subset_accuracy": 96.42857142857143
+      },
+      "baseline": {},
+      "safety_fields": [
+        "negative_recall",
+        "irony_recall"
+      ],
+      "ordinary_fields": [
+        "macro_f1",
+        "subset_accuracy"
+      ],
+      "skipped": [
+        "negative_recall（缺在役基线与门槛值，未参与判定）",
+        "macro_f1（缺在役基线，未参与退化判定）",
+        "subset_accuracy（缺在役基线，未参与退化判定）",
+        "预测可用数为 0 → 门 2 记 N/A，不参与发布判定"
+      ],
+      "reason": "预测全部不可解析，安全字段无从判定",
+      "n_usable_pred": 0,
+      "status": "N/A"
+    },
+    "gate3": {
+      "status": "N/A",
+      "reason": "未接 L3 规则引擎联动指标"
+    },
+    "gate4": {
+      "status": "FAIL",
+      "json_valid_rate": 0.0,
+      "n_samples": 500,
+      "threshold": 99.8
+    }
+  },
+  "attribution": [
+    {
+      "gate": "gate2",
+      "sample_id": "irony_recall",
+      "reason": "安全字段未达底线：5.56 < 90.00"
+    },
+    {
+      "gate": "gate4",
+      "sample_id": "-",
+      "reason": "JSON 合法率 0.00% < 99.8%"
+    }
+  ]
+}

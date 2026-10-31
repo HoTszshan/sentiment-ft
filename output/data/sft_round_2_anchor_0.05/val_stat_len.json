@@ -1,0 +1,80 @@
+{
+  "train_file": "/root/autodl-tmp/datasets/sft_round_2_anchor_0.05/mixed/sft_val.jsonl",
+  "mode": "train",
+  "n_rows": 288,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 706,
+        "p95": 802,
+        "p99": 838,
+        "max": 852
+      },
+      "output": {
+        "p50": 375,
+        "p95": 522,
+        "p99": 600,
+        "max": 639
+      },
+      "total": {
+        "p50": 1078,
+        "p95": 1299,
+        "p99": 1364,
+        "max": 1396
+      },
+      "cot": {
+        "p50": 306,
+        "p95": 452,
+        "p99": 528,
+        "max": 560
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 206,
+      "bucket": "domain",
+      "total": 1396,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 42,
+      "bucket": "domain",
+      "total": 1378,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 269,
+      "bucket": "domain",
+      "total": 1364,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 139,
+      "bucket": "domain",
+      "total": 1361,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 179,
+      "bucket": "domain",
+      "total": 1339,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    }
+  ],
+  "r_length_buckets": {
+    "short(<120)": 39,
+    "ideal(120~200)": 24,
+    "decay(200~320)": 99,
+    "dead(>=320)": 126,
+    "n": 288
+  }
+}

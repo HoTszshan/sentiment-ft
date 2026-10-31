@@ -73,6 +73,7 @@
 │   ├── inspect_sft_dataset.py      数据模板预览（原文→messages→渲染文本→token/权重四层；--check_parity 只跑字节比对）
 │   ├── stat_seq_len.py             序列长度统计（domain/anchor 分账 + Top-N 定位 OOM 长样本；--out 落统计 json / --log 追加日志，均可选；无 tokenizer 退化为字符级近似）
 │   ├── pick_hard_cases.py          难例选样（按 hard_case_type 过滤打印行号+摘要，对比样张/四档对照选样用）
+│   ├── inspect_sample.py           ★ 单条样本透视：格式渲染全文 → 掩码可视化 → 模型真实生成（调试「训练侧在学什么」/ few-shot 预览）
 │   ├── eval_four_tier.py           ★ 四档控制变量对照（T1 基座/T2 提示词/T3 SFT/T4 GRPO → tier_report.json）
 │   ├── release_gate.py             ★ 发布门 CLI（四道门独立判定 + 归因表落盘 gate.json）
 │   ├── build_grpo_probe.py         ★ 语料池 → {prompt, gold} 契约转换
@@ -395,6 +396,34 @@ python3 scripts/sft_infer.py \
 实时输出三项合规率：**CoT 标签闭合率 / JSON 解析合法率 / evidence 原文命中率**。
 `--adapter_path` 留空可跑**裸基座对照**，用来量化 SFT 带来的增益。
 一键脚本中也可通过环境变量切换：`INFER_BACKEND=vllm ./scripts/run_sft_e2e.sh test`。
+
+### 步骤 4b · 单条样本透视（inspect_sample.py）
+
+调试「训练侧到底在学什么」的四段透视工具：①原始数据 → ②训练格式全文（chat 渲染，与训练侧逐字节同源）
+→ ③掩码形态（labels=-100 边界 + `▪/·` 掩码可视化 + output 段 token 还原 + POC 权重口径）
+→ ④模型推理（同一 prompt 真实生成，与金标并排 + 一致判定）。
+
+```bash
+# 只看格式+掩码（秒级，不加载模型）
+python3 scripts/inspect_sample.py \
+    --data_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1/mixed/sft_train.jsonl \
+    --line 3 --stage POC2
+
+# 连推理（--model 用 merged 目录；单条 ~1 分钟。⚠️ vllm 后端在 vllm 0.7.3 + Qwen3 上会崩，用 hf）
+python3 scripts/inspect_sample.py \
+    --data_file /root/autodl-tmp/datasets/sft_round_1_anchor_0.1/mixed/sft_train.jsonl \
+    --line 3 --stage POC2 \
+    --model /root/autodl-tmp/models/sft_senti/merged/R6a01_SFT-bf16 --backend hf
+
+# T2 few-shot prompt 预览（看 few-shot 示例插进去后 prompt 长什么样）
+python3 scripts/inspect_sample.py --data_file /tmp/one.jsonl \
+    --few_shot_file data/few_shot_examples.jsonl
+```
+
+判读：③ 段「output 段 token 还原」就是模型真正要学的全部内容（CoT→`</think>`→JSON→`<|im_end|>`）；
+POC2 下 JSON 死模板（骨架权重 0）不在其中。④ 段与金标「一致：否」但语义等价属正常
+（evidence 选句可能不同，对应评测口径 evidence 子串率 ≠ 100% 的微观形态）。
+> 与 `inspect_sft_dataset.py`（批量数据集预览）互补：那个看全集统计，这个看单条深钻。
 
 ### 步骤 5 · 评测
 
