@@ -112,7 +112,11 @@ class TestGate2NoRegression(unittest.TestCase):
         self.assertTrue(any("macro_f1" in a["sample_id"] for a in g["attribution"]))
 
     def test_no_baseline_skips_and_records(self):
-        """无在役基线 → 该项不参与退化判定，但必须记账（不假装 PASS/FAIL）。"""
+        """普通字段无在役基线 → 不参与退化判定，但必须记账（不假装 PASS/FAIL）。
+
+        [P1 修复注记] 安全字段（negative_recall/irony_recall）无基线时不再跳过，
+        改按 GATE2_SAFETY_FLOOR 绝对底线判定，见 test_safety_floor_default_without_baseline。
+        """
         g = evaluate_gates(GOLD_OK, PRED_OK)
         skipped = g["details"]["gate2"]["skipped"]
         self.assertTrue(any("macro_f1" in s for s in skipped))
@@ -131,6 +135,21 @@ class TestGate2NoRegression(unittest.TestCase):
         pred = [dict(_pred_ok(i), sentiment="positive") for i in range(20)]
         g = evaluate_gates(GOLD_OK, pred, thresholds={"negative_recall": 90.0})
         self.assertEqual(g["gate2"], "FAIL")
+
+    def test_safety_floor_default_without_baseline(self):
+        """[P1 修复补测] 无基线无 thresholds → 按 GATE2_SAFETY_FLOOR 绝对底线判定。
+
+        GOLD_OK 全判对时安全字段=100，过 95/85 底线 → PASS；
+        全漏报 negative 时 negative_recall=0 < 95 → FAIL（无基线不再「跳过并记账」）。
+        """
+        g = evaluate_gates(GOLD_OK, PRED_OK)
+        self.assertEqual(g["gate2"], "PASS")
+
+        pred = [dict(_pred_ok(i), sentiment="positive") for i in range(20)]
+        g2 = evaluate_gates(GOLD_OK, pred)
+        self.assertEqual(g2["gate2"], "FAIL")
+        self.assertTrue(any(a["gate"] == "gate2" and "negative_recall" in a["sample_id"]
+                            for a in g2["attribution"]))
 
 
 class TestGate3L3Safety(unittest.TestCase):

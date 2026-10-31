@@ -20,6 +20,7 @@
 #   OUTPUT_DIR   默认 /root/autodl-tmp/models/grpo_senti (AutoDL, 与训练脚本同目录);
 #                本机自动退回 <仓库>/output/grpo
 #   G            同题采样份数 (默认 4)
+#   BACKEND      推理后端 hf|vllm (默认 hf；vllm=批量进队，大探针集推荐)
 #   DRY          =1 只跑 --dry_run 体检 (无 GPU 可跑)
 #
 # 说明: 探针 50 题单卡几分钟跑完, 本脚本固定单卡 (CUDA_VISIBLE_DEVICES=0);
@@ -40,6 +41,8 @@ if [ -n "$OUTPUT_DIR" ]; then :;
 elif [ -d /root/autodl-tmp ]; then OUTPUT_DIR=/root/autodl-tmp/models/grpo_senti;
 else OUTPUT_DIR="$BASE_DIR/output/grpo"; fi
 G="${G:-4}"
+# 推理后端: hf (默认, 逐题 generate) | vllm (批量进队, 1k 题分钟级)
+BACKEND="${BACKEND:-hf}"
 
 TS="$(date +%Y%m%d_%H%M%S)"
 
@@ -97,11 +100,12 @@ fi
 
 # ---------------------------------------------------------------- 启动 (前台直跑, 探针几分钟)
 log "run 目录: $RUN_DIR"
-log "数据: $DATA  基座: $BASE_MODEL  G=$G"
+log "数据: $DATA  基座: $BASE_MODEL  G=$G  backend=$BACKEND"
 # shellcheck disable=SC2086
 python3 scripts/run_grpo_probe.py \
   --data "$DATA" \
   --base_model "$BASE_MODEL" \
+  --backend "$BACKEND" \
   --g "$G" \
   --out "$OUT_BASE" \
   $PROBE_ARGS 2>&1 | tee -a "$RUN_LOG"

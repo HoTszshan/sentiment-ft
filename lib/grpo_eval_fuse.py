@@ -78,6 +78,14 @@ def build_fuse_callback(fuse_threshold: float, fuse_hard: bool, reward_fn, g: in
     return callback
 
 
+def resolve_eval_max_new(cfg) -> int:
+    """
+    eval生成长度和rollout统一为max_completion=512。
+    旧兜底200会截断CoT+JSON，格式校验误判、奖励锁死-2.5，熔断失效；改为兜底512，宁长勿截。
+    """
+    return getattr(cfg, "max_completion_length", None) or 512
+
+
 def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
     """
     对 eval 集逐题采一条 completion，用 reward_fn 打分取均值。
@@ -88,17 +96,79 @@ def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
     eval_rows: 元数据行列表（含 gold_* 列），必传——trainer.eval_dataset 已置 None
     （Trainer 内置 eval 走 prediction_step 会炸 list batch，见 train_grpo 注释），
     prompt 与 gold 全部从这里拿。
+
+    生成路径优先级：
+      1. vLLM（trainer.llm 存在且可用）——G1 实测教训：HF generate 逐题串行 8 题
+         ~28 min/次，16 次 eval 烧掉 8.8h 里的 7.6h；vLLM 同路径批量 greedy 量级
+         分钟内。weight 同步复用 trl GRPOTrainer.compute_loss 的
+         `llm_engine.model_executor.driver_worker.model_runner.model.load_weights`
+         调用链（trl 0.14 源码实测），本步 eval 前把当前策略权重推进 vLLM。
+      2. 兜底 HF generate（trainer.llm 缺失 = 未开 vLLM 的单卡拓扑）——保持旧路径。
     """
     import torch
 
     tokenizer = trainer.processing_class
-    cfg = trainer.args
-    max_new = getattr(cfg, "max_completion_length", 200) or 200
-    # [P0 20261030] greedy 解码：eval 是「考试」不是「抽签」。原 do_sample=True 时
-    # 单次采样噪声（粗估 >0.1）远大于 2% 熔断阈值，基线与每轮 eval 各掷一次骰子，
-    # 熔断判定被噪声淹没（TODO_GRPO Step 3.2 / GRPO 对照实验清单 §0）。改 greedy 后
-    # 同一策略反复 eval 分数恒定，残余噪声只剩浮点级，2% 阈值才有意义。
-    # 探针脚本 run_grpo_probe.py 的采样不动——k 分布量的是探索多样性，必须采样。
+    max_new = resolve_eval_max_new(trainer.args)
+    # # [P0 20261030] 
+    # eval改用greedy解码：do_sample=True带来的采样噪声会淹没2%熔断阈值，
+    # 导致判定失效；greedy保证分数稳定，仅存浮点噪声。探测脚本run_grpo_probe.py保留采样，用于衡量探索多样性。
+
+    llm = getattr(trainer, "llm", None)
+    if llm is not None:
+        return _eval_reward_mean_vllm(
+            trainer, llm, tokenizer, reward_fn, eval_rows, max_new)
+    return _eval_reward_mean_hf(
+        trainer, tokenizer, reward_fn, eval_rows, max_new)
+
+
+def _eval_reward_mean_vllm(trainer, llm, tokenizer, reward_fn, eval_rows,
+                           max_new) -> float:
+    """vLLM 路径：先把当前策略权重同步进 vLLM 引擎，再批量 greedy 采样打分。
+
+    权重同步逻辑对齐 trl0.14 GRPOTrainer.compute_loss：
+        vLLM 每步自动加载合并LoRAΔ后的权重；
+    eval前复用load_weights，保证评测最新策略，无需额外合并。
+
+    """
+    from vllm import SamplingParams
+    from trl.models import unwrap_model_for_generation
+
+    model = getattr(trainer, "model_wrapped", None) or trainer.model
+    was_training = model.training
+    model.eval()
+    totals = []
+    try:
+        with torch.no_grad():
+            if not eval_rows:
+                raise ValueError("eval_rows 为空：独立 eval callback 需要 eval_rows")
+            # 1) 权重同步（与 trl compute_loss 同链路）
+            with unwrap_model_for_generation(model, trainer.accelerator) as unwrapped:
+                state_dict = unwrapped.state_dict()
+            llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+            llm_model.load_weights(state_dict.items())
+            # 2) 批量 greedy（64 题 → 1 次 generate；greedy 与温度无关）
+            prompts = [row["prompt"] for row in eval_rows]
+            sp = SamplingParams(temperature=0.0, max_tokens=max_new)
+            outputs = llm.generate(prompts, sampling_params=sp, use_tqdm=False)
+            # 3) 打分（与 HF 路径同一 reward_fn 契约）
+            for row, out in zip(eval_rows, outputs):
+                # skip_special_tokens=True对齐训练解码逻辑，避免特殊token判定为垃圾，造成奖励偏差、干扰熔断
+                text = tokenizer.decode(
+                    out.outputs[0].token_ids, skip_special_tokens=True)
+                reward_kwargs = {key: [row.get(key)] for key in (
+                    "gold_sentiment", "gold_relevance", "gold_hard_case_type",
+                    "gold_risk_json", "gold_evidence", "input_text")}
+                totals.append(reward_fn([text], **reward_kwargs)[0])
+    finally:
+        # eval 完恢复训练态（与 HF 路径同款纪律）
+        model.train(was_training)
+    return sum(totals) / max(1, len(totals))
+
+
+def _eval_reward_mean_hf(trainer, tokenizer, reward_fn, eval_rows, max_new) -> float:
+    """HF generate 兜底路径（未开 vLLM 的拓扑）：逐题贪心，行为与 G1 前一致。"""
+    import torch
+
     model = getattr(trainer, "model_wrapped", None) or trainer.model
     was_training = model.training
     model.eval()
@@ -109,6 +179,7 @@ def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
                 raise ValueError("eval_rows 为空：独立 eval callback 需要 eval_rows "
                                  "(pre-train baseline 或 eval_file)，不能依赖 "
                                  "trainer.eval_dataset（已置 None）")
+            max_prompt = getattr(trainer.args, "max_prompt_length", 2048) or 2048
             meta_rows = eval_rows
             for row in meta_rows:
                 prompt = row["prompt"]
@@ -116,15 +187,17 @@ def _eval_reward_mean(trainer, reward_fn, g: int, eval_rows=None) -> float:
                     raise TypeError("独立 eval callback 只接受字符串 prompt")
                 encoded = tokenizer(
                     prompt, return_tensors="pt", truncation=True,
-                    max_length=getattr(cfg, "max_prompt_length", 2048) or 2048)
+                    max_length=max_prompt)
                 encoded = {key: value.to(model.device) for key, value in encoded.items()}
                 output = model.generate(
                     **encoded, do_sample=False,
                     max_new_tokens=max_new,
                     pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id)
                 # 只 decode 新生成部分（跳过 prompt 前缀）
+                # skip_special_tokens=True 对齐训练 reward 路径
+                # (trl grpo_trainer decode 同款)，口径统一防熔断阈值偏差
                 text = tokenizer.decode(
-                    output[0][encoded["input_ids"].shape[1]:], skip_special_tokens=False)
+                    output[0][encoded["input_ids"].shape[1]:], skip_special_tokens=True)
                 reward_kwargs = {key: [row.get(key)] for key in (
                     "gold_sentiment", "gold_relevance", "gold_hard_case_type",
                     "gold_risk_json", "gold_evidence", "input_text")}

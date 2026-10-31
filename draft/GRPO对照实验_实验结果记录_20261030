@@ -48,11 +48,13 @@ python3 scripts/stat_seq_len.py \
 
 python3 scripts/build_grpo_probe.py \
   --src /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl \
-  --out /root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl \
+  --with_meta
 
 python3 scripts/build_grpo_probe.py \
   --src /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl \
-  --out /root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl  \
+  --with_meta
 
 
 从冻结训练池分层抽 100 条 → 探针池
@@ -62,6 +64,22 @@ python3 scripts/build_grpo_probe.py \
   --out /root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
   --sample 100 --seed 42 
 
+## SFT 结果
+
+python3 scripts/sft_infer.py \
+  --base_model "/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16" \
+  --max_new_tokens 1024 \
+  --adapter_path '' \
+  --backend vllm \
+  --data_file data/gold500_test.jsonl \
+  --out output/sft_R6a01-bf16/pred.jsonl \
+  --log output/sft_R6a01-bf16/infer.log
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file output/sft_R6a01-bf16/pred.jsonl  \
+  --out output/sft_R6a01-bf16/eval.jsonl \
+  --log output/sft_R6a01-bf16/eval.log 
 
 
 ---
@@ -72,12 +90,13 @@ python3 scripts/build_grpo_probe.py \
 k 分布 rollout ×2 份数据（探针 50 条 + 新题抽样 100 条）
 
 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-DATA=data/probe_test_grpo_train_synth.jsonl \
+DATA=data/probe_test_grpo_train_synth.jsonl BACKEND=vllm \
 ./scripts/run_grpo_probe.sh --tag=baseline_kdist_probe50
 
-BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
-DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
-./scripts/run_grpo_probe.sh --tag=baseline_kdist_new100
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=baseline_kdist_new100 \
+--pool_out /root/autodl-tmp/datasets/rl_round1/baseline_grpo_pool_g1.jsonl
 
 ### SFT-winner adapter 
 
@@ -112,10 +131,421 @@ PYEOF
 
 k 分布 rollout ×2 份数据（探针 50 条 + 新题抽样 100 条）
 
-CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
-DATA=data/probe_test_grpo_train_synth.jsonl \
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+DATA=data/probe_test_grpo_train_synth.jsonl BACKEND=vllm \
 ./scripts/run_grpo_probe.sh --tag=g0_kdist_probe50
 
 CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
-DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
-./scripts/run_grpo_probe.sh --tag=g0_kdist_new100
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_new100 --pool_out /root/autodl-tmp/datasets/rl_round1/g0_grpo_pool_g1.jsonl
+
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_round1_train --pool_out /root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl
+清洗数据 结果为 `/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl`
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_round1_eval 
+
+---
+
+### G1 · 正式 GRPO 基准枪（新题池 × 默认超参）
+
+**峰值显存采样**
+nohup nvidia-smi --query-gpu=timestamp,memory.used --format=csv,noheader \
+  -l 5 > mem_G1_grpo.log 2>&1 & echo $! > mem_G1.pid
+
+SYNC_WANDB=1 WANDB_PROJECT=sentiment-grpo DATA=/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 EVAL_FILE=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl GRPO_ARGS="--num_train_epochs 2 --save_steps 20 --gradient_checkpointing" ./scripts/run_grpo_train.sh --tag=g1_base_lr2e5_kl004
+
+ADAPTER_DIR=/root/autodl-tmp/models/grpo_senti/run_20261030_153511_g1_base_lr2e5_kl004/grpo_lora \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+./scripts/run_grpo_test.sh data/gold500_test.jsonl
+
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file /root/autodl-tmp/models/grpo_senti/run_20261030_153511_g1_base_lr2e5_kl004/pred_gold500_test.jsonl \
+  --out output/G1_lr2e5_r1_ep2/eval.jsonl \
+  --log output/G1_lr2e5_r1_ep2/eval.log
+
+
+
+
+### G6 · 训后 k 分布迁移 rollout
+
+python3 scripts/merge_sft_adapter.py --dtype fp32 \
+  --base /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+  --adapter /root/autodl-tmp/models/grpo_senti/run_20261030_153511_g1_base_lr2e5_kl004/grpo_lora \
+  --out /root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-g1_base_lr2e5_kl004
+
+
+MERGE_SRC=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-g1_base_lr2e5_kl004 python3 - <<'PYEOF'
+import os, sys, json, time, torch
+from pathlib import Path
+from transformers import AutoModelForCausalLM, AutoTokenizer
+src = Path(os.environ["MERGE_SRC"]); dst = Path(str(src) + "-bf16")
+model = AutoModelForCausalLM.from_pretrained(src, torch_dtype=torch.bfloat16)
+tok = AutoTokenizer.from_pretrained(src)
+model.save_pretrained(dst, safe_serialization=True); tok.save_pretrained(dst)
+cfg = json.loads((dst/"config.json").read_text()); cfg["torch_dtype"] = "bfloat16"
+(dst/"config.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+m = json.loads((src/"merge_manifest.json").read_text())
+m["bf16_cast"] = {"cast_from": str(src), "cast_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "parity_vs_fp32": m["parity"],
+                  "note": "fp32 合并校验通过后 cast bf16; bf16 目录为 GRPO 基座正式产物"}
+(dst/"merge_manifest.json").write_text(json.dumps(m, indent=2, ensure_ascii=False))
+import shutil; shutil.rmtree(src)
+print(f"[OK] bf16 产物: {dst} (fp32 中间件已清理)")
+PYEOF
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-g1_base_lr2e5_kl004-bf16 \
+GRPO_ADAPTER=/root/autodl-tmp/models/grpo_senti/run_20261030_153511_g1_base_lr2e5_kl004/grpo_lora \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g6_g1_kdist_post
+
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+
+## 实验执行状态一览表（截至 2026-10-30）
+
+| 实验编号 | 实验标签 / run | 核心配置 / 说明 | 执行状态 | 产物与关键结论 |
+|---|---|---|---|---|
+| **前置-数据** | `rl_candidates_v1` → `rl_round1/` | 1162 条四模型投票门禁池；分层切分 train 1098 + eval 64 冻结 | ✅ **已完成（冻结）** | event_id 零重叠、20 桶全覆盖；已知偏斜：eval 的 fact_implicit×neutral 占 70% |
+| **前置-P0×2** | eval greedy + 熔断绝对差分支删除 | `grpo_eval_fuse.py:117` / `grpo_common.py:189`，单测 6/6 绿 | ✅ **已落码（f4ecd88）** | eval 噪声量级实测留给 G0/G1（应近 0）；测试债 `TestFuseCallbackBuildAndFuse` 6 例待还不挡路 |
+| **前置-merge** | `Qwen3-4B-Instruct-SFT-R6a01-bf16` | r6a01_adapter（R6 胜者：POC2+1e-4+ep3+1541 条 9:1 anchor）fp32 合并→cast bf16 | ✅ **已完成** | parity 通过（max_abs_logit_diff=1.07e-4，argmax_equal）；⚠️ 起点为 R6 数据版，非清单所写 R2·d750，以此为准 |
+| **G0-baseline** | `run_20261030_142256/142354` | 裸基座 k 分布 rollout（探针 50 + 新题 100） | ✅ **已完成（对照位）** | 全 k=0（450 轨迹全被 R_format 短路 −2.5）——「GRPO 必须 SFT 起点」坐实 |
+| **G0** | `run_20261030_142516/142813/143223/143603` | SFT 起点 k 分布：探针 50 / 新题 100 / 全池 1098 / eval 64 | 🏆 **已完成（健康通过）** | 全池 keep 321/1098=29.2% → `grpo_pool_g1.jsonl`；k=4 占 62.8%，战场在中间带；explicit 只剩 4% |
+| **G0-标签核对** | 池分布统计 | 321 条单轴 + 桶级 keep-rate | ✅ **已完成** | ⚠️ neutral 53% > negative 23%（与立项预期相反）；fact_implicit×neutral 单桶 29% 独大，与 eval 偏斜同源 |
+| **G1** | `G1_base_lr2e5_kl004` | 基准枪：lr2e-5 / β_KL 0.04 / G=4 / T=0.7；数据池 321 vs 1098 待拍板 | ⏳ **待执行（前置全绿）** | 简历「SFT+GRPO」主数字出处；过程验收看短路占比下降 / 组内 std 非零 / eval 不塌 |
+| **G2** | `G2_kl0` | β_KL→0（KL 消融，reward hacking 观察位） | ⏳ 待执行 | 触发：G1 reward 涨但 gold500 格式/F1 掉；G1 平稳则作补枪 |
+| **G3** | `G3_lr5e5` | lr→5e-5（上界） | ⏳ 待执行 | 看门禁短路占比与 reward 方差；崩则补 G3b_lr1e5 |
+| **G4** | `G4_gen8` | G→8（触发制） | ⏸️ **待定（触发线卡边界）** | 清单触发线 k∈1..3 <30%，实测 29.2% 字面触发；建议 G1 先跑再定 |
+| **G5a/b** | `G5a_nolen` / `G5b_stdreward` | 关 R_length / 撤 scale_rewards=none | ⏳ 待执行 | 消融归因（面试素材），G1 胜者配置上各只动一轴 |
+| **G6** | `g6_kdist_post` | 训后 k 迁移 + CoT 分位回填 | ⏳ 待执行 | 对比 G0 直方图；CoT 65~105 口径以实测为准，不符改稿 |
+| **四档汇总** | `eval_four_tier` | T1~T4 对照 + SFT→GRPO 单变量差值 | ⏳ 待执行 | 全枪跑完一次；gold500 基线只认 R2 重测口径 92.02/59.09 |
+
+> 防串号提醒（清单 §6）：1066 的数字不进；奖励区间 [−2.5, +2.0]；G0/G6 两份 k 分布分开记并注明数据池；8 条冒烟档历史结果不入正式表格。
+
+----
+
+## G0 结果登记（2026-10-30 跑完，6 个 run）
+
+> 产物布局：`/root/autodl-tmp/models/grpo_senti/run_<TS>_<tag>/{grpo_probe_kstats.json, grpo_probe_kstats.rows.jsonl, logs/}`
+> 采样参数统一：G=4 / T=0.7 / max_new_tokens=512 / backend=vllm（实测整段 max 383 token = CoT ~257 + JSON ~81，512 预算无截断）。
+
+### 1) 裸基座 baseline（Qwen3-4B-Instruct-2507，未 SFT，链路对照位）
+
+| run | 数据 | k 直方图 (0/1/2/3/4) | keep | 门禁短路 | 判读 |
+|---|---|---|---|---|---|
+| `run_20261030_142256_baseline_kdist_probe50` | 探针 50 条 | **50/0/0/0/0** | 0% | 全部 4/4 短路（−2.5 收场） | 裸基座守不住输出契约，四维 reward 全部短路归 −2.5 |
+| `run_20261030_142354_baseline_kdist_new100` | 新题 100 条 | **100/0/0/0/0** | 0% | 同上 | 与探针 50 条结论一致 |
+
+**判读**：与 SFT 报告 E3「裸基座 JSON 0%」完全自洽——reward 打分器对裸基座输出全部判死在 R_format 门禁。
+这确认了「GRPO 必须以 SFT 为起点」的前提：k 全 0 = 组内方差恒 0 = RL 无梯度可学。
+⚠️ 两个 baseline run 未产出 `--pool_out` 文件（keep=0 无池可导，正常）。
+
+### 2) SFT 胜者起点 merge（r6a01_adapter）
+
+- 合并命令见上节；merge manifest：fp32 合并 parity 通过（max_abs_logit_diff=1.07e-4、argmax_equal=true），
+  再 cast bf16 作 GRPO 基座正式产物：`/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16`。
+- adapter 血缘（`r6a01_adapter/train_metrics.json`）：train_samples=1541（round1_1500 + 9:1 anchor）、
+  ep≈3.0、train_loss=0.8305、final_eval_loss=0.7512、LoRA r16/α32——**即 SFT 漏斗 R6 胜者配置
+  （POC2 + lr1e-4 + ep3 + 9:1 anchor 数据）**。
+  （⚠️ 与设计清单 §G0 写的「R2 · d750」起点不同：实际用了 R6 放大数据版的 adapter，记录以此为准。）
+
+### 3) SFT 起点下的 k 分布 rollout（G0 主数据）
+
+| run | 数据 | n | k 直方图 (0/1/2/3/4) | keep | keep_ratio |
+|---|---|---|---|---|---|
+| `run_20261030_142516_g0_kdist_probe50` | 探针 50 条 | 50 | 20/2/3/5/20 | 10 | 20.0% |
+| `run_20261030_142813_g0_kdist_new100` | 新题抽样 100 条 | 100 | 3/9/9/15/64 | 33 | 33.0% |
+| `run_20261030_143223_g0_kdist_round1_train` | **训练池全量 1098** | 1098 | 87/64/74/183/690 | **321** | **29.2%** |
+| `run_20261030_143603_g0_kdist_round1_eval` | 独立 eval 基线集 64 | 64 | 4/4/5/8/43 | 17 | 26.6% |
+
+训练池全量（1098 条）明细：
+- 训练池（k∈1..3）：**321 条** ← GRPO G1 的实际训练集，已导出
+  `/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl`（321 行）
+- 丢弃：k=0 共 87 条（RL 无梯度）、k=4 共 690 条（方差恒 0）
+- 训练池难点分布：**fact_implicit 99 · comparative 87** · multi_subject 39 · irony 36 ·
+  counterfactual 30 · metaphor 18 · explicit 12
+- 训练池极性分布：neutral 171 · positive 76 · negative 74
+- 门禁短路占比（4392 条轨迹）：短路 0 次 993 题 / 1 次 94 / 2 次 10 / 4 次 1
+  → 短路轨迹 118/4392 ≈ **2.7%**，格式门禁已不是主要瓶颈
+
+### 4) G0 判读（对照设计清单 §G0 判据）
+
+1. **健康判定：通过**。k=1~3 显著非零（321/1098 = 29.2%，有梯度可学），
+   k=0（87）与 k=4（690）两头都有（筛选有意义），不存在「全 k=0」（数据/打分器坏了）
+   或「全 k=4」（GRPO 无题可训）两种死局。
+2. **k=4 占 62.8% 是主要信息**：SFT 起点已能全对大多数新题 → GRPO 的战场集中在 321 条
+   k∈1..3 的中间带；难例富集（清单 §3 P1 项）目前不必触发，G1 用 `grpo_pool_g1.jsonl`
+   或全量 1098 起跑均可（后者靠 k 筛选天然聚焦）。
+3. **G4（G=8）触发条件卡在边界**：清单触发线「k=1~3 组占比 <30%」，实测 29.2%——
+   字面上触发，但 k=1..3 内部 64/74/183 分布有梯度，建议 G1 先跑基准枪看 reward 拉不拉得动，不急切 G=8。
+4. **eval 基线集 64 条的偏斜印证**：keep 17 条里 fact_implicit 10 / neutral 13，
+   与清单 §0.5 预告的「fact_implicit×neutral 占 45/64」一致——eval reward 均值走势判读时按此口径打折。
+5. **R_length 三档复核素材**：G0 整段输出 max 383 token（CoT ~257），
+   未复现 SFT 校准步的 ≥320 归零长尾——打分器三档暂不动，G6 训后分位对比时再定。
+6. **裸基座全 k=0 = 链路自检通过**：打分器对裸基座输出全部拦在 R_format 门禁、
+   对 SFT 输出能拉开 k 分布，既不放行也不误杀。
+
+### 5) 下一步（G1 基准枪）
+
+```bash
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R6a01-bf16 \
+EVAL_FILE=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl EVAL_STEPS=5 \
+GRPO_ARGS="--num_train_epochs 2 --save_steps 20" \
+./scripts/run_grpo_train.sh --tag=G1_base_lr2e5_kl004
+```
+
+（G1 前置项核对：§0 两项 P0 已落码 ✅；eval 基线集已冻结 ✅；merge parity ✅。
+数据用 321 条池还是 1098 全量待定——G1 起跑前拍板。）
+
+### 6) 训练池标签分布核对（2026-10-30 补，对照「留中间带」预期）
+
+**321 条训练池单轴分布**（上游 1098 → keep 321）：
+
+| 轴 | 分布 |
+|---|---|
+| hard_case | fact_implicit 99(31%) · comparative 87(27%) · multi_subject 39(12%) · irony 36(11%) · counterfactual 30(9%) · metaphor 18(6%) · explicit 12(4%) |
+| sentiment | neutral 171(53%) · positive 76(24%) · **negative 74(23%)** |
+| relevance | core 236(74%) · foil 52(16%) · passing 33(10%) |
+| industry | 10 行业 7%~12%，均匀 |
+
+**桶级 keep-rate**（keep / 上游，看哪类题留在 k∈1..3 中间带）：
+
+| 桶 | keep-rate | 桶 | keep-rate |
+|---|---|---|---|
+| explicit×negative | **9/67 = 13%** | irony×negative | 28/88 = 32% |
+| counterfactual×negative | 11/38 = 29% | metaphor×negative | 7/28 = 25% |
+| fact_implicit×negative | 4/21 = 19% | comparative×negative | 10/38 = 26% |
+| fact_implicit×neutral | **94/387 = 24%**（单桶独大） | multi_subject×neutral | 31/134 = 23% |
+| comparative×positive | 51/99 = 52% | irony×positive | 8/15 = 53% |
+
+**判读**：
+
+1. ✅ **hard_case 结构符合预期**：explicit 只剩 4%，难例主导，k 筛选在正确聚焦。
+2. ✅ **负向难例 keep 率系统性偏低（13%~32%）**：简单负向已被 SFT 学会 → 全对落 k=4 被丢，
+   与 SFT 报告「误报从量的问题变成难例的问题」互相印证，链路自洽。
+3. ⚠️ **sentiment 偏差与立项预期相反**：设计清单 §0.5 说「negative 主力 irony(89)/explicit(68) 正是难例区」，
+   但 k 筛选后 negative 仅 74 条（23%），neutral 171 条（53%）反超主力；
+   单桶 fact_implicit×neutral 94 条（池的 29%）独大——与 eval 基线集 70% 偏斜同源，
+   **G1 的 eval reward 走势将被该桶主导**（判读时打折）。
+4. ⚠️ **风险**：negative 判别训练信号占比仅 ~23%。若 G1 后目标是继续压 FAR / 补 negative recall
+   （SFT 报告跷跷板路径①），可能需触发清单 §3-P1 难例富集（提 irony×negative / metaphor×negative 配额），
+   或在 reward 上给 negative 边界倾斜。**G1 先按现状起跑不动池子**（321 条里 irony×negative 28 +
+   comparative×negative 10 仍是有效信号），池子手术等 G1 判读后再定。
+
+---
+
+## SFT 起点（R6a01-bf16）gold500 正式成绩（2026-10-31，GRPO 对照基线）
+
+产物：`output/sft_R6a01-bf16/{pred.jsonl, eval.jsonl}`（gold500_test 500 条，模式 B 统一 strict 分母口径）
+
+| 指标 | SFT R6a01 | R2（重测口径，清单对照基线） | 备注 |
+|---|---|---|---|
+| sentiment Macro-F1 | **92.47** | 92.02 | 放大数据版起点略优 |
+| negative P / R / FAR | 88.95 / 96.99 / **11.05** | 87.17* / 97.59 / 12.90 | FAR 与 R1_Anchor 同值（同源配置） |
+| hard_case Macro-F1 | **71.68** | 59.09 | **+12.6pp**——round1_1500+anchor 放大数据的红利 |
+| irony F1 / recall | 84.71 / 80.0 | 68.3 / 62.22 | 大幅改善，仍差 gate2 的 90 底线 10pp |
+| metaphor F1 / R | 53.73 / 45.0 | 44.1 | 仍是最弱项 |
+| risk Subset Acc | **75.2** | 73.8 | +1.4 |
+| risk empty_precision | 90.53 | — | |
+| relevance Macro-F1 | 84.46 | — | |
+| JSON / think / ev | **100% / 100% / 99.6%** | 99.6 / 100 / 99.6 | gate4 PASS（R 系首次） |
+| gates / verdict | gate2 FAIL（irony 80<90）、gate4 PASS | gate2+gate4 FAIL | |
+
+**判定：GRPO 对照基线更新为 SFT R6a01（92.47 / 71.68 / 75.2 / ev 99.6），替代清单 §2 写的 R2（92.04/58.96）。
+G1 的主指标不降判据按此基线执行。**
+
+---
+
+## G1 · 正式基准枪结果（2026-10-30 训练 + 2026-10-31 终评）
+
+Run：`/root/autodl-tmp/models/grpo_senti/run_20261030_153511_g1_base_lr2e5_kl004/`
+
+**训练配置**（grpo_metrics.json）：321 条池（grpo_pool_g1.jsonl）· 82 步（记录 80 优化步）· 32 轨迹/步 ·
+G=4 / T=0.7 / lr=2e-5 / β_KL=0.04 / LoRA r16α32 / scale_rewards=none / max_completion=512 / seed 42 ·
+**耗时 31699 s ≈ 8.8 h**（~200 s/步）。
+
+**过程验收（对照清单 §G1 表 A1~A5）**：
+
+| 验收项 | 实测 | 判定 |
+|---|---|---|
+| pre-train baseline reward（greedy） | **−2.5000 恒定** | ⚠️ 见判读 ① |
+| 组内 std 非零比例 | 79/80 步非零（零方差仅 1 步 = 1.3%） | ✅ 健康 |
+| 门禁短路占比 | 训练 reward 均值全程 −0.35~0.63 区间，未见 −2.5 收场主导 | ✅ 格式未退化 |
+| reward 走势 | 10 步均值 0.20→0.12→0.14→0.10→0.03→0.10→0.02→**0.27**（收官段最高） | ⚠️ 见判读 ② |
+| eval 熔断 | `EVAL_FILE` 用的是 grpo_eval_prompts.jsonl 但 **eval_n=8 只抽 8 条**，且全程 −2.5000 与 baseline 相同 | ⚠️ 见判读 ①③ |
+| KL | 收官 ~0.003，极小，策略几乎没漂移 | ⚠️ 见判读 ② |
+| completion 长度 | first10 均值 356.5 → last10 358.1 token，无漂移 | ✅ |
+
+### ⚠️ 三个必须记录的问题（不影响终评有效性，但影响 G2~G6 设计）
+
+1. **eval 熔断链路全程无效**：pre-train baseline = −2.5 且 16 次 eval 全部 −2.5。
+   baseline −2.5 = eval 抽到的 8 条 greedy 输出全被门禁短路——与 G0 实测「eval 集 keep 26.6%」矛盾。
+   两个嫌疑：`eval_n=8` 抽样太小且恰好抽到困难条目；或 eval 渲染路径与 rollout 不一致（待查）。
+   **熔断监控在 G1 实际上是睁眼的瞎子**，reward 不塌是靠 gold500 终评兜底确认的。
+2. **reward 收官段走高但 KL≈0.003**：策略位移极小，80 步 × 32 轨迹的信号量可能不足以推动 4B 策略，
+   收官 0.27 更像轨迹方差波动而非学习信号。
+3. **每步 ~200 s 全程 8.8 h**：321 池 × 2 epoch 的卡时成本远超探针预期，G2~G6 消融枪要控预算。
+
+### G1 终评（gold500，模式 B strict 口径）
+
+推理链路：GRPO adapter（checkpoint-80）叠 SFT 起点 fp32 合并（parity PASS，max|Δlogit|=9.4e-05）→ bf16 落盘 →
+vLLM 推理（max_new_tokens=1024）。合并产物：
+`/root/autodl-tmp/models/grpo_senti/merged/Qwen3-4B-Instruct-SFT-R6a01-bf16_run_20261030_153511_g1_base_lr2e5_kl004_grpo_lora`
+
+| 指标 | G1 (SFT+GRPO) | SFT R6a01 起点 | Δ | 判定 |
+|---|---|---|---|---|
+| 分母 n_scored | 499 | 500 | 1 条闭集契约违规 | |
+| sentiment Macro-F1 | **93.10** | 92.47 | **+0.6** | 主指标不降 ✅ |
+| negative P / R / FAR | **90.96 / 96.99 / 9.04** | 88.95 / 96.99 / 11.05 | P+2.0、FAR−2.0 | 召回持平、误报再降 |
+| neutral F1 | 93.91 | — | | |
+| hard_case Macro-F1 | **73.20** | 71.68 | **+1.5** | 主指标不降 ✅ |
+| irony F1 / recall | 82.76 / 80.0 | 84.71 / 80.0 | F1 −2.0、R 平 | gate2 仍 FAIL（80<90） |
+| counterfactual F1 | 90.0 | 85.42 | +4.6 | 最大单类增益 |
+| metaphor F1 / R | 58.82 / 51.28 | 53.73 / 45.0 | +5.1 / +6.3 | 最弱项改善最明显 |
+| explicit F1 | 72.80 | 68.99 | +3.8 | |
+| comparative F1 | 70.27 | 68.0 | +2.3 | |
+| fact_implicit F1 | 72.81 | 73.42 | −0.6 | |
+| multi_subject F1 | 64.94 | 67.52 | −2.6 | |
+| risk Subset Acc | **77.0** | 75.2 | **+1.8** | |
+| risk empty_precision | 92.8 | 90.53 | +2.3 | |
+| relevance Macro-F1 | 84.49 | 84.46 | 平 | |
+| JSON 合法率 | 99.8% | 100% | −0.2（1 条违规） | gate4 恰好压线 PASS |
+| think 闭合 / ev 子串 | 100% / 99.6% | 100% / 99.6% | 平 | |
+| gates / verdict | gate2 FAIL、gate4 PASS | 同 | | |
+
+### G1 判读
+
+1. **主指标判定：通过**——sent +0.6 / hc +1.5 / risk +1.8，且**没有拿判别 F1 换格式**（格式三项持平或微降 0.2pp 噪声级）。
+   GRPO 在「SFT 已很强」的起点上拿到了真实但幅度温和的内容增益。
+2. **增益兑现位置与 G0 预测一致**：中间带难例（counterfactual +4.6、metaphor +5.1、explicit +3.8、comparative +2.3），
+   而 G0 keep-rate 高的类（fact_implicit、multi_subject——训练池里这两类信号最多但模型已接近饱和）基本平。
+   **irony F1 −2.0 是唯一退化项**，且 irony 恰是训练池 negative 侧信号最少的一类（28 条），与 §6 标签核对的风险预警吻合。
+3. **gate4 99.8% 压线 PASS**（阈值恰为 99.8）：1 条闭集契约违规是唯一格式损失，量级 1/500 噪声级。
+4. **副指标目标核对（清单 §2）**：ev 99.6% 达到 ≥99% 目标 ✅；CoT p50 目标 120~200 未在 gold500 口径直接读数
+   （completion 均值 ~358 token 是训练 rollout 口径）——**G6 收口枪补分位实测**。
+5. **FAR 11.05→9.04**：负向误报再降 2pp，SFT 报告的 ROI 主线（等召回下压误报）在 GRPO 段继续兑现。
+6. **遗留（G2 前要处理）**：
+   - ① eval 熔断链路修通（eval_n=8 太小 → 扩到 64 全量；先查为何 baseline greedy 全短路）
+   - ② KL≈0.003 → lr/步数是否够，G2（β=0）与 G3（lr=5e-5）正好是探测这两根轴的枪，顺序不变
+   - ③ 卡时预算：单枪 8.8 h，消融枪考虑减 epoch 或减池
+
+### 一览表更新
+
+| 实验编号 | 状态 | 关键结论 |
+|---|---|---|
+| SFT R6a01 基线 | 🏆 已完成 | 92.47 / 71.68 / 75.2 / JSON 100% gate4 PASS——GRPO 对照基线（替代 R2 口径） |
+| G1 | 🏆 已完成（基准枪通过） | **93.10 / 73.20 / 77.0 / FAR 9.04**；主指标全不降，难例桶兑现；⚠️ eval 熔断链路无效待修、KL≈0.003 |
+| G2 | ⏳ 待执行（前置：修 eval 熔断） | β=0；reward hacking 观察位 |
+| G3 | ⏳ 待执行 | lr=5e-5；KL≈0.003 提示当前更新量小，lr 轴信息量可能比预期大 |
+
+---
+
+## 核心业务指标登记（2026-10-31 补，G1 vs SFT R6a01 起点，gold500 强解析口径）
+
+> 口径：negative = sentiment negative；桶级负面 P/R 按 hard_case_type 分桶统计；
+> risk 按标签逐类 P/R（多标签）；Subset Acc = 风险集合完全匹配率。
+> 手工复算自 pred 文件（与 eval.jsonl 的聚合口径一致：总体 negP 90.96/88.95、SubAcc 77.0/75.2 对上）。
+
+### 1) 总体四指标
+
+| 指标 | G1 (SFT+GRPO) | SFT R6a01 起点 | Δ |
+|---|---|---|---|
+| **负面召回率 R** | 96.99（161/166，漏 5） | 96.99（161/166，漏 5） | 平 |
+| **负面精准率 P** | **90.96** | 88.95 | **+2.0** |
+| **负面误报率 FAR** | **9.04** | 11.05 | −2.0 |
+| **risk Subset Acc** | **77.0** | 75.2 | **+1.8** |
+
+### 2) 各金标难点桶下的负面 P/R（本桶 gold=negative 样本上统计）
+
+| 桶 | neg support | G1 P | G1 R | SFT P | SFT R | Δ 读法 |
+|---|---|---|---|---|---|---|
+| explicit | 73 | **100.0** | **98.6** | 100.0 | 98.6 | 平（已满格） |
+| irony | 32 | **84.2** | **100.0** | 79.5 | 96.9 | **P+4.7、R 补满**——误报 8→6 且漏检 1→0 |
+| metaphor | 18 | 90.0 | 100.0 | 85.7 | 100.0 | P+4.3 |
+| comparative | 16 | 94.1 | 100.0 | 94.1 | 100.0 | 平 |
+| multi_subject | 15 | 100.0 | **86.7** | 100.0 | 86.7 | 平（R 最弱，漏 2） |
+| counterfactual | 12 | 76.9 | **83.3** | 78.6 | 91.7 | **R−8.4**（漏 1→2，唯一退化桶） |
+| fact_implicit | 0 | — | — | — | — | 无负向样本，本桶 4~5 条误报来自 neutral 判负 |
+
+**读法**：GRPO 的负向增益集中在 **irony 桶**（P +4.7 且召回补满）——正是 SFT 报告「误报残部流向修辞难例」的靶点；
+**counterfactual×negative 是唯一退化桶**（R 91.7→83.3，漏 1→2），但 support 仅 12，1 条之差，噪声级，G2 观察是否复发。
+
+### 3) risk 逐类 P/R/F1（多标签）
+
+| 标签 | G1 P / R / F1 | SFT P / R / F1 | Δ F1 | 备注 |
+|---|---|---|---|---|
+| product | 90.9 / 85.7 / 88.2 | 90.2 / 87.6 / 88.9 | −0.7 | 主力类持平 |
+| service | 86.4 / 82.6 / **84.4** | 83.1 / 80.4 / 81.8 | **+2.6** | |
+| marketing | 75.6 / 79.5 / 77.5 | 75.9 / 80.8 / 78.3 | −0.8 | |
+| compliance | 65.0 / 72.2 / **68.4** | 60.5 / 63.9 / 62.2 | **+6.2** | 最大风险类增益 |
+| governance | 75.0 / 30.0 / 42.9 | 100.0 / 20.0 / 33.3 | +9.6 | R 20→30 但 P 100→75，召回换精准 |
+| finance | 28.6 / 40.0 / 33.3 | 28.6 / 40.0 / 33.3 | 平 | support 仅 5，噪声 |
+| **general_negative** | 16.7 / 4.8 / **7.4** | 27.3 / 14.3 / 18.7 | **−11.3** | ⚠️ 唯一明显退化，本就最弱（SFT 报告已注记），GRPO 后进一步萎缩 |
+
+**读法**：risk 增益在 compliance (+6.2) 与 service (+2.6)；general_negative 继续萎缩（F1 18.7→7.4，
+recall 14.3→4.8）——该类是「泛负面兜底类」，与具体风险类此消彼长，SFT 报告即已注记 20.7 的短板，
+G1 后进一步走低需在 G2/G6 观察是否趋势性；业务上若依赖该类做兜底召回，需单独评估。
+
+### 4) 漏检/误报清单落位
+
+- G1 漏检 5 条（与 SFT 相同 5 条基数内移动：multi_subject 2、counterfactual 2、explicit 1）
+- G1 误报 16 条（SFT 20 条）：irony 6、fact_implicit 4、counterfactual 3、metaphor 2、comparative 1
+
+---
+
+## 门 2 阈值定稿（2026-10-31 落码）
+
+`lib/release_gate.py` 新增 `GATE2_SAFETY_FLOOR = {"negative_recall": 95.0, "irony_recall": 85.0}`，
+替代原硬编码 irony 90 单值（CLI `--thresholds` 覆盖仍优先）。单测 28/28 绿。
+
+**校准依据**：irony n=45，1 条 = 2.22pp；90 = 最多漏 4 条对 45 条样本过紧，
+85 = 最多漏 7 条，是统计粒度校准而非放松标准；negative_recall 95（当前 96.99，余量 2pp）。
+有在役基线时仍走 0 容差退化判定，绝对底线只兜「无基线」场景。
+
+**对 G1 的判定影响**：irony 80 仍 < 85 → gate2 仍 FAIL，但缺口从 10pp 收窄到 5pp（救回 2~3 条即过）；
+negative_recall 96.99 ≥ 95 过。irony 目标仍为 90（发布口径），85 是实验阶段的过渡底线。
+
+---
+
+## G1 问题 ①③ 根因更正与耗时解剖（2026-10-31 补，人话版）
+
+### A. 8.8h 去哪了（日志逐步计时实测）
+
+| 项 | 实测 | 占比 |
+|---|---|---|
+| 训练步（32 轨迹/步，vLLM 采样 + 反传） | ~58 s/步 × 64 步（eval 之外的步） | **≈ 1.0 h** |
+| **eval 熔断检查** | **~1700 s/次 × 16 次** | **≈ 7.6 h** |
+
+**8.8 小时里 86% 烧在 eval 上，训练本身只要 1 小时。**
+eval 慢的原因：熔断 eval 在**训练进程内用 HF generate 逐题贪心**（8 题 × 512 token，单条串行、无 vLLM），
+HF generate 无 KV-cache 批调度，单题 greedy ~3.5 分钟。也就是说 vLLM **对训练 rollout 是生效的**
+（日志确有 `use_vllm`、cuda:1 独立采样引擎、0.9 utilization），但 **eval 路径绕开了 vLLM**。
+
+**G2 起跑前的三个立刻可做的省钱杠杆**：
+1. `EVAL_STEPS=5 → 20`（16 次 → 4 次，省 ~5.7h）
+2. 修 `resolve_eval_max_new` 那条线的同时把 eval 挪到 vLLM 或批量并行
+3. 都做的话单枪预期 **8.8h → ~1.5h**
+
+### B. 问题 ① 根因更正（替换此前登记的「eval_n=8 抽样太小」误判）
+
+真根因（`grpo_eval_fuse.py` 工作区 diff 已修，未提交）：
+`max_new = getattr(cfg, "max_completion_length", 200) or 200` —— accelerate 启动下
+TrainingArguments 没有该字段 → 兜底 **200 token**，而 eval 集 CoT+JSON 整段 max 383 →
+greedy 全被截断 → JSON 全残 → R_format 全短路 → 恒 −2.5。跟抽 8 条还是 64 条无关。
+修复：兜底 200→512（`resolve_eval_max_new`）。G2 首轮核对 pre-train baseline 落在
+正常区间（G0 口径 eval 集均值约 −0.5 而非 −2.5）即为修通证据。
+
+### C. 问题 ② 的定性（KL≈0.003、reward 收官 0.27）
+
+80 步 × 32 轨迹 = 2560 条轨迹，LoRA r16 上的策略位移极小（KL 0.003 ≈ 每个 token 分布
+基本没动）。gold500 上 +0.6/+1.5 的涨幅**不能排除「多训一会 SFT 也会涨」的混淆**——
+G1 的正结论应该保守表述为「GRPO 没伤模型，且难例桶增益方向与 reward 设计一致」，
+「GRPO 带来多少净增益」要等 G2/G3 探明 lr/β 轴后才有资格下结论。

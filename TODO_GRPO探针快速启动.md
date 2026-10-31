@@ -133,6 +133,19 @@
   - **坏信号与处置**：全 k=4 → SFT 已收敛到位，GRPO 无题可训（当前探针 50 条上属可能结果，正式池要靠更难的题）；全 k=0 → 打分或数据坏了，回 Step 2 查。
 - [ ] **4.3** 产物留档（把两个文件下载回本机 `tests/output/grpo/` 归档）：`grpo_probe_kstats.json`（k 直方图 + 训练池规模）+ `grpo_probe_kstats.rows.jsonl`（逐题明细）→ 回填 Step 5 表 B。
 
+- [ ] **4.4** 终评（gold500 打分，训练完一枪跑一次）：
+  ```bash
+  ADAPTER_DIR=/root/autodl-tmp/models/grpo_senti/run_<时间戳>/grpo_lora \
+  MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-probe-test \
+  ./scripts/run_grpo_test.sh data/gold500_test.jsonl
+  ```
+  一键完成「GRPO adapter 叠训练起点合并 → 推理 → 模式 B 打分」；预测/报告/日志直接落回
+  该 run 目录（`pred_gold500_test.jsonl` + `report_gold500_test.json` + `logs/grpo_test_<TS>.log`）。
+  `MODEL` 必须与训练该 adapter 时的起点一致（正式对照实验为 `Qwen3-4B-Instruct-SFT-R2`；
+  `Qwen3-4B-Instruct-probe-test` 只是探针阶段的临时起点）；换考卷直接换位置参数，
+  金标默认就是数据文件本身，与 `data/` 下同名文件不同时须显式传 `GOLD_FILE`。
+  详细参数见 `README.md` §3.5b。
+
 ---
 
 ## Step 5 · 指标回收与回填清单

@@ -24,7 +24,10 @@
 #   EVAL_STEPS     eval 间隔（默认 2 步）
 #   FUSE_THRESHOLD 相对首轮 eval reward 的跌幅阈值（默认 2%）
 #   FUSE_HARD      =1 时熔断停止训练；默认只告警
-#   WANDB_API_KEY  设了就同步 wandb
+#   SYNC_WANDB=1   探针默认不上传 wandb (只落本地日志)；正式跑设此开关才同步
+#                  (需已 wandb login 或设 WANDB_API_KEY；与 run_sft_e2e.sh 同款开关)
+#   WANDB_PROJECT  覆盖 wandb project (默认 sentiment-grpo-probe)
+#   WANDB_RUN_NAME 覆盖 wandb run 名 (默认 grpo_<TS>[_<TAG>])
 #   GRPO_ARGS      透传给 train_grpo.py 的额外参数 (--tag 已单独解析, 不用塞这里)
 #
 # 拓扑 (TRL 0.14+ colocate vLLM，参考 12S2W10_rlhf/GRPO/run_train_2gpu.sh):
@@ -151,13 +154,24 @@ else
   VLLM_FLAG=""
 fi
 
-# wandb 参数
+# wandb 参数: 与 run_sft_e2e.sh 同款 SYNC_WANDB 开关口径 ——
+#   探针默认不上传 (只落本地日志)；SYNC_WANDB=1 且已登录 (WANDB_API_KEY 或 ~/.netrc) 才同步。
+#   project/run 名可覆盖; run 名默认带 TS+tag, 对照组在 wandb 看板上一眼可辨
 WANDB_ARGS=""
-if [ -z "${WANDB_API_KEY:-}" ] || [ "${WANDB_OFF:-0}" = "1" ]; then
+log "wandb: 收到 SYNC_WANDB='${SYNC_WANDB:-}' (重启/嵌套调用时前缀环境变量易丢, 此行可核对)"
+if [ "${SYNC_WANDB:-0}" != "1" ]; then
   WANDB_ARGS="--no_wandb"
-  log "wandb: 未设 key 或 WANDB_OFF=1，只落本地日志"
+  log "wandb: 探针模式默认关闭，只落本地日志 (正式跑: SYNC_WANDB=1 ./scripts/run_grpo_train.sh)"
+elif ! python3 -c "import wandb" 2>/dev/null; then
+  WANDB_ARGS="--no_wandb"
+  log "wandb: SYNC_WANDB=1 但未安装 wandb，降级为本地日志 (pip install wandb)"
+elif [ -n "${WANDB_API_KEY:-}" ] || grep -q "api.wandb.ai" ~/.netrc 2>/dev/null; then
+  WANDB_ARGS="--wandb_project ${WANDB_PROJECT:-sentiment-grpo-probe}"
+  WANDB_ARGS="$WANDB_ARGS --wandb_run_name ${WANDB_RUN_NAME:-grpo_${TS}${STEP_TAG:+_${STEP_TAG}}}"
+  log "wandb: SYNC_WANDB=1 且已登录，训练指标将同步在线"
 else
-  log "wandb: 已检测到 WANDB_API_KEY，指标将同步在线"
+  WANDB_ARGS="--no_wandb"
+  log "wandb: SYNC_WANDB=1 但未登录，降级为本地日志 (wandb login 或设 WANDB_API_KEY)"
 fi
 
 # 起点体检：模型目录必须有 config.json；有 merge_manifest.json 说明挂了 SFT
