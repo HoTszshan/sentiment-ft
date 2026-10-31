@@ -1,0 +1,160 @@
+数据: output/baseline/pred_as_train.jsonl  共 500 条
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       489     516     520     530
+  total       1187    1309    1339    1366
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1366 token  hard_case=?  source=?
+    #272 domain   1362 token  hard_case=?  source=?
+    #321 domain   1350 token  hard_case=?  source=?
+    #60 domain   1341 token  hard_case=?  source=?
+    #369 domain   1339 token  hard_case=?  source=?
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       489     516     520     530
+  total       1187    1309    1339    1366
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1366 token  hard_case=?  source=?
+    #272 domain   1362 token  hard_case=?  source=?
+    #321 domain   1350 token  hard_case=?  source=?
+    #60 domain   1341 token  hard_case=?  source=?
+    #369 domain   1339 token  hard_case=?  source=?
+
+统计已落盘: output/gold500_stat_len_base_infer.json
+统计已落盘: output/gold500_stat_len_base_infer.json
+数据: output/baseline/pred.jsonl  共 500 条  (pred 口径, gold 提供 instruction/input)
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       490     517     521     531
+  total       1188    1310    1340    1367
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1367 token  hard_case=irony  source=synthetic
+    #272 domain   1363 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1351 token  hard_case=comparative  source=synthetic
+    #60 domain   1342 token  hard_case=explicit  source=synthetic
+    #369 domain   1340 token  hard_case=irony  source=synthetic
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       490     517     521     531
+  total       1188    1310    1340    1367
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1367 token  hard_case=irony  source=synthetic
+    #272 domain   1363 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1351 token  hard_case=comparative  source=synthetic
+    #60 domain   1342 token  hard_case=explicit  source=synthetic
+    #369 domain   1340 token  hard_case=irony  source=synthetic
+
+统计已落盘: output/gold500_stat_len_base_infer.json
+统计已落盘: output/gold500_stat_len_base_infer.json
+数据: output/baseline/pred.jsonl  共 500 条  (pred 口径, gold 提供 instruction/input)
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       490     517     521     531
+  total       1188    1310    1340    1367
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1367 token  hard_case=irony  source=synthetic
+    #272 domain   1363 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1351 token  hard_case=comparative  source=synthetic
+    #60 domain   1342 token  hard_case=explicit  source=synthetic
+    #369 domain   1340 token  hard_case=irony  source=synthetic
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       490     517     521     531
+  total       1188    1310    1340    1367
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1367 token  hard_case=irony  source=synthetic
+    #272 domain   1363 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1351 token  hard_case=comparative  source=synthetic
+    #60 domain   1342 token  hard_case=explicit  source=synthetic
+    #369 domain   1340 token  hard_case=irony  source=synthetic
+
+统计已落盘: output/gold500_stat_len_base_infer.json
+统计已落盘: output/gold500_stat_len_base_infer.json
+数据: output/baseline/pred.jsonl  共 500 条  (pred 口径, gold 提供 instruction/input)
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       490     517     521     531
+  total       1188    1310    1340    1367
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1367 token  hard_case=irony  source=synthetic
+    #272 domain   1363 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1351 token  hard_case=comparative  source=synthetic
+    #60 domain   1342 token  hard_case=explicit  source=synthetic
+    #369 domain   1340 token  hard_case=irony  source=synthetic
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       490     517     521     531
+  total       1188    1310    1340    1367
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #371 domain   1367 token  hard_case=irony  source=synthetic
+    #272 domain   1363 token  hard_case=multi_subject  source=synthetic
+    #321 domain   1351 token  hard_case=comparative  source=synthetic
+    #60 domain   1342 token  hard_case=explicit  source=synthetic
+    #369 domain   1340 token  hard_case=irony  source=synthetic
+
+统计已落盘: output/gold500_stat_len_base_infer.json
+统计已落盘: output/gold500_stat_len_base_infer.json
+数据: output/baseline/pred.jsonl  共 500 条  (pred 口径, gold 提供 instruction/input)
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       488     751     915     992
+  total       1207    1490    1706    1782
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #276 domain   1782 token  hard_case=multi_subject  source=synthetic
+    #218 domain   1747 token  hard_case=fact_implicit  source=synthetic
+    #424 domain   1740 token  hard_case=metaphor  source=synthetic
+    #255 domain   1731 token  hard_case=multi_subject  source=synthetic
+    #330 domain   1706 token  hard_case=comparative  source=synthetic
+
+⚠️ 全部样本都没有 <think> 标签，跳过 CoT 长度统计。
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       488     751     915     992
+  total       1207    1490    1706    1782
+  cot            0       0       0       0   <- R_length 只量这一段
+  Top5 最长样本:
+    #276 domain   1782 token  hard_case=multi_subject  source=synthetic
+    #218 domain   1747 token  hard_case=fact_implicit  source=synthetic
+    #424 domain   1740 token  hard_case=metaphor  source=synthetic
+    #255 domain   1731 token  hard_case=multi_subject  source=synthetic
+    #330 domain   1706 token  hard_case=comparative  source=synthetic
+
+统计已落盘: output/gold500_stat_len_base_infer.json
+统计已落盘: output/gold500_stat_len_base_infer.json

@@ -1,0 +1,36 @@
+数据: data/gold500_test.jsonl  共 500 条
+
+--- domain (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       378     531     664     907
+  total       1097    1291    1402    1616
+  cot          312     456     595     837   <- R_length 只量这一段
+  Top5 最长样本:
+    #449 domain   1616 token  hard_case=counterfactual  source=synthetic
+    #40 domain   1514 token  hard_case=explicit  source=synthetic
+    #352 domain   1444 token  hard_case=comparative  source=synthetic
+    #242 domain   1443 token  hard_case=multi_subject  source=synthetic
+    #311 domain   1402 token  hard_case=comparative  source=synthetic
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120          6 ( 1.2%)    n/COT_SHORT − 1，越短越负
+  满分 120~200       54 (10.8%)  ███  +1.0
+  衰减 200~320      200 (40.0%)  ████████████  线性 1 → 0
+  归零 ≥320         240 (48.0%)  ██████████████  0
+
+--- 全量 Top-N（不分 domain/anchor） (500 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       707     800     833     857
+  output       378     531     664     907
+  total       1097    1291    1402    1616
+  cot          312     456     595     837   <- R_length 只量这一段
+  Top5 最长样本:
+    #449 domain   1616 token  hard_case=counterfactual  source=synthetic
+    #40 domain   1514 token  hard_case=explicit  source=synthetic
+    #352 domain   1444 token  hard_case=comparative  source=synthetic
+    #242 domain   1443 token  hard_case=multi_subject  source=synthetic
+    #311 domain   1402 token  hard_case=comparative  source=synthetic
+
+统计已落盘: output/gold500_test_stat_len.json
+统计已落盘: output/gold500_test_stat_len.json

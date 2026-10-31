@@ -1,0 +1,105 @@
+{
+  "train_file": "/root/autodl-tmp/datasets/sft_round_0_anchor_0.1/mixed/sft_train.jsonl",
+  "n_rows": 756,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 711,
+        "p95": 812,
+        "p99": 838,
+        "max": 878
+      },
+      "output": {
+        "p50": 383,
+        "p95": 522,
+        "p99": 570,
+        "max": 639
+      },
+      "total": {
+        "p50": 1094,
+        "p95": 1294,
+        "p99": 1355,
+        "max": 1399
+      },
+      "cot": {
+        "p50": 316,
+        "p95": 447,
+        "p99": 493,
+        "max": 560
+      }
+    },
+    "anchor": {
+      "prompt": {
+        "p50": 90,
+        "p95": 451,
+        "p99": 800,
+        "max": 800
+      },
+      "output": {
+        "p50": 14,
+        "p95": 195,
+        "p99": 584,
+        "max": 584
+      },
+      "total": {
+        "p50": 111,
+        "p95": 662,
+        "p99": 873,
+        "max": 873
+      },
+      "cot": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 31,
+      "bucket": "domain",
+      "total": 1399,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 528,
+      "bucket": "domain",
+      "total": 1396,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 449,
+      "bucket": "domain",
+      "total": 1378,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 255,
+      "bucket": "domain",
+      "total": 1375,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 15,
+      "bucket": "domain",
+      "total": 1369,
+      "hard_case": "multi_subject",
+      "source": "synthetic"
+    }
+  ],
+  "r_length_buckets": {
+    "short(<120)": 0,
+    "ideal(120~200)": 52,
+    "decay(200~320)": 299,
+    "dead(>=320)": 322,
+    "n": 673
+  }
+}

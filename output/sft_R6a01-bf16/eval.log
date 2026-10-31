@@ -1,0 +1,113 @@
+======================================================================
+模式 B · 模型对照评测
+  gold: data/gold500_test.jsonl
+  pred: output/sft_R6a01-bf16/pred.jsonl
+  分母口径: 强解析失败即丢弃
+======================================================================
+
+--- 一、协议与格式门槛 ---
+  思考标签闭合率      : 100.00%  (要求 100%)
+  JSON 合法率         : 100.00%  (门槛 ≥99.8%)
+  evidence 严格子串率 : 99.60%  (分母=总样本数 500, 一票否决)
+  evidence 字段覆盖率 : 100.00%
+  闭集契约违规        : 1 条
+  尾赘文本条数        : 0
+
+--- 二、hard_case_type (7 类) ---
+  Macro-F1: 71.68%
+  类别                 support        P        R       F1
+  comparative             45    61.8%    75.6%    68.0%
+  counterfactual          50    89.1%    82.0%    85.4%
+  explicit               129    69.0%    69.0%    69.0%
+  fact_implicit          111    69.0%    78.4%    73.4%
+  irony                   45    90.0%    80.0%    84.7%
+  metaphor                40    66.7%    45.0%    53.7%
+  multi_subject           80    68.8%    66.2%    67.5%
+
+  ★ irony 单项召回: 80.00%  (FAIL, 门槛 ≥90.0%)
+
+--- 三、sentiment (3 类) ---
+  Macro-F1: 92.47%
+  类别           support        P        R       F1
+  negative         166    89.0%    97.0%    92.8%
+  neutral          226    95.4%    92.0%    93.7%
+  positive         108    94.1%    88.0%    90.9%
+
+  ★ 负向召回 (成对口径): 96.99%  |  误报率: 11.05%  (负向精确率 88.95%)
+
+--- 四、risk_categories (对称双罚) ---
+  ★ Subset Accuracy: 75.20%  (FAIL, 门槛 ≥90.0%)
+  空表支撑集: 264 条 | 空表精确率: 90.53%
+
+  per-key 诊断线 (不进准入门槛):
+  Key                  support        P        R       F1
+  compliance                36    60.5%    63.9%    62.2%
+  finance                    5    28.6%    40.0%    33.3%
+  general_negative          21    27.3%    14.3%    18.7%
+  governance                10   100.0%    20.0%    33.3%
+  marketing                 78    75.9%    80.8%    78.3%
+  product                  105    90.2%    87.6%    88.9%
+  service                   92    83.1%    80.4%    81.8%
+
+--- 五、四维切片热力 ---
+  [hard_case_type] 风险完全匹配率
+    explicit              n=129    75.2%
+    fact_implicit         n=111    77.5%
+    multi_subject         n=80     85.0%
+    counterfactual        n=50     68.0%
+    comparative           n=45     82.2%
+    irony                 n=45     57.8%
+    metaphor              n=40     70.0%
+  [industry] 风险完全匹配率
+    electronics_3c        n=92     75.0%
+    automotive            n=90     70.0%
+    beauty_cosmetics      n=87     71.3%
+    finance_insurance     n=79     79.8%
+    fmcg                  n=79     79.8%
+    real_estate           n=73     76.7%
+  [relevance] 风险完全匹配率
+    core                  n=328    70.4%
+    passing               n=136    82.3%
+    foil                  n=36     91.7%
+  [sentiment] 风险完全匹配率
+    neutral               n=226    77.9%
+    negative              n=166    59.0%
+    positive              n=108    94.4%
+
+--- 六、错判样例 (前 5 条，供 Shadow Pool 归因) ---
+  #3 [beauty_cosmetics] gold=[] pred=['marketing'] sent:neutral→neutral hc:explicit→multi_subject
+      原文: 【目标主体】橘朵
+【输入文本】
+昨晚蹲大促蹲到零点，橘朵这波我没啥可夸，也没啥可吐槽的。页面写了券后…
+  #4 [finance_insurance] gold=[] pred=[] sent:positive→neutral hc:explicit→fact_implicit
+      原文: 【目标主体】徽商银行
+【输入文本】
+【关于徽商银行服务效能提升的情况通报】接总行零售业务部通知，近期…
+  #9 [electronics_3c] gold=[] pred=[] sent:positive→neutral hc:explicit→fact_implicit
+      原文: 【目标主体】云佳系列
+【输入文本】
+关于2026年第二季度消费电子市场运行情况的通报显示，行业整体出…
+  #13 [beauty_cosmetics] gold=['governance'] pred=['governance', 'marketing'] sent:negative→negative hc:explicit→comparative
+      原文: 【目标主体】雅诗兰黛小棕瓶
+【输入文本】
+做季度传播复盘时，我会把代言争议的治理信息单独列项：行业常…
+  #16 [beauty_cosmetics] gold=['product'] pred=['general_negative', 'product'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】修丽可色修精华
+【输入文本】
+我做投资复盘习惯记体验，这周早高峰开长续航后驱纯电轿车走高…
+
+--- 七、发布门 ---
+  gate1: N/A
+  gate2: FAIL
+  gate3: N/A
+  gate4: PASS
+  归因（前 5 条）:
+    [gate2] irony_recall: 安全字段未达底线：80.00 < 90.00
+
+======================================================================
+验收结论: 【FAIL 未达发布门槛】
+  - evidence 严格子串率 99.6% < 100.0%
+  - 闭集契约违规 1 条
+  - 门 2 金标不退化未过
+======================================================================
+[OK] 结构化报告已落盘: /root/autodl-tmp/senti/output/sft_R6a01-bf16/eval.jsonl

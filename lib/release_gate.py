@@ -45,6 +45,8 @@ THRESH_GATE2_SAFE_DROP = 0.0      # pp 安全字段退化容差（0 容差）
 THRESH_GATE2_ORDINARY_DROP = 1.0  # pp 普通字段退化容差
 THRESH_GATE4_JSON_VALID = 99.8    # % JSON 合法率
 
+# 门2兜底：无基线时负向召回≥95、反讽≥85；存在基线则0容差判定
+GATE2_SAFETY_FLOOR = {"negative_recall": 95.0, "irony_recall": 85.0}
 # 门 2 的「安全字段」：极性方向错了代价最大（漏报危机 / 误报刷人工）
 SAFETY_FIELDS = ("negative_recall", "irony_recall")
 # 门 2 的「普通字段」：允许小幅退化（1pp）
@@ -207,8 +209,8 @@ def evaluate_gates(gold: Sequence[Dict[str, Any]],
                                     "reason": f"安全字段退化（0 容差）：{cur_v:.2f} < 在役 {base_v:.2f}"})
         else:
             thr = thresholds.get(field)
-            if field == "irony_recall" and thr is None:
-                thr = 90.0
+            if thr is None:
+                thr = GATE2_SAFETY_FLOOR.get(field)
             if thr is None:
                 details["gate2"]["skipped"].append(
                     f"{field}（缺在役基线与门槛值，未参与判定）")

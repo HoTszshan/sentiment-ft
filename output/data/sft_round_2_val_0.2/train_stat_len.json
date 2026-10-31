@@ -1,0 +1,106 @@
+{
+  "train_file": "/root/autodl-tmp/datasets/sft_round_2_val_0.2/mixed/sft_train.jsonl",
+  "mode": "train",
+  "n_rows": 2624,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "anchor": {
+      "prompt": {
+        "p50": 79,
+        "p95": 427,
+        "p99": 582,
+        "max": 800
+      },
+      "output": {
+        "p50": 15,
+        "p95": 131,
+        "p99": 246,
+        "max": 598
+      },
+      "total": {
+        "p50": 103,
+        "p95": 487,
+        "p99": 786,
+        "max": 873
+      },
+      "cot": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      }
+    },
+    "domain": {
+      "prompt": {
+        "p50": 711,
+        "p95": 811,
+        "p99": 836,
+        "max": 889
+      },
+      "output": {
+        "p50": 369,
+        "p95": 512,
+        "p99": 574,
+        "max": 676
+      },
+      "total": {
+        "p50": 1080,
+        "p95": 1283,
+        "p99": 1348,
+        "max": 1539
+      },
+      "cot": {
+        "p50": 300,
+        "p95": 438,
+        "p99": 500,
+        "max": 595
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 804,
+      "bucket": "domain",
+      "total": 1539,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 2278,
+      "bucket": "domain",
+      "total": 1440,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 1941,
+      "bucket": "domain",
+      "total": 1433,
+      "hard_case": "multi_subject",
+      "source": "synthetic"
+    },
+    {
+      "idx": 1097,
+      "bucket": "domain",
+      "total": 1421,
+      "hard_case": "metaphor",
+      "source": "synthetic"
+    },
+    {
+      "idx": 2004,
+      "bucket": "domain",
+      "total": 1412,
+      "hard_case": "explicit",
+      "source": "synthetic"
+    }
+  ],
+  "r_length_buckets": {
+    "short(<120)": 192,
+    "ideal(120~200)": 183,
+    "decay(200~320)": 975,
+    "dead(>=320)": 954,
+    "n": 2304
+  }
+}

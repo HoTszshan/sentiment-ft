@@ -58,6 +58,7 @@
 ├── scripts/                        ← 只放 CLI 入口（可执行脚本）
 │   ├── run_sft_e2e.sh              ★ 一键串跑（5 步）
 │   ├── run_grpo_train.sh           ★ GRPO 后台启动（nohup + 时间戳日志 + PID + 拓扑选择）
+│   ├── run_grpo_test.sh            ★ GRPO 终评一键（merge GRPO adapter → 推理 → 模式 B 打分；产物挂 adapter 所属 run 目录）
 │   ├── run_grpo_probe.sh           ★ GRPO rollout 探针启动（与 run_grpo_train.sh 同产物布局）
 │   ├── convert_sft_data.py         ★ Schema v1 批次转换（金标/训练批次 → 评测链路格式）
 │   ├── human_recheck_kappa.py      ★ 人工复核 κ 一致性门禁
@@ -638,6 +639,33 @@ MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-2507 ./scripts/run_grpo_train.sh
 
 **版本要求**（2026-10-28 真机锚定，以 `requirements.txt` 为准）：`trl==0.14.0` + `transformers==4.51.0`（Qwen3 支持下限，勿装 5.x——trl 0.14 不兼容）+ `torch==2.5.1` + `peft==0.20.0`；**deepspeed 必须卸载**（与 transformers 4.51 循环导入）。安装一律 `pip install -r requirements.txt`，**不要自行升级 `trl` / `vllm` / `torch`**。`train_grpo.py` 内置 5 个环境补丁（vllm 检测元组 / scale_rewards=none 运行时 patch / vLLM max_model_len 注入 / 显存预算），换版本前先过 `notes/GRPO环境踩坑实录_20261027.md`。
 **双卡 vLLM 采样（✅ 2026-10-28 已跑通，run_20261028_115727_smoke）**：`NPROC=2`（或机器 ≥2 卡自动）走「accelerate 1 训练进程 cuda:0 + vLLM 独占 cuda:1」。显存三件套已固化默认值：batch `2×4`（每步拓扑不变 8 题×G4）、`--gradient_checkpointing`、vLLM utilization `0.9`（KV 12.3G / 并发 ~35x，32 条 rollout 一波发完）；`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 由 `run_grpo_train.sh` 自动 export。vllm 0.7.3 不在 requirements，需手动装（见文件头注释）。单卡环境自动降级 HF generate + `CUDA_VISIBLE_DEVICES=0`（DataParallel 防呆保留）。
+
+### 3.5b 终评：`run_grpo_test.sh`（GRPO adapter → merge → 推理 → 模式 B 打分，一键）
+
+GRPO 训完一枪后，把该枪的 adapter 叠回其训练起点（SFT 合并模型）做终评。
+与 `run_sft_e2e.sh test` 的区别：起点是「SFT 合并模型 + GRPO adapter」，
+**不新建 run 目录**——预测/报告/日志直接挂到 adapter 所属 `run_<TS>_<TAG>/` 下，
+与训练产物同目录归档（`logs/grpo_test_<TS>.log` + `pred_<数据名>.jsonl` + `report_<数据名>.json`）。
+
+```bash
+# G1 终评（gold500）：显式指定 adapter 与训练起点
+ADAPTER_DIR=/root/autodl-tmp/models/grpo_senti/run_<G1时间戳>/grpo_lora \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-SFT-R2 \
+./scripts/run_grpo_test.sh data/gold500_test.jsonl
+
+# adapter 不传时自动定位：最新 run_*/grpo_lora（ADAPTER_DIR 可显式指定）
+./scripts/run_grpo_test.sh data/gold500_test.jsonl
+```
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ADAPTER_DIR` | 自动定位 | GRPO adapter 目录（多枪对照必显式指定） |
+| `MODEL` | `models/Qwen3-4B-Instruct-SFT` | GRPO 训练起点 = SFT 合并模型，**必须与训练该 adapter 时一致**（缺 `merge_manifest.json` 会警告像裸基座） |
+| 位置参数 | `data/gold500_test.jsonl` | 待评估数据文件路径（金标默认就是该文件本身；金标与数据不同文件时显式传 `GOLD_FILE`） |
+| `INFER_BACKEND` | `vllm` | `vllm` / `hf` |
+| `FORCE=1` / `CLEAN_MERGE=1` | `0` | 强制重合并 / 评后删合并模型（~7.6G，adapter 与报告保留） |
+
+合并产物落在 `$OUTPUT_DIR/merged/<起点名>_<run名>_grpo_lora-bf16/`（fp32 合并+logits 校验后 cast bf16，幂等复用，manifest 留档）。
 
 
 ### 3.6 难度分流：`run_grpo_probe.py`（只留 k∈{1,2,3}）

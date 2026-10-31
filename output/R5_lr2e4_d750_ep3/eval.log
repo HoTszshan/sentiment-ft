@@ -1,0 +1,116 @@
+======================================================================
+模式 B · 模型对照评测
+  gold: data/gold500_test.jsonl
+  pred: /root/autodl-tmp/models/sft_senti/run_20261029_154558_R5_lr2e4_d750_ep3/pred_gold500_test.jsonl
+  分母口径: 强解析失败即丢弃
+======================================================================
+
+--- 一、协议与格式门槛 ---
+  思考标签闭合率      : 100.00%  (要求 100%)
+  JSON 合法率         : 92.20%  (门槛 ≥99.8%)
+  evidence 严格子串率 : 91.80%  (分母=总样本数 500, 一票否决)
+  evidence 字段覆盖率 : 92.20%
+  闭集契约违规        : 12 条
+  尾赘文本条数        : 39
+
+--- 二、hard_case_type (7 类) ---
+  Macro-F1: 61.12%
+  类别                 support        P        R       F1
+  comparative             44    59.6%    77.3%    67.3%
+  counterfactual          47    83.3%    31.9%    46.2%
+  explicit               119    63.7%    72.3%    67.7%
+  fact_implicit           99    58.9%    83.8%    69.2%
+  irony                   45    84.4%    60.0%    70.1%
+  metaphor                34    50.0%    38.2%    43.3%
+  multi_subject           73    76.9%    54.8%    64.0%
+
+  ★ irony 单项召回: 60.00%  (FAIL, 门槛 ≥90.0%)
+
+--- 三、sentiment (3 类) ---
+  Macro-F1: 92.44%
+  类别           support        P        R       F1
+  negative         163    88.9%    98.2%    93.3%
+  neutral          203    96.4%    91.1%    93.7%
+  positive          86    93.8%    87.2%    90.4%
+
+  ★ 负向召回 (成对口径): 96.39%  |  误报率: 11.11%  (负向精确率 88.89%)
+
+--- 四、risk_categories (对称双罚) ---
+  ★ Subset Accuracy: 71.80%  (FAIL, 门槛 ≥90.0%)
+  空表支撑集: 264 条 | 空表精确率: 90.15%
+
+  per-key 诊断线 (不进准入门槛):
+  Key                  support        P        R       F1
+  compliance                36    54.5%    66.7%    60.0%
+  finance                    5    20.0%    20.0%    20.0%
+  general_negative          21     0.0%     0.0%     0.0%
+  governance                10   100.0%    20.0%    33.3%
+  marketing                 78    75.6%    79.5%    77.5%
+  product                  105    86.0%    81.9%    83.9%
+  service                   92    80.5%    76.1%    78.2%
+
+--- 五、四维切片热力 ---
+  [hard_case_type] 风险完全匹配率
+    explicit              n=129    66.7%
+    fact_implicit         n=111    64.9%
+    multi_subject         n=80     72.5%
+    counterfactual        n=50     58.0%
+    comparative           n=45     82.2%
+    irony                 n=45     51.1%
+    metaphor              n=40     52.5%
+  [industry] 风险完全匹配率
+    electronics_3c        n=92     72.8%
+    automotive            n=90     55.6%
+    beauty_cosmetics      n=87     66.7%
+    finance_insurance     n=79     65.8%
+    fmcg                  n=79     62.0%
+    real_estate           n=73     68.5%
+  [relevance] 风险完全匹配率
+    core                  n=328    58.8%
+    passing               n=136    75.0%
+    foil                  n=36     86.1%
+  [sentiment] 风险完全匹配率
+    neutral               n=226    67.7%
+    negative              n=166    53.0%
+    positive              n=108    78.7%
+
+--- 六、错判样例 (前 5 条，供 Shadow Pool 归因) ---
+  #6 [automotive] gold=['product', 'service'] pred=['product'] sent:negative→negative hc:explicit→fact_implicit
+      原文: 【目标主体】特斯拉 Model 3
+【输入文本】
+这阵子车圈讨论最多的还是电池安全和续航口径，监管抽…
+  #9 [electronics_3c] gold=[] pred=[] sent:positive→neutral hc:explicit→fact_implicit
+      原文: 【目标主体】云佳系列
+【输入文本】
+关于2026年第二季度消费电子市场运行情况的通报显示，行业整体出…
+  #16 [beauty_cosmetics] gold=['product'] pred=['general_negative', 'product'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】修丽可色修精华
+【输入文本】
+我做投资复盘习惯记体验，这周早高峰开长续航后驱纯电轿车走高…
+  #19 [fmcg] gold=['marketing', 'product'] pred=['compliance', 'marketing'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】统一
+【输入文本】
+刚查了统一的配料表，宣传的高蛋白含量根本达不到国标下限，标签还玩文字…
+  #21 [finance_insurance] gold=['marketing', 'product', 'service'] pred=['marketing', 'product'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】平安银行信用卡
+【输入文本】
+真的要被平安银行信用卡气到了！之前被推的绑定专属理财，说什…
+
+--- 七、发布门 ---
+  gate1: N/A
+  gate2: FAIL
+  gate3: N/A
+  gate4: FAIL
+  归因（前 5 条）:
+    [gate2] irony_recall: 安全字段未达底线：60.00 < 90.00
+    [gate4] -: JSON 合法率 92.20% < 99.8%
+
+======================================================================
+验收结论: 【FAIL 未达发布门槛】
+  - JSON 合法率 92.2% < 99.8%
+  - evidence 严格子串率 91.8% < 100.0%
+  - 闭集契约违规 12 条
+  - 门 2 金标不退化未过
+  - 门 4 格式合规未过
+======================================================================
+[OK] 结构化报告已落盘: /root/autodl-tmp/senti/output/R5_lr2e4_d750_ep3/eval.jsonl

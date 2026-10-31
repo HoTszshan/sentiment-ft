@@ -1,0 +1,36 @@
+数据: /root/autodl-tmp/datasets/sft_round_0/mixed/sft_train.jsonl  共 673 条
+
+--- domain (673 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       711     812     836     878
+  output       383     522     568     639
+  total       1094    1293    1354    1399
+  cot          316     447     493     560   <- R_length 只量这一段
+  Top5 最长样本:
+    #278 domain   1399 token  hard_case=fact_implicit  source=synthetic
+    #280 domain   1396 token  hard_case=fact_implicit  source=synthetic
+    #435 domain   1375 token  hard_case=explicit  source=synthetic
+    #237 domain   1369 token  hard_case=multi_subject  source=synthetic
+    #498 domain   1359 token  hard_case=counterfactual  source=synthetic
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120          0 ( 0.0%)    n/COT_SHORT − 1，越短越负
+  满分 120~200       53 ( 7.9%)  ██  +1.0
+  衰减 200~320      300 (44.6%)  █████████████  线性 1 → 0
+  归零 ≥320         320 (47.5%)  ██████████████  0
+
+--- 全量 Top-N（不分 domain/anchor） (673 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       711     812     836     878
+  output       383     522     568     639
+  total       1094    1293    1354    1399
+  cot          316     447     493     560   <- R_length 只量这一段
+  Top5 最长样本:
+    #278 domain   1399 token  hard_case=fact_implicit  source=synthetic
+    #280 domain   1396 token  hard_case=fact_implicit  source=synthetic
+    #435 domain   1375 token  hard_case=explicit  source=synthetic
+    #237 domain   1369 token  hard_case=multi_subject  source=synthetic
+    #498 domain   1359 token  hard_case=counterfactual  source=synthetic
+
+统计已落盘: output/data/sft_round_0/train_stat_len.json
+统计已落盘: output/data/sft_round_0/train_stat_len.json

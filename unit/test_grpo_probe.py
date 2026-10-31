@@ -418,6 +418,12 @@ class TestScoreOneIsSingleSource(unittest.TestCase):
         self.assertEqual(a["total"], 2.0)
 
 
+class _FakeCfg:
+    """模拟带 max_completion_length 的训练 cfg。"""
+    def __init__(self, value):
+        self.max_completion_length = value
+
+
 class TestShouldFuse(unittest.TestCase):
     """对齐税熔断判定（GRPO 手册模块 3 闸② / TODO 5.19）。"""
 
@@ -444,6 +450,27 @@ class TestShouldFuse(unittest.TestCase):
     def test_exactly_threshold_does_not_fuse(self):
         self.assertFalse(should_fuse(1.0, 0.98))               # 恰 2%：严格大于才熔断
         self.assertTrue(should_fuse(1.0, 0.979))               # 2.1% 熔断
+
+
+class TestEvalMaxNewResolution(unittest.TestCase):
+    """eval 生成预算解析：G1 实测教训（2026-10-30）—— 兜底 200 截断 eval 生成
+    → R_format 门禁假短路 → eval 均值恒 −2.5 → 熔断器静默失效。"""
+
+    def test_explicit_max_completion_length_wins(self):
+        self.assertEqual(gef.resolve_eval_max_new(_FakeCfg(512)), 512)
+
+    def test_missing_field_falls_back_to_512_not_200(self):
+        class _Empty:   # 模拟无 max_completion_length 属性的 cfg
+            pass
+        self.assertEqual(gef.resolve_eval_max_new(_Empty()), 512)
+
+    def test_none_or_zero_falls_back_to_512(self):
+        self.assertEqual(gef.resolve_eval_max_new(_FakeCfg(0)), 512)
+        self.assertEqual(gef.resolve_eval_max_new(_FakeCfg(None)), 512)
+
+    def test_small_budget_still_respected(self):
+        # 显式设小值是调用方的选择（如显存紧张），不再被兜底覆盖
+        self.assertEqual(gef.resolve_eval_max_new(_FakeCfg(256)), 256)
 
 
 # ============================================================

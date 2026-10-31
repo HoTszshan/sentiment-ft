@@ -1,0 +1,69 @@
+[T2] few-shot 示例: 3 条 (来自 data/few_shot_examples.jsonl)
+======================================================================
+探针推理
+  基座    : /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+  Adapter : (无 — 裸基座对照)
+  数据    : data/gold500_test.jsonl (500 条)
+  产出    : output/bl_fewshot/pred.jsonl
+  日志    : output/bl_fewshot/infer.log
+======================================================================
+[TIME] 引擎+模型加载: 31.1s
+[TIME] prompt 渲染: 88.4s | 批量生成 500 条: 88.4s (吞吐 5.66 条/s, 均值 0.18s/条)
+  [10/500] tag合规 0 | JSON合法 10 | evidence 命中原文 10
+  [20/500] tag合规 0 | JSON合法 20 | evidence 命中原文 20
+  [30/500] tag合规 0 | JSON合法 30 | evidence 命中原文 30
+  [40/500] tag合规 0 | JSON合法 40 | evidence 命中原文 39
+  [50/500] tag合规 0 | JSON合法 50 | evidence 命中原文 49
+  [60/500] tag合规 0 | JSON合法 60 | evidence 命中原文 58
+  [70/500] tag合规 0 | JSON合法 70 | evidence 命中原文 68
+  [80/500] tag合规 0 | JSON合法 80 | evidence 命中原文 78
+  [90/500] tag合规 0 | JSON合法 90 | evidence 命中原文 88
+  [100/500] tag合规 0 | JSON合法 100 | evidence 命中原文 98
+  [110/500] tag合规 0 | JSON合法 110 | evidence 命中原文 108
+  [120/500] tag合规 0 | JSON合法 120 | evidence 命中原文 117
+  [130/500] tag合规 0 | JSON合法 130 | evidence 命中原文 127
+  [140/500] tag合规 0 | JSON合法 140 | evidence 命中原文 137
+  [150/500] tag合规 0 | JSON合法 150 | evidence 命中原文 147
+  [160/500] tag合规 0 | JSON合法 160 | evidence 命中原文 157
+  [170/500] tag合规 0 | JSON合法 170 | evidence 命中原文 167
+  [180/500] tag合规 0 | JSON合法 180 | evidence 命中原文 177
+  [190/500] tag合规 0 | JSON合法 190 | evidence 命中原文 187
+  [200/500] tag合规 0 | JSON合法 200 | evidence 命中原文 197
+  [210/500] tag合规 0 | JSON合法 210 | evidence 命中原文 207
+  [220/500] tag合规 0 | JSON合法 220 | evidence 命中原文 215
+  [230/500] tag合规 0 | JSON合法 230 | evidence 命中原文 225
+  [240/500] tag合规 0 | JSON合法 240 | evidence 命中原文 235
+  [250/500] tag合规 0 | JSON合法 250 | evidence 命中原文 245
+  [260/500] tag合规 0 | JSON合法 260 | evidence 命中原文 255
+  [270/500] tag合规 0 | JSON合法 270 | evidence 命中原文 265
+  [280/500] tag合规 0 | JSON合法 280 | evidence 命中原文 274
+  [290/500] tag合规 0 | JSON合法 290 | evidence 命中原文 284
+  [300/500] tag合规 0 | JSON合法 300 | evidence 命中原文 294
+  [310/500] tag合规 0 | JSON合法 310 | evidence 命中原文 304
+  [320/500] tag合规 0 | JSON合法 320 | evidence 命中原文 314
+  [330/500] tag合规 0 | JSON合法 330 | evidence 命中原文 324
+  [340/500] tag合规 0 | JSON合法 340 | evidence 命中原文 334
+  [350/500] tag合规 0 | JSON合法 350 | evidence 命中原文 344
+  [360/500] tag合规 0 | JSON合法 360 | evidence 命中原文 354
+  [370/500] tag合规 0 | JSON合法 370 | evidence 命中原文 363
+  [380/500] tag合规 0 | JSON合法 380 | evidence 命中原文 372
+  [390/500] tag合规 0 | JSON合法 390 | evidence 命中原文 382
+  [400/500] tag合规 0 | JSON合法 400 | evidence 命中原文 392
+  [410/500] tag合规 0 | JSON合法 410 | evidence 命中原文 402
+  [420/500] tag合规 0 | JSON合法 420 | evidence 命中原文 412
+  [430/500] tag合规 0 | JSON合法 430 | evidence 命中原文 422
+  [440/500] tag合规 0 | JSON合法 440 | evidence 命中原文 432
+  [450/500] tag合规 0 | JSON合法 450 | evidence 命中原文 442
+  [460/500] tag合规 0 | JSON合法 460 | evidence 命中原文 452
+  [470/500] tag合规 0 | JSON合法 470 | evidence 命中原文 462
+  [480/500] tag合规 0 | JSON合法 480 | evidence 命中原文 471
+  [490/500] tag合规 0 | JSON合法 490 | evidence 命中原文 481
+  [500/500] tag合规 0 | JSON合法 500 | evidence 命中原文 489
+======================================================================
+[OK] 推理完成 500 条，总耗时 122.0s (均值 0.24s/条)
+     CoT 标签闭合率 : 0/500 (0.0%)
+     JSON 解析合法率: 500/500 (100.0%)
+     evidence 原文命中: 489/500 (97.8%)
+     预测文件: output/bl_fewshot/pred.jsonl
+======================================================================
+下一步: python evaluate_sft.py --gold_file data/gold500_test.jsonl --pred_file output/bl_fewshot/pred.jsonl
