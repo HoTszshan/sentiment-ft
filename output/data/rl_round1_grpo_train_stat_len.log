@@ -1,0 +1,70 @@
+数据: /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl  共 1098 条
+
+--- domain (1098 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       703     813     845     870
+  output       279     453     536     631
+  total        996    1211    1297    1479
+  cot          208     382     452     556   <- R_length 只量这一段
+  Top5 最长样本:
+    #888 domain   1479 token  hard_case=fact_implicit  source=synthetic
+    #930 domain   1395 token  hard_case=fact_implicit  source=synthetic
+    #78 domain   1383 token  hard_case=fact_implicit  source=synthetic
+    #320 domain   1354 token  hard_case=fact_implicit  source=synthetic
+    #240 domain   1340 token  hard_case=comparative  source=synthetic
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120        260 (23.7%)  ███████  n/COT_SHORT − 1，越短越负
+  满分 120~200      268 (24.4%)  ███████  +1.0
+  衰减 200~320      382 (34.8%)  ██████████  线性 1 → 0
+  归零 ≥320         188 (17.1%)  █████  0
+
+--- 全量 Top-N（不分 domain/anchor） (1098 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       703     813     845     870
+  output       279     453     536     631
+  total        996    1211    1297    1479
+  cot          208     382     452     556   <- R_length 只量这一段
+  Top5 最长样本:
+    #888 domain   1479 token  hard_case=fact_implicit  source=synthetic
+    #930 domain   1395 token  hard_case=fact_implicit  source=synthetic
+    #78 domain   1383 token  hard_case=fact_implicit  source=synthetic
+    #320 domain   1354 token  hard_case=fact_implicit  source=synthetic
+    #240 domain   1340 token  hard_case=comparative  source=synthetic
+
+统计已落盘: output/data/rl_round1_grpo_train_stat_len.json
+数据: /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl  共 1098 条
+
+--- domain (1098 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       703     813     845     870
+  output       279     453     536     631
+  total        996    1211    1297    1479
+  cot          208     382     452     556   <- R_length 只量这一段
+  Top5 最长样本:
+    #888 domain   1479 token  hard_case=fact_implicit  source=synthetic
+    #930 domain   1395 token  hard_case=fact_implicit  source=synthetic
+    #78 domain   1383 token  hard_case=fact_implicit  source=synthetic
+    #320 domain   1354 token  hard_case=fact_implicit  source=synthetic
+    #240 domain   1340 token  hard_case=comparative  source=synthetic
+
+--- R_length 落档 (阈值 120/200/320 token) ---
+  过短罚 <120        260 (23.7%)  ███████  n/COT_SHORT − 1，越短越负
+  满分 120~200      268 (24.4%)  ███████  +1.0
+  衰减 200~320      382 (34.8%)  ██████████  线性 1 → 0
+  归零 ≥320         188 (17.1%)  █████  0
+
+--- 全量 Top-N（不分 domain/anchor） (1098 条, 单位=token) ---
+               p50     p95     p99     max
+  prompt       703     813     845     870
+  output       279     453     536     631
+  total        996    1211    1297    1479
+  cot          208     382     452     556   <- R_length 只量这一段
+  Top5 最长样本:
+    #888 domain   1479 token  hard_case=fact_implicit  source=synthetic
+    #930 domain   1395 token  hard_case=fact_implicit  source=synthetic
+    #78 domain   1383 token  hard_case=fact_implicit  source=synthetic
+    #320 domain   1354 token  hard_case=fact_implicit  source=synthetic
+    #240 domain   1340 token  hard_case=comparative  source=synthetic
+
+统计已落盘: output/data/rl_round1_grpo_train_stat_len.json
