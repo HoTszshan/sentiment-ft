@@ -1,0 +1,80 @@
+{
+  "train_file": "/root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl",
+  "mode": "train",
+  "n_rows": 1098,
+  "tokenizer": "/root/autodl-tmp/models/Qwen3-4B-Instruct-2507",
+  "unit": "token",
+  "top_n": 5,
+  "buckets": {
+    "domain": {
+      "prompt": {
+        "p50": 703,
+        "p95": 813,
+        "p99": 845,
+        "max": 870
+      },
+      "output": {
+        "p50": 279,
+        "p95": 453,
+        "p99": 536,
+        "max": 631
+      },
+      "total": {
+        "p50": 996,
+        "p95": 1211,
+        "p99": 1297,
+        "max": 1479
+      },
+      "cot": {
+        "p50": 208,
+        "p95": 382,
+        "p99": 452,
+        "max": 556
+      }
+    }
+  },
+  "top": [
+    {
+      "idx": 888,
+      "bucket": "domain",
+      "total": 1479,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 930,
+      "bucket": "domain",
+      "total": 1395,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 78,
+      "bucket": "domain",
+      "total": 1383,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 320,
+      "bucket": "domain",
+      "total": 1354,
+      "hard_case": "fact_implicit",
+      "source": "synthetic"
+    },
+    {
+      "idx": 240,
+      "bucket": "domain",
+      "total": 1340,
+      "hard_case": "comparative",
+      "source": "synthetic"
+    }
+  ],
+  "r_length_buckets": {
+    "short(<120)": 260,
+    "ideal(120~200)": 268,
+    "decay(200~320)": 382,
+    "dead(>=320)": 188,
+    "n": 1098
+  }
+}
