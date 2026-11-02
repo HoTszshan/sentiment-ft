@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-02T15:23:30.287053+00:00",
+  "gold": "/root/autodl-tmp/senti/data/gold500_test.jsonl",
+  "n_gold": 500,
+  "tiers": {
+    "T1 裸基座": {
+      "n_samples": 500,
+      "json_parse_ok": 0,
+      "sentiment_macro_f1": 0.0,
+      "negative_recall": 0.0,
+      "false_alarm_rate": 0.0,
+      "negative_recall_defined": true,
+      "hard_case_macro_f1": 0.0,
+      "irony_recall": null,
+      "irony_support": 0,
+      "relevance_macro_f1": 0.0,
+      "risk_subset_accuracy": 52.800000000000004,
+      "risk_empty_precision": 100.0
+    },
+    "T2 提示词加固": {
+      "n_samples": 500,
+      "json_parse_ok": 500,
+      "sentiment_macro_f1": 82.30996192565182,
+      "negative_recall": 98.79518072289156,
+      "false_alarm_rate": 29.310344827586206,
+      "negative_recall_defined": true,
+      "hard_case_macro_f1": 24.60984055794797,
+      "irony_recall": 8.88888888888889,
+      "irony_support": 45,
+      "relevance_macro_f1": 46.572401233418184,
+      "risk_subset_accuracy": 46.400000000000006,
+      "risk_empty_precision": 50.0
+    },
+    "T3 SFT": {
+      "n_samples": 500,
+      "json_parse_ok": 500,
+      "sentiment_macro_f1": 94.69462458954227,
+      "negative_recall": 98.79518072289156,
+      "false_alarm_rate": 10.382513661202182,
+      "negative_recall_defined": true,
+      "hard_case_macro_f1": 75.39668675470638,
+      "irony_recall": 77.77777777777779,
+      "irony_support": 45,
+      "relevance_macro_f1": 82.62964059927153,
+      "risk_subset_accuracy": 78.2,
+      "risk_empty_precision": 92.8030303030303
+    },
+    "T4 GRPO": {
+      "n_samples": 500,
+      "json_parse_ok": 500,
+      "sentiment_macro_f1": 94.81204626553465,
+      "negative_recall": 98.79518072289156,
+      "false_alarm_rate": 7.865168539325836,
+      "negative_recall_defined": true,
+      "hard_case_macro_f1": 74.92717079615677,
+      "irony_recall": 80.0,
+      "irony_support": 45,
+      "relevance_macro_f1": 82.88481211211894,
+      "risk_subset_accuracy": 77.60000000000001,
+      "risk_empty_precision": 95.07575757575758
+    }
+  },
+  "metric_attribution": {
+    "json_parse_ok": "SFT 主功 · GRPO 守门",
+    "sentiment_macro_f1": "SFT 定下界 · GRPO 提上界",
+    "negative_recall": "SFT 定下界 · GRPO 提上界",
+    "false_alarm_rate": "SFT 定下界 · GRPO 提上界",
+    "hard_case_macro_f1": "GRPO 主功（R_accuracy 非对称罚抬升）",
+    "irony_recall": "SFT 主功",
+    "relevance_macro_f1": "SFT 主功",
+    "risk_subset_accuracy": "GRPO 主功（R_accuracy 非对称罚抬升）",
+    "risk_empty_precision": "SFT 主功"
+  },
+  "deltas": {
+    "sft-base": {
+      "label": "SFT 净增益（单变量: 只差权重）",
+      "single_variable": true,
+      "delta": {
+        "json_parse_ok": 500.0,
+        "sentiment_macro_f1": 94.69,
+        "negative_recall": 98.8,
+        "false_alarm_rate": 10.38,
+        "hard_case_macro_f1": 75.4,
+        "relevance_macro_f1": 82.63,
+        "risk_subset_accuracy": 25.4,
+        "risk_empty_precision": -7.2
+      }
+    },
+    "grpo-sft": {
+      "label": "GRPO 净增益（单变量: 只差 RL 权重）",
+      "single_variable": true,
+      "delta": {
+        "json_parse_ok": 0.0,
+        "sentiment_macro_f1": 0.12,
+        "negative_recall": 0.0,
+        "false_alarm_rate": -2.52,
+        "hard_case_macro_f1": -0.47,
+        "irony_recall": 2.22,
+        "relevance_macro_f1": 0.26,
+        "risk_subset_accuracy": -0.6,
+        "risk_empty_precision": 2.27
+      }
+    },
+    "prompt-base": {
+      "label": "提示词工程增益（单变量: 只差提示词加固）",
+      "single_variable": true,
+      "delta": {
+        "json_parse_ok": 500.0,
+        "sentiment_macro_f1": 82.31,
+        "negative_recall": 98.8,
+        "false_alarm_rate": 29.31,
+        "hard_case_macro_f1": 24.61,
+        "relevance_macro_f1": 46.57,
+        "risk_subset_accuracy": -6.4,
+        "risk_empty_precision": -50.0
+      }
+    },
+    "sft-prompt": {
+      "label": "SFT vs 提示词天花板（合计量，含权重+提示词两变量）",
+      "single_variable": false,
+      "delta": {
+        "json_parse_ok": 0.0,
+        "sentiment_macro_f1": 12.38,
+        "negative_recall": 0.0,
+        "false_alarm_rate": -18.93,
+        "hard_case_macro_f1": 50.79,
+        "irony_recall": 68.89,
+        "relevance_macro_f1": 36.06,
+        "risk_subset_accuracy": 31.8,
+        "risk_empty_precision": 42.8
+      }
+    },
+    "grpo-prompt": {
+      "label": "整套 vs prompt 天花板（合计量，含权重+提示词两变量）",
+      "single_variable": false,
+      "delta": {
+        "json_parse_ok": 0.0,
+        "sentiment_macro_f1": 12.5,
+        "negative_recall": 0.0,
+        "false_alarm_rate": -21.45,
+        "hard_case_macro_f1": 50.32,
+        "irony_recall": 71.11,
+        "relevance_macro_f1": 36.31,
+        "risk_subset_accuracy": 31.2,
+        "risk_empty_precision": 45.08
+      }
+    }
+  },
+  "note": "只认单变量差值（single_variable=true）作归因；合计量仅展示。"
+}

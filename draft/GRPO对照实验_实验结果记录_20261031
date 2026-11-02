@@ -363,6 +363,59 @@ python3 scripts/evaluate_sft.py \
   --log output/R7ep4_G1p2_pool_r2_1877/eval.log
 
 
+## T4 · 四档汇总
+
+四档 symlink
+mkdir output/T4
+ln -sf /root/autodl-tmp/models/grpo_senti/run_20261102_124607_G1p2_pool_r2_1877/pred_gold500_test.jsonl output/T4/pred_grpo.jsonl
+ln -sf output/sft_R7ep4-bf16/pred.jsonl output/T4/pred_sft.jsonl
+ln -sf output/baseline/pred.jsonl output/T4/pred_base.jsonl
+ln -sf output/bl_fewshot/pred.jsonl output/T4/pred_prompt.jsonl
+
+ python3 scripts/eval_four_tier.py \
+  --gold data/gold500_test.jsonl \
+  --pred_base  output/T4/pred_base.jsonl \
+  --pred_prompt output/T4/pred_prompt.jsonl \
+  --pred_sft   output/T4/pred_sft.jsonl \
+  --pred_grpo  output/T4/pred_grpo.jsonl \
+  --out output/T4/tier_report.json
+
+
+
+## G6 · 训后 k 分布迁移 rollout
+
+cd /root/autodl-tmp/senti
+GRPO_LORA=/root/autodl-tmp/models/grpo_senti/run_20261102_124607_G1p2_pool_r2_1877/grpo_lora
+          /root/autodl-tmp/models/grpo_senti/run_20261102_124607_G1p2_pool_r2_1877/grpo_lora
+
+
+python3 scripts/merge_sft_adapter.py --dtype fp32 \
+    --base /root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+    --adapter /root/autodl-tmp/models/grpo_senti/run_20261102_124607_G1p2_pool_r2_1877/grpo_lora \
+    --out /root/autodl-tmp/models/Qwen3-4B-Instruct-G1p2r2
+
+# ① v2 part0（卡0，~45min）
+CUDA_VISIBLE_DEVICES=0 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+  DATA=/root/autodl-tmp/datasets/rl_round2/train_part0.jsonl BACKEND=vllm \
+  nohup ./scripts/run_grpo_probe.sh --tag=g6_kdist_post_part0 --adapter $GRPO_LORA \
+  > logs/g6_part0.log 2>&1 &
+
+# ② v2 part1（卡1，~45min）
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+  DATA=/root/autodl-tmp/datasets/rl_round2/train_part1.jsonl BACKEND=vllm \
+  nohup ./scripts/run_grpo_probe.sh --tag=g6_kdist_post_part1 --adapter $GRPO_LORA \
+  > logs/g6_part1.log 2>&1 &
+
+# ③ 老池 433（等①跑完再执行，因为①占着卡0；~15min）
+CUDA_VISIBLE_DEVICES=0 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+  DATA=/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1p.jsonl BACKEND=vllm \
+  nohup ./scripts/run_grpo_probe.sh --tag=g6_kdist_post_433pool --adapter $GRPO_LORA \
+  > logs/g6_433pool.log 2>&1 &
+
+
+
+
+
 =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 ## G0 结果登记（底座 R7ep4；k=4 次数 of G=4，keep = k∈{1,2,3}）
