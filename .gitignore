@@ -24,3 +24,6 @@ nohup/
 mem_*.log
 mem_*.pid
 *venv
+wandb/run-*
+wandb/offline-run-20261031*
+wandb/offline-run-20261101*
