@@ -130,6 +130,7 @@ def _eval_reward_mean_vllm(trainer, llm, tokenizer, reward_fn, eval_rows,
     eval前复用load_weights，保证评测最新策略，无需额外合并。
 
     """
+    import torch
     from vllm import SamplingParams
     from trl.models import unwrap_model_for_generation
 

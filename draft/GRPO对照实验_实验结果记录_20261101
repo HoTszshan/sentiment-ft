@@ -1,0 +1,35 @@
+#  GRPO  第二轮实验
+> plan source: `@plan/GRPO第二轮_优先级清单_20261101.md`
+
+base_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+sft_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16
+
+
+### P0-1 · G=8 补捞 negative/explicit
+
+数据来源：AI补捞
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_input.jsonl BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0b_rescue_g8 \
+  --g 8 --pool_out /root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_pool.jsonl
+
+
+python3 -I - <<'EOF'
+import json
+from collections import Counter
+p='/root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_pool.jsonl'
+c=Counter(); n=0
+for line in open(p):
+    d=json.loads(line); m=d.get('meta') or {}
+    c[m.get('sentiment')]+=1; n+=1
+print(f"补捞池: {n} 条  分布: {dict(c)}  negative 占比: {c['negative']/max(n,1)*100:.1f}%")
+# 合并主池后的占比
+main='/root/autodl-tmp/datasets/rl_round1/R7ep4_grpo_pool_g1.jsonl'
+mc=Counter()
+for line in open(main):
+  mc[(json.loads(line).get('meta') or {}).get('sentiment')]+=1
+mn=sum(mc.values())
+rescued=c['negative']
+print(f"合并后: {mn+n} 条  negative: {mc['negative']}+{rescued}={mc['negative']+rescued} ({(mc['negative']+rescued)/(mn+n)*100:.1f}%)  目标 ≥30%")
+EOF

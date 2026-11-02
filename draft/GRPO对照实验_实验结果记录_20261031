@@ -1,0 +1,402 @@
+#  GRPO  对比实验
+
+base_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+sft_model_dir: /root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16
+
+
+
+## 准备数据
+
+python3 scripts/mix_sft_dataset.py \
+	--domain_file data/rl_candidates_v1.jsonl \
+	--anchor_file /dev/null \
+	--anchor_ratio 0 \
+	--val_ratio 0.0551 \
+	--seed 42 \
+	--out_dir /root/autodl-tmp/datasets/rl_round1_split_holdout64
+
+（64/1162 ≈ 0.05508，val_ratio 取 0.0551 → round(1162×0.0551)=64，stratified_split的目标值精确命中 64。）
+
+
+跑完立刻冻结（重命名）
+
+mkdir /root/autodl-tmp/datasets/rl_round1/
+mv /root/autodl-tmp/datasets/rl_round1_split_holdout64/sft_train.jsonl /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl
+mv /root/autodl-tmp/datasets/rl_round1_split_holdout64/sft_val.jsonl /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl
+rm -rf /root/autodl-tmp/datasets/rl_round1_split_holdout64
+
+wc -l /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl
+wc -l /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl
+
+
+长度统计：
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --out output/data/rl_round1_grpo_train_stat_len.json  \
+  --log output/data/rl_round1_grpo_train_stat_len.log
+
+python3 scripts/stat_seq_len.py \
+  --train_file /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl  \
+  --tokenizer /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+  --out output/data/rl_round1_grpo_eval_stat_len.json  \
+  --log output/data/rl_round1_grpo_eval_stat_len.log
+
+
+格式转换：
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl \
+  --with_meta
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/datasets/rl_round1/grpo_eval.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl  \
+  --with_meta
+
+
+从冻结训练池分层抽 100 条 → 探针池
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/datasets/rl_round1/grpo_train.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl \
+  --sample 100 --seed 42 
+
+
+
+## SFT 结果
+
+python3 scripts/sft_infer.py \
+  --base_model "/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16" \
+  --max_new_tokens 1024 \
+  --adapter_path '' \
+  --backend vllm \
+  --data_file data/gold500_test.jsonl \
+  --out output/sft_R7ep4-bf16/pred.jsonl \
+  --log output/sft_R7ep4-bf16/infer.log
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file output/sft_R7ep4-bf16/pred.jsonl  \
+  --out output/sft_R7ep4-bf16/eval.jsonl \
+  --log output/sft_R7ep4-bf16/eval.log 
+
+
+---
+
+## G0 · 起点体检：merge parity + k 分布 rollout
+
+合并
+
+python3 scripts/merge_sft_adapter.py --dtype fp32 \
+    --base /root/autodl-tmp/models/Qwen3-4B-Instruct-2507 \
+    --adapter /root/autodl-tmp/models/sft_senti/run_20261030_084711_R7_d2880_val_0.1_ep3/sft_lora \
+    --out /root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4
+
+
+fp32 → bf16 转存
+
+MERGE_SRC=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4 python3 - <<'PYEOF'
+import os, sys, json, time, torch
+from pathlib import Path
+from transformers import AutoModelForCausalLM, AutoTokenizer
+src = Path(os.environ["MERGE_SRC"]); dst = Path(str(src) + "-bf16")
+model = AutoModelForCausalLM.from_pretrained(src, torch_dtype=torch.bfloat16)
+tok = AutoTokenizer.from_pretrained(src)
+model.save_pretrained(dst, safe_serialization=True); tok.save_pretrained(dst)
+cfg = json.loads((dst/"config.json").read_text()); cfg["torch_dtype"] = "bfloat16"
+(dst/"config.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+m = json.loads((src/"merge_manifest.json").read_text())
+m["bf16_cast"] = {"cast_from": str(src), "cast_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "parity_vs_fp32": m["parity"],
+                  "note": "fp32 合并校验通过后 cast bf16; bf16 目录为 GRPO 基座正式产物"}
+(dst/"merge_manifest.json").write_text(json.dumps(m, indent=2, ensure_ascii=False))
+import shutil; shutil.rmtree(src)
+print(f"[OK] bf16 产物: {dst} (fp32 中间件已清理)")
+PYEOF
+
+
+k 分布 rollout ×2 份数据（探针 50 条 + 新题抽样 100 条）
+
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=data/probe_test_grpo_train_synth.jsonl BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_probe50
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_probe100.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_new100 --pool_out /root/autodl-tmp/datasets/rl_round1/g0_grpo_pool_g1.jsonl
+
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_round1_train --pool_out /root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_train_prompts.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_round1_train --pool_out /root/autodl-tmp/datasets/rl_round1/R7ep4_grpo_pool_g1.jsonl
+
+
+清洗数据 结果为 `/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1.jsonl`
+
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl  BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0_kdist_round1_eval 
+
+
+---
+
+### G1 · 正式 GRPO 基准枪（新题池 × 默认超参）
+
+**峰值显存采样**    
+
+export SYNC_WANDB=1 WANDB_PROJECT=sentiment-grpo WANDB_MODE=offline
+export DATA=/root/autodl-tmp/datasets/rl_round1/R7ep4_grpo_pool_g1.jsonl
+export MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16
+export EVAL_STEPS=16
+export EVAL_FILE=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl
+export GRPO_ARGS="--num_train_epochs 2 --save_steps 20 --gradient_checkpointing"
+./scripts/run_grpo_train.sh --tag=R7ep4_g1_base_lr2e5_kl004
+
+
+ADAPTER_DIR=/root/autodl-tmp/models/grpo_senti/run_20261101_005806_R7ep4_g1_base_lr2e5_kl004/grpo_lora \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+./scripts/run_grpo_test.sh data/gold500_test.jsonl
+
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file /root/autodl-tmp/models/grpo_senti/run_20261101_005806_R7ep4_g1_base_lr2e5_kl004/pred_gold500_test.jsonl \
+  --out output/R7ep4_G1_lr2e5_r1_ep2/eval.jsonl \
+  --log output/R7ep4_G1_lr2e5_r1_ep2/eval.log
+
+---
+
+
+### P0-1 · G=8 补捞 negative/explicit
+
+数据来源：AI补捞
+
+BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+DATA=/root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_input.jsonl BACKEND=vllm \
+./scripts/run_grpo_probe.sh --tag=g0b_rescue_g8 \
+  --g 8 --pool_out /root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_pool.jsonl
+
+
+python3 -I - <<'EOF'
+import json
+from collections import Counter
+p='/root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_pool.jsonl'
+c=Counter(); n=0
+for line in open(p):
+    d=json.loads(line); m=d.get('meta') or {}
+    c[m.get('sentiment')]+=1; n+=1
+print(f"补捞池: {n} 条  分布: {dict(c)}  negative 占比: {c['negative']/max(n,1)*100:.1f}%")
+# 合并主池后的占比
+main='/root/autodl-tmp/datasets/rl_round1/R7ep4_grpo_pool_g1.jsonl'
+mc=Counter()
+for line in open(main):
+  mc[(json.loads(line).get('meta') or {}).get('sentiment')]+=1
+mn=sum(mc.values())
+rescued=c['negative']
+print(f"合并后: {mn+n} 条  negative: {mc['negative']}+{rescued}={mc['negative']+rescued} ({(mc['negative']+rescued)/(mn+n)*100:.1f}%)  目标 ≥30%")
+EOF
+
+
+### P1 · G1' 重跑（P0 胜者池 × G1 同超参，~1.1h）
+
+DATA=/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1p.jsonl \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+EVAL_FILE=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl EVAL_STEPS=16 \
+GRPO_ARGS="--num_train_epochs 2 --save_steps 20 --gradient_checkpointing" \
+./scripts/run_grpo_train.sh --tag=G1p_pool433_neg32pct
+
+
+ADAPTER_DIR=/root/autodl-tmp/models/grpo_senti/run_20261101_155829_G1p_pool433_neg32pct/grpo_lora \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+./scripts/run_grpo_test.sh data/gold500_test.jsonl
+
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file /root/autodl-tmp/models/grpo_senti/run_20261101_155829_G1p_pool433_neg32pct/pred_gold500_test.jsonl \
+  --out output/R7ep4_G1p_pool433_neg32pct/eval.jsonl \
+  --log output/R7ep4_G1p_pool433_neg32pct/eval.log
+
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+## G0 结果登记（底座 R7ep4；k=4 次数 of G=4，keep = k∈{1,2,3}）
+
+| run 目录 | 数据 | n | hist k=0/1/2/3/4 | keep 比例 | 备注 |
+|---|---|---|---|---|---|
+| run_20261031_232028_g0_kdist_probe50 | probe_test_grpo_train_synth（50） | 50 | 22/5/8/7/8 | 0.40 | ⚠️ **底座是 R7ep3-bf16**（kstats 里 base_model 有据），与 R7ep4 无关，仅留档 |
+| run_20261031_232213_g0_kdist_new100 | grpo_train_probe100 | 100 | 14/20/21/25/20 | 0.66 | ⚠️ 同上，R7ep3 底座 |
+| run_20261031_232409_g0_kdist_round1_train | grpo_train_prompts（1098 全量） | 1098 | 168/236/240/254/200 | 0.6648 | ⚠️ 同上，R7ep3 底座 |
+| run_20261031_232652_g0_kdist_round1_eval | grpo_eval_prompts（64） | 64 | 10/16/11/20/7 | 0.7344 | ⚠️ 同上，R7ep3 底座；keep 桶 fact_implicit 40/47 |
+| run_20261101_000300_g0_kdist_new100 | grpo_train_probe100 | 100 | 4/8/9/13/66 | 0.30 | ⚠️ 底座是 **R6a01-bf16**，与 R7ep4 无关，仅留档 |
+| **run_20261101_003454_R7_ep4_g0_kdist_new100** | grpo_train_probe100 | 100 | **4/10/10/20/56** | **0.40** | ✅ **R7ep4 底座正式 G0 探针** |
+| **run_20261101_003830_g0_kdist_round1_train** | grpo_train_prompts（1098 全量） | 1098 | **100/58/92/221/627** | **0.3379** | ✅ **R7ep4 底座正式 G0 全量 rollout**，pool_out → `R7ep4_grpo_pool_g1.jsonl` |
+
+### R7ep4 正式读数（run_20261101_003454 / run_20261101_003830）
+
+- **k 分布健康**：k=1~3 显著非零（100 条探针占 40%），k=0（4%）与 k=4（56%）两头都有，筛选有意义 → 不需要 temperature 1.0 消融（k=0+k=4=60% < 80% 触发线）。
+- 全量 1098 条：keep 371（33.8%），k=4 全对 627 条（57.1%）不进池，k=0 打不开 100 条不进池。
+- keep 池桶分布（371 条）：hard_case — fact_implicit 141 / comparative 71 / multi_subject 52 / counterfactual 39 / explicit 28 / irony 24 / metaphor 16；sentiment — neutral 224 / negative 78 / positive 69。
+- **G0b 遗留信号**：keep 池 negative 占比 78/371 = 21.0%（< 30% 目标）、explicit 留存 28 条（比 R7ep3 探针时「仅 1 条」已改善）。按设计清单 §G0b 判读：接受现状进 G1，但记录「防漏报维度梯度不足」为已知局限（negative_recall 97.59 起点已高，可训空间小是 k=4 占比高的原因之一）。
+- temperature=0.7 / max_new_tokens=512 / g=4；全量 rollout 耗时 883s（vLLM）。
+
+### G1 训练数据池
+
+- 正式池 = `/root/autodl-tmp/datasets/rl_round1/R7ep4_grpo_pool_g1.jsonl`（371 条，R7ep4 底座 k∈{1,2,3} 导出）。
+- eval 基线集 = `grpo_eval_prompts.jsonl`（64 条，独立留出，R7ep4 不参与筛选）。
+
+---
+
+## G1 结果登记（R7ep4_g1_base_lr2e5_kl004）
+
+### 训练配置（run_20261101_005806）
+
+- 起点 = `Qwen3-4B-Instruct-R7_ep4-bf16`；池 = R7ep4_grpo_pool_g1（371 条）；EVAL_STEPS=16，eval_n=8，fuse_threshold=0.02（仅告警，全程未触发）。
+- GRPO_ARGS：`--num_train_epochs 2 --save_steps 20 --gradient_checkpointing`；其余默认（lr 2e-5 / β_KL 0.04 / G=4 / T=0.7 / scale_rewards=none / max_completion=512）。
+- 92 步，train_runtime 3951s ≈ 1.10h（单卡串行 eval 修复后，对比设计清单预估 8.8h 已兑现降本）。
+
+### 过程指标（log 逐行提取）
+
+- **pre-train baseline reward（greedy eval，64 条基线集）= 0.5563**，≠ −2.5 → G1 根因（eval 预算 200→512）修复生效确认。
+- 训中 5 次 eval（step 16/32/48/64/80）全部 = 0.5563，与 baseline 持平 → greedy eval 无残余噪声（P0 改动关账），[FUSE] 全程 0 触发。
+- train reward（on-policy 采样，T=0.7）：前段 ~0.06~0.24 → 后段多次冲到 0.5~1.0（第 33 步 0.828、39 步 1.020），均值呈上升走势但方差大（reward_std 0.37~1.51）。
+- completion_length：首步 379.7 → 末段 311~349，缓慢收窄（压短方向正确，未塌）。
+- kl 全程 0.003~0.064，β=0.04 下策略漂移受控。
+
+### 终评 gold500_test（output/R7ep4_G1_lr2e5_r1_ep2/eval.jsonl，模式 B）
+
+| 指标 | SFT 起点 R7ep4-bf16 | G1（SFT+GRPO） | Δ |
+|---|---|---|---|
+| sentiment Macro-F1 | 94.69 | **95.71** | **+1.02** ✅ |
+| negative_recall（漏报） | 98.80 | **97.59** | −1.21 ⚠️ |
+| negative_precision | 89.62 | **92.05** | +2.43 ✅ |
+| false_alarm_rate | 10.38 | **7.95** | −2.43pp ✅ |
+| hard_case Macro-F1 | 75.40 | 75.11 | −0.29（容差内）✅ |
+| irony_recall | 77.78 | 77.78 | 0 |
+| risk SubAcc | 78.20 | **78.40** | +0.20 ✅ |
+| gate4 JSON 有效率 | 100% | **100%** | 持平 ✅ |
+| evidence 严格子串 | 99.6 | **99.8** | +0.2 ✅ |
+| 契约违规条数 | 20 | **2** | −18 ✅ |
+| relevance Macro-F1 | — | 80.45 | — |
+
+- **CoT 长度**：SFT p50=456 / p95=633 → G1 p50=392 / p95=578（字符，tokenizer 前粗量），**GRPO 压短生效（p50 −14%）**。
+
+### 判读
+
+- ✅ **G1 通过基准判定**（设计清单 §2 口径）：sentiment +1.02、hard_case −0.29（< 1pp 容差）主指标不降；副指标 evidence ↑、契约违规 20→2、格式持稳 → 成为 SFT+GRPO 简历行主数字。
+- ⚠️ **negative_recall 98.80 → 97.59**（166 条 negative 漏报 2→4 条）：
+  - 与 G0b 已知局限一致——训练池 negative 仅 21%，防漏报维度无梯度；
+  - GRPO 收益落在 precision/FAR 侧（误报换漏报的权衡），T4 汇总时需写明。
+- ⚠️ **gate2 verdict=FAIL**：irony_recall 77.78 < 90 底线所致；SFT 起点同样 FAIL，非 GRPO 引入的退化（gold500 无在役基线，按「主指标不降」口径人工判定通过）。
+- 📏 **统计显著性核查（95% Wilson CI，gold500 n=500 / negative n=166）**：
+
+  | 主指标 | SFT | G1 | Δ | CI 重叠 | 判读 |
+  |---|---|---|---|---|---|
+  | negative_recall | 98.80 [95.7, 99.7] | 97.59 [94.0, 99.1] | −1.21 | 重叠 | 不可分辨 |
+  | negative_precision | 89.62 [84.1, 93.4] | 92.05 [87.0, 95.3] | +2.43 | 重叠 | 不可分辨 |
+  | risk SubAcc | 78.2 [74.4, 81.6] | 78.4 [74.6, 81.8] | +0.20 | 重叠 | 不可分辨 |
+
+  **判别侧变化在 500 条金标上均不可分辨**，既不能宣称提升、也不能宣称退化。G1 可确认的硬证据是过程指标：CoT token p50 273→232（−15%，tokenizer 实测）、契约违规 20→2、KL 0.003~0.064 下 reward 0.06→1.0。
+  提升确认路径：扩池/补捞后 G1' 重跑，主指标差值需超出 CI 才能进简历叙事；或单看「SFT→G1'」在 irony/metaphor/counterfactual 难例桶的分桶差值（分桶看结论，别看整体 F1）。
+  - **CI 重叠的含义**：CI = 置信区间，指标是 500 条样本统计量而非真实水平（95% 把握真实值落在区间内）。negative 仅 166 条，漏报 2→4 条就跳 1.2pp，区间因此很宽。**区间有重叠 = 差异可能是抽样噪声**——G1 的 97.59 完全落在 SFT 区间 [95.7, 99.7] 内，「两者真实水平一样、只是这次抽出了差」完全说得通。判「没测出差别」，不判「没差别」；这不是 GRPO 无用，是考卷分辨率不够。
+
+### 产物（run_20261101_005806 目录内）
+
+- `grpo_lora/` — LoRA 权重
+- `pred_gold500_test.jsonl` + `report_gold500_test.json` — 终评预测与报告
+- `logs/` — cast_bf16 脚本、grpo_train / grpo_test 日志
+
+### 待办
+
+- [ ] peak 显存 mem_G1_grpo.log 采样回填（数字清单 §5.1）
+- [x] CoT token 口径实测：SFT p50=273 / p95=380 / p99=413 → G1 p50=232 / p95=348 / p99=383（tokenizer 实测，**压短 −15%**，回填 TODO 5.20；未落 120~200 理想区，KL 小 + epoch 少所致）
+- [ ] 四档汇总 T4（symlink pred_grpo.jsonl → run 目录 pred 文件后跑 eval_four_tier.py）
+- [ ] 下一枪 G2（β_KL→0.0，EVAL_STEPS=20，对照基线 = R7ep4 起点）
+
+---
+
+## G1' 结果登记（G1p_pool433_neg32pct · run_20261101_155829）
+
+### 训练配置
+
+- 池 = `grpo_pool_g1p.jsonl`（**433 条**，371+62 补捞去重，negative 31.9%）；其余与 G1 完全一致（起点 R7ep4-bf16 / lr 2e-5 / β_KL 0.04 / G=4 / T=0.7 / EVAL_STEPS=16 / 2ep）。
+- 108 步（433 条 × 2ep），train_runtime 4642s ≈ 1.29h。
+
+### 过程指标
+
+- pre-train baseline = 0.5563（同 G1，eval 集未变）；6 次 greedy eval 全部 0.5563，[FUSE] 0 触发。
+- train reward：首步即 0.65（G1 首步 0.06——**池里难题占比升高，起点 reward 直接抬升**），后段 0.16~0.43 波动，整体与 G1 同量级、无明显单调爬升。
+- completion_length 313~349，与 G1 末段持平（压短保持）。
+- **KL 峰值 0.20~0.22（G1 仅 0.064）**——negative/explicit 难题带来 3 倍更大的策略更新幅度，防漏报维度梯度「从无到有」的直接证据。
+
+### 终评 gold500_test（output/R7ep4_G1p_pool433_neg32pct/eval.jsonl）
+
+| 指标 | SFT 起点 | G1（371 池） | **G1'（433 池）** | G1'−SFT |
+|---|---|---|---|---|
+| sentiment Macro-F1 | 94.69 | 95.71 | 94.01 | −0.68 |
+| **negative_recall** | 98.80 | 97.59 | **97.59** | −1.21（漏报仍 4 条）|
+| negative_precision | 89.62 | 92.05 | 89.50 | −0.12 |
+| false_alarm_rate | 10.38 | 7.95 | 10.50 | +0.12 |
+| hard_case Macro-F1 | 75.40 | 75.11 | **76.93** | **+1.53** |
+| irony_recall | 77.78 | 77.78 | **80.00** | **+2.22**（35/45） |
+| risk SubAcc | 78.20 | 78.40 | 78.00 | −0.20 |
+| gate4 JSON / evidence 子串 / 契约违规 | 100% / 99.6 / 20 | 100% / 99.8 / 2 | 100% / 99.6 / **1** | 违规最少 |
+| relevance Macro-F1 | — | 80.45 | 80.23 | — |
+| CoT token p50 | 273 | 232 | 238 | 压短保持 −13% |
+
+- CI（95% Wilson）：negR [94.0, 99.1]、negP [83.9, 93.3]、risk [74.2, 81.4] —— 与 SFT 区间仍全部重叠，判别侧单枪仍不可分辨。
+- 难例桶（sent_acc，G1' vs SFT）：counterfactual **−6.0**（94→88）、irony −2.2、explicit −1.5；fact_implicit +1.8、comparative +2.2。
+
+### 判读
+
+- ⚠️ **G1' 未达成 P1 主判据**：negative_recall 97.59 与 G1 持平、未回 98.80，CI 仍与 SFT 重叠。
+  池里 negative 21%→31.9% 让**梯度确实出现了**（KL ×3、池起点 reward 0.65），但金标漏报数没有变化（仍 4 条）——
+  说明 gold500 那 4 条漏报题型与池内 negative 难题（irony/弱负向）不重合，或 2ep/108 步仍不足以把边界题学透。
+- ✅ **hard_case Macro-F1 75.40→76.93（+1.53）为三轮最高**，irony_recall 77.78→80.00（+2.22）——
+  irony×negative 62 条补捞池的直接收益，方向与设计预期一致（难例桶收益）。
+- ⚠️ **counterfactual 桶回撤 94→88**（G1 时 96）：反事实题在补捞后反而变差，与「压短保持但推理深度受挤压」假设相容，
+  需在 G2/G3 判读时重点盯（若 β=0 后继续掉，压短/正则的相互作用就是候选根因）。
+- **G1 vs G1' 取舍（按业务主指标口径）**：两枪 negR 同为 97.59；G1' 的 hard F1/irony 违规条数更好，G1 的 negP/FAR 更好。
+  主指标不分的局面下按「难例桶表现 + hard_case F1」取 **G1' 为当前胜者**，但 counterfactual 回撤需在下一枪验证是否稳定。
+- gate2 仍 FAIL（irony 80 < 90 底线），同 G1 口径：起点亦 FAIL，非退化。
+
+### 产物（run_20261101_155829 目录内）
+
+- `grpo_lora/`、`pred_gold500_test.jsonl`、`report_gold500_test.json`、`logs/`（train/test/cast_bf16）
+
+### 下一枪决策（G1' 后更新）
+
+- [ ] G2（β→0）：对照基线更新为 **G1' 配置（433 池）**；重点观察 counterfactual 桶是否继续回撤。
+- [ ] k=0 残留 15 条 + gold500 漏报 4 条题型比对：确认「池内难题 ≠ 考卷漏报题」假设，若成立，P0-2 扩池定向生成对准漏报纸面题型。
+
+### 漏报 4 条题型比对（2026-11-01 补查，G1' 后）
+
+用 evaluate_sft 同源解析链逐条定位 G1' 漏报的 4 条 negative，与三枪预测交叉：
+
+| idx | event_id 特征 | hc | relevance | SFT | G1 | G1' | 漏报性质 |
+|---|---|---|---|---|---|---|---|
+| 275 | 深蓝 SL03 | multi_subject | **passing** | neutral | neutral | neutral | 主体是极氪 001 的投诉，深蓝仅「同行案例」顺带提及 |
+| 277 | 融创 | multi_subject | **passing** | **negative** | negative | neutral | 主体在名单末尾被点名，投诉主体是「本地小区物业」 |
+| 423 | 格力 | metaphor | **passing** | negative | neutral | neutral | 行业「套路降价」长文，格力一句带过 |
+| 467 | 保利 | counterfactual | **passing** | positive | positive | positive | 「幸亏当初没碰保利的盘」反事实，模型当真夸 |
+
+**结论：「池内难题 ≠ 考卷漏报题」假设成立，且比预想更具体**——
+4 条漏报**全部是 relevance=passing**（目标主体仅顺带提及的负向场），而 433 训练池里
+passing×negative 只有 **5 条**（占池 1.2%）。gold500 的 negative 共 166 条中 passing 占 23 条（13.9%），
+漏报集中在它身上不是巧合：**训练分布里「主角不是我、负向是别人的、我只被捎带」这类题几乎缺训**。
+且 G1' 比 SFT 多丢 2 条（277/423 从 negative 滑到 neutral），补捞难题池放大了「宁判 neutral 不判负」的保守漂移——
+与 negP +2.43→−0.12 的回吐同源。
+
+**对 P0-2 扩池的定向指令**：negative 难例生成配额从「irony/弱负向」转向
+**passing×negative（顺带提及型负向）+ counterfactual×negative（「幸亏没 X」反事实负向）**；
+这两类正是 k 筛 + 补捞都没覆盖的盲区（k 筛按整体 reward 筛题，看不见「提及位置」这个维度）。
+
