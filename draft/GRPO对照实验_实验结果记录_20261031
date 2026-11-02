@@ -351,6 +351,17 @@ export GRPO_ARGS="--num_train_epochs 2 --save_steps 40 --gradient_checkpointing"
 nohup ./scripts/run_grpo_train.sh --tag=G1p2_pool_r2_1877 >  logs/g1p2_train.log 2>&1 &
 
 
+ADAPTER_DIR=/root/autodl-tmp/models/grpo_senti/run_20261102_124607_G1p2_pool_r2_1877/grpo_lora \
+MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+./scripts/run_grpo_test.sh data/gold500_test.jsonl
+
+
+python3 scripts/evaluate_sft.py \
+  --gold_file data/gold500_test.jsonl \
+  --pred_file /root/autodl-tmp/models/grpo_senti/run_20261102_124607_G1p2_pool_r2_1877/pred_gold500_test.jsonl \
+  --out output/R7ep4_G1p2_pool_r2_1877/eval.jsonl \
+  --log output/R7ep4_G1p2_pool_r2_1877/eval.log
+
 
 =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
@@ -608,4 +619,90 @@ negative 只占 74），捞全部会让 ~270 条大概率整训期零梯度的�
 = 433 + keep 1306 + 白名单 k4 115 + 盲区 k0 23 = **1877 条**
 （negative 754 = **40.2%** ✅；盲区 pn 46 / cf 163；v2 侧逐条 meta 带 `rescue` 审计标记；
 终检零交叉：SFT / gold500 / round2 eval 正文全部 0 撞）。
+
+---
+
+## G1'' 结果登记（G1p2_pool_r2_1877 · run_20261102_124607）
+
+### 训练配置
+
+- 池 = `grpo_train_prompts_final.jsonl`（**1877 条**，negative 40.2%，盲区 pn 46 / cf 163）；
+  eval 基线集 = round2 `grpo_eval_prompts.jsonl`（**300 条**，与训练池零交叉）；
+  其余与 G1 完全一致（起点 R7ep4-bf16 / lr 2e-5 / β_KL 0.04 / G=4 / T=0.7 / 2ep）。
+- **468 步**（1877×2ep，8 题/步），train_runtime ~7.5h（57s/步，2×3090 拓扑：1 训练 + vLLM 采样独占 1 卡）。
+- EVAL_STEPS=40 / save_steps=40；wandb offline（`offline-run-20261102_124825-aytb2gg8`，事后 `wandb sync` 补传）。
+
+### 过程指标
+
+- **pre-train baseline = 0.3200**（新 eval 集口径，≠ −2.5）；**11 次 greedy eval 全部 = 0.3200**，
+  与 baseline 持平 → greedy eval 零噪声在新集复验，[FUSE] 全程 0 触发。
+- train reward：首步 0.42 → 后段 0.3~0.5 波动、max 1.08；reward_std 0.29~1.24（组内有方差，梯度健康）。
+- **KL 中位数 0.051 / p95 0.10**——比 G1（0.003~0.064）整体上移，策略活跃度显著提高；
+  468 步中仅 2 步 >1（step 362 冲到 1285 的孤立尖峰，随后回落，未影响收敛）。
+- completion_length 310~375，压短保持。
+
+### 终评 gold500_test（output/R7ep4_G1p2_pool_r2_1877/eval.jsonl，模式 B）
+
+| 指标 | SFT 起点 | G1（371） | G1'（433） | **G1''（1877）** | G1''−SFT |
+|---|---|---|---|---|---|
+| sentiment Macro-F1 | 94.69 | 95.71 | 94.01 | **94.81** | +0.12 |
+| **negative_recall** | 98.80 | 97.59 | 97.59 | **98.80** | **0（回标 ✅，漏报 2 条）** |
+| negative_precision | 89.62 | 92.05 | 89.50 | **92.13** | **+2.51 ✅** |
+| false_alarm_rate | 10.38 | 7.95 | 10.50 | **7.87** | **−2.51pp ✅** |
+| hard_case Macro-F1 | 75.40 | 75.11 | 76.93 | 74.93 | −0.47 |
+| irony_recall | 77.78 | 77.78 | 80.00 | **80.00** | +2.22 |
+| counterfactual（sent_acc） | 94 | 96 | 88 | **94.0（recall）** | **回撤修复 ✅** |
+| risk SubAcc | 78.20 | 78.40 | 78.00 | 77.60 | −0.60 |
+| gate4 JSON / evidence 子串 | 100% / 99.6% | 100% / 99.8% | 100% / 99.6% | **100% / 100%** | 全绿 |
+| 契约违规条数 | 20 | 2 | 1 | **2** | −90% |
+| **CoT token p50** | 273 | 232 | 238 | **220（p95 320）** | **−19.4%，四轮最低** |
+
+### 漏报靶点核对（本轮扩池的直接靶子）
+
+**gold500 漏报 4 条（idx 275/277/423/467）中 3 条被修复**：
+
+| idx | 题型 | SFT | G1 | G1' | **G1''** |
+|---|---|---|---|---|---|
+| 275 | passing×neg 深蓝 | neutral ✗ | neutral ✗ | neutral ✗ | **negative ✅** |
+| 277 | passing×neg 融创 | negative | negative | neutral ✗ | **negative ✅** |
+| 423 | passing×neg 格力 | negative | neutral ✗ | neutral ✗ | **negative ✅** |
+| 467 | cf×passing 保利 | positive ✗ | positive ✗ | positive ✗ | positive ✗（仍漏）|
+
+新漏报 1 条（idx 396，判 positive）——总漏报 4→2 条，negR 97.59→**98.80 回标**。
+「passing×neg 盲区」定向补课直接兑现：3 条顺带提及型负向全部转正。
+
+### 统计显著性（95% Wilson CI，n=500 / neg 166）
+
+| 主指标 | SFT | G1'' | Δ | CI |
+|---|---|---|---|---|
+| negR | 98.80 [95.7, 99.7] | 98.80 [95.7, 99.7] | 0 | 持平（回标） |
+| negP | 89.62 [84.1, 93.4] | 92.13 [87.1, 95.4] | +2.51 | 仍重叠 |
+| risk | 78.2 [74.4, 81.6] | 77.6 [73.8, 81.1] | −0.60 | 仍重叠 |
+
+### 判读
+
+- ✅ **主判据「negR 回 98.80」达成**：漏报 4→2 条，盲区题型入池的直接因果（3/4 靶点修复）。
+- ✅ **副判据 counterfactual 回撤修复**（G1' 88 → G1'' 94）、negP 92.13（≥92 达标）、
+  CoT p50 220 ≤250 达标且为四轮最低。
+- ✅ **G1'' 成为当前胜者**（negR 回标 + negP/FAR 与 G1 同级 + counterfactual 修复 +
+  CoT 最短）：SFT+GRPO 主数字更新为 G1'' 口径——sent 94.81 / negR 98.80 / negP 92.13 /
+  FAR 7.87 / CoT p50 220 / JSON 100% / evidence 100% / 违规 2 条。
+- ⚠️ **negP +2.51 仍在 CI 内**（negP 的 CI 本身宽），「precision 显著提升」仍不可宣称；
+  negR 回标是「回到起点水平」，不是「超越起点」——叙事写「GRPO 修复了 SFT→G1 漏报回退，
+  同时保住 precision/FAR 收益与 CoT 压缩」。
+- ⚠️ hard F1 74.93（G1' 76.93 最高）与 risk 77.60 微降 0.60，均在容差内；hard F1 让位给
+  业务主指标（negR>negP>risk 口径）。
+- gate2 仍 FAIL（irony 80 < 90），同前三枪口径：起点亦 FAIL，非退化。
+
+### 产物（run_20261102_124607 目录内）
+
+- `grpo_lora/`、`pred_gold500_test.jsonl`、`report_gold500_test.json`、`logs/`
+- 终评输出：`output/R7ep4_G1p2_pool_r2_1877/`
+- wandb offline：`wandb/offline-run-20261102_124825-aytb2gg8`（新环境 `wandb sync` 补传）
+
+### 下一枪决策（G1'' 后）
+
+- [ ] 四档汇总 T4：`ln -sf` G1'' pred → `output/pred_grpo.jsonl` 后跑 `eval_four_tier.py`
+- [ ] G2（β→0）消融：对照基线 = **G1'' 配置（1877 池）**；盯 reward hacking
+- [ ] G6 训后 k 分布迁移收口；peak 显存 mem_G1p2_grpo.log 回填
 
