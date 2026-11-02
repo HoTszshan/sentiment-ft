@@ -41,6 +41,37 @@ def setup_wandb(project: str, run_name: str, no_wandb: bool = False,
     except ImportError:
         print("[WARN] 未安装 wandb，本次跳过在线同步（pip install wandb 后重跑可恢复）")
         return False
+    mode = os.environ.get("WANDB_MODE", "").lower()
+    if mode == "offline":
+        # 离线模式: 指标落本地 wandb/offline-run-*, 事后 wandb sync 补传。
+        # 用途: api.wandb.ai 被 WAF 拦 (403) 时冒烟仍要全链路跑通 ——
+        # Trainer 的 wandb callback 在 on_train_begin 才 init, 在线模式炸了
+        # 会连累训练一起 FATAL (run_20261031_230711 实测)。
+        os.environ.setdefault("WANDB_PROJECT", project)
+        os.environ.setdefault("WANDB_NAME", run_name)
+        os.environ.setdefault("WANDB_LOG_MODEL", "false")
+        print("[WANDB] WANDB_MODE=offline: 指标落本地, 事后 wandb sync 补传")
+        return True
+    if mode == "online":
+        # 在线模式先做 5s 连通性预检, 不通则降级 offline 而不是让训练 FATAL
+        import urllib.request, urllib.error
+        try:
+            resp = urllib.request.urlopen("https://api.wandb.ai", timeout=5)
+            print(f"[WANDB] api.wandb.ai 可达 (HTTP {resp.status}), 保持在线同步")
+        except urllib.error.HTTPError as exc:
+            # WAF 拦截页是 text/html 的 403 (AutoDL 出口实测); API 正常拒绝
+            # (鉴权失败等) 是 JSON/纯文本——用 content-type 区分可达与被墙
+            ctype = exc.headers.get("content-type", "")
+            if exc.code == 403 and "text/html" in ctype:
+                print(f"[WANDB] api.wandb.ai 被 WAF 拦截 (403 HTML), "
+                      "自动降级 WANDB_MODE=offline, 事后 wandb sync 补传")
+                os.environ["WANDB_MODE"] = "offline"
+            else:
+                print(f"[WANDB] api.wandb.ai 可达 (HTTP {exc.code}), 保持在线同步")
+        except Exception as exc:
+            print(f"[WANDB] api.wandb.ai 不可达 ({exc.__class__.__name__}), "
+                  "自动降级 WANDB_MODE=offline, 事后 wandb sync 补传")
+            os.environ["WANDB_MODE"] = "offline"
     os.environ.setdefault("WANDB_PROJECT", project)
     os.environ.setdefault("WANDB_NAME", run_name)
     os.environ.setdefault("WANDB_LOG_MODEL", "false")
