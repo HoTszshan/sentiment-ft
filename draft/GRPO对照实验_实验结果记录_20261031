@@ -149,7 +149,7 @@ DATA=/root/autodl-tmp/datasets/rl_round1/grpo_eval_prompts.jsonl  BACKEND=vllm \
 
 ---
 
-### G1 · 正式 GRPO 基准枪（新题池 × 默认超参）
+## G1 · 正式 GRPO 基准枪（新题池 × 默认超参）
 
 **峰值显存采样**    
 
@@ -176,7 +176,7 @@ python3 scripts/evaluate_sft.py \
 ---
 
 
-### P0-1 · G=8 补捞 negative/explicit
+## P0-1 · G=8 补捞 negative/explicit
 
 数据来源：AI补捞
 
@@ -185,7 +185,7 @@ DATA=/root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_input.jsonl BACKEND=vllm 
 ./scripts/run_grpo_probe.sh --tag=g0b_rescue_g8 \
   --g 8 --pool_out /root/autodl-tmp/datasets/rl_round1/g0b_rescue_g8_pool.jsonl
 
-
+```bash
 python3 -I - <<'EOF'
 import json
 from collections import Counter
@@ -204,9 +204,10 @@ mn=sum(mc.values())
 rescued=c['negative']
 print(f"合并后: {mn+n} 条  negative: {mc['negative']}+{rescued}={mc['negative']+rescued} ({(mc['negative']+rescued)/(mn+n)*100:.1f}%)  目标 ≥30%")
 EOF
+```
 
 
-### P1 · G1' 重跑（P0 胜者池 × G1 同超参，~1.1h）
+## P1 · G1' 重跑（P0 胜者池 × G1 同超参，~1.1h）
 
 DATA=/root/autodl-tmp/datasets/rl_round1/grpo_pool_g1p.jsonl \
 MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
@@ -225,6 +226,43 @@ python3 scripts/evaluate_sft.py \
   --pred_file /root/autodl-tmp/models/grpo_senti/run_20261101_155829_G1p_pool433_neg32pct/pred_gold500_test.jsonl \
   --out output/R7ep4_G1p_pool433_neg32pct/eval.jsonl \
   --log output/R7ep4_G1p_pool433_neg32pct/eval.log
+
+
+## P0-2 · 候选池扩容
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/senti/data/rl_candidates_v2_train.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round2/r1_v2_train_prompts.jsonl \
+  --with_meta
+
+python3 scripts/build_grpo_probe.py \
+  --src /root/autodl-tmp/senti/data/rl_eval.jsonl \
+  --out /root/autodl-tmp/datasets/rl_round2/grpo_eval_prompts.jsonl  \
+  --with_meta
+
+DRY=1 DATA=/root/autodl-tmp/datasets/rl_round2/r1_v2_train_prompts.jsonl \
+  ./scripts/run_grpo_probe.sh --tag=dry_v2train
+
+分两批跑 k 分布 rollou ， 对半切数据
+python3 - <<'EOF'
+import json
+rows = [l for l in open('/root/autodl-tmp/datasets/rl_round2/r1_v2_train_prompts.jsonl')]
+half = len(rows)//2
+with open('/root/autodl-tmp/datasets/rl_round2/train_part0.jsonl','w') as f: f.writelines(rows[:half])
+with open('/root/autodl-tmp/datasets/rl_round2/train_part1.jsonl','w') as f: f.writelines(rows[half:])
+print(f'{len(rows)} -> {half} + {len(rows)-half}')
+EOF
+
+
+CUDA_VISIBLE_DEVICES=0 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+  DATA=/root/autodl-tmp/datasets/rl_round2/train_part0.jsonl BACKEND=vllm \
+  nohup ./scripts/run_grpo_probe.sh --tag=g0_v2_part0 > logs/g0_v2_part0.log 2>&1 &
+
+CUDA_VISIBLE_DEVICES=1 BASE_MODEL=/root/autodl-tmp/models/Qwen3-4B-Instruct-R7_ep4-bf16 \
+  DATA=/root/autodl-tmp/datasets/rl_round2/train_part1.jsonl BACKEND=vllm \
+  nohup ./scripts/run_grpo_probe.sh --tag=g0_v2_part1 > logs/g0_v2_part1.log 2>&1 &
+
+合并统计数据
 
 
 =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -399,4 +437,28 @@ passing×negative 只有 **5 条**（占池 1.2%）。gold500 的 negative 共 1
 **对 P0-2 扩池的定向指令**：negative 难例生成配额从「irony/弱负向」转向
 **passing×negative（顺带提及型负向）+ counterfactual×negative（「幸亏没 X」反事实负向）**；
 这两类正是 k 筛 + 补捞都没覆盖的盲区（k 筛按整体 reward 筛题，看不见「提及位置」这个维度）。
+
+---
+
+## P0-2 · G0 全量 rollout v2（run_20261102_111727_g0_v2_part0 / run_20261102_111821_g0_v2_part1）
+
+### 数据与前检
+
+- 训练池原料 = `rl_candidates_v2_train.jsonl`（4612 条）→ 契约格式 `rl_round2/r1_v2_train_prompts.jsonl`；eval 独立 `rl_round2/grpo_eval_prompts.jsonl`（300 条，52 个 (hc×sent×rel) 桶全覆盖）。
+- **去重（正文指纹，非 id）**：`input_text`/`input_raw` 去空白后 md5——433 池自重 0、v2 自重 0、两池撞车 **0**（id 前缀 rl- vs rl3- 天然不同空间，id 比对无效，正文比对为准）→ 可放心并池。
+- rl_v2 对 SFT 三轮 + gold500 event_id 零重叠、gold500 正文零重叠（双查）。
+- 盲区题型存量（train 4612 内）：passing×neg 45 / cf×neg 144 / 弱负向 explicit+fact_implicit×neg 110 / irony×neg 685（过剩待砍）/ multi_subject×neutral 637。
+
+### 双卡分批（对半切 2306+2306）
+
+- `CUDA_VISIBLE_DEVICES=0/1` 各跑一半（脚本 76 行允许外部覆盖，未改代码）；vLLM 连续批处理，单进程全量进队，无需手工 batch。
+- **⚠️ 吞吐校准教训**：round1「1098 条 883s」不可跨机外推——本次 2×3090 实测 ~1.7 轨迹/s（round1 记录口径 ~5/s），4612 条 ETA ~3h 而非预估 30min。**以后跨机/跨卡跑大批 rollout，先实测 100 条校准再估时**。k 分布口径与 round1 可比（T=0.7 / G=4 / max_tokens=512 不变）。
+- 跑完后两份 `.rows.jsonl` cat 合并统计 k 直方图（对半随机分，桶偏差可忽略）。
+
+### 结果登记 [待实测]
+
+| run 目录 | 数据 | n | hist k=0/1/2/3/4 | keep | 备注 |
+|---|---|---|---|---|---|
+| run_20261102_111727_g0_v2_part0 | v2 half0（2306） | [待实测] | [待实测] | [待实测] | 卡0 |
+| run_20261102_111821_g0_v2_part1 | v2 half1（2306） | [待实测] | [待实测] | [待实测] | 卡1 |
 
