@@ -1,0 +1,532 @@
+_name_or_path:
+    value: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+_wandb:
+    value:
+        cli_version: 0.28.2
+        e:
+            cry5u9dtub7m3vf1tmwv7om18t47lddu:
+                args:
+                    - --model_name_or_path
+                    - /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+                    - --train_file
+                    - /root/autodl-tmp/datasets/mixed/sft_train.jsonl
+                    - --val_file
+                    - /root/autodl-tmp/datasets/mixed/sft_val.jsonl
+                    - --output_dir
+                    - /root/autodl-tmp/models/sft_senti/run_20261024_180116/probe_lora
+                    - --num_train_epochs
+                    - "6"
+                    - --per_device_train_batch_size
+                    - "2"
+                    - --max_seq_length
+                    - "2560"
+                    - --gradient_accumulation_steps
+                    - "4"
+                    - --learning_rate
+                    - "1e-4"
+                    - --lr_scheduler_type
+                    - cosine
+                    - --logging_steps
+                    - "1"
+                    - --eval_steps
+                    - "5"
+                    - --bf16
+                    - --save_strategy
+                    - "no"
+                    - --remove_unused_columns
+                    - "false"
+                codePath: scripts/train_sft_lora.py
+                codePathLocal: scripts/train_sft_lora.py
+                cpu_count: 56
+                cpu_count_logical: 112
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "32212254720"
+                        used: "11832659968"
+                email: hozshan@gmail.com
+                executable: /root/miniconda3/bin/python3
+                git:
+                    commit: 34416d628f05dbe9c53afe720844a36ab05e1b62
+                    remote: https://github.com/HoTszshan/sentiment-ft.git
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-0bc3cf99-c269-0b52-aa01-d9e4773fde0d
+                host: autodl-container-e07941848a-b2515e62
+                memory:
+                    total: "540651552768"
+                os: Linux-5.15.0-94-generic-x86_64-with-glibc2.35
+                program: /root/autodl-tmp/senti/scripts/train_sft_lora.py
+                python: CPython 3.12.3
+                root: /root/autodl-tmp/senti
+                startedAt: "2026-10-24T10:01:37.475229Z"
+                writerId: cry5u9dtub7m3vf1tmwv7om18t47lddu
+        m:
+            - "1": train/global_step
+              "6":
+                - 3
+              "7": []
+            - "2": '*'
+              "5": 1
+              "6":
+                - 1
+              "7": []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+                - 98
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+                - 98
+            "3":
+                - 7
+                - 13
+                - 19
+                - 62
+                - 66
+            "4": 3.12.3
+            "5": 0.28.2
+            "6": 5.15.0
+            "9":
+                "1": transformers_trainer
+            "12": 0.28.2
+            "13": linux-x86_64
+accelerator_config:
+    value:
+        dispatch_batches: null
+        even_batches: true
+        gradient_accumulation_kwargs: null
+        non_blocking: false
+        split_batches: false
+        use_seedable_sampler: true
+adam_beta1:
+    value: 0.9
+adam_beta2:
+    value: 0.999
+adam_epsilon:
+    value: 1e-08
+architectures:
+    value:
+        - Qwen3ForCausalLM
+attention_bias:
+    value: false
+attention_dropout:
+    value: 0
+auto_find_batch_size:
+    value: false
+average_tokens_across_devices:
+    value: true
+base_model:
+    value: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+batch_eval_metrics:
+    value: false
+bf16:
+    value: true
+bf16_full_eval:
+    value: false
+bos_token_id:
+    value: 151643
+chunk_size_feed_forward:
+    value: 0
+data_seed:
+    value: null
+dataloader_drop_last:
+    value: false
+dataloader_in_order:
+    value: true
+dataloader_multiprocessing_context:
+    value: null
+dataloader_num_workers:
+    value: 0
+dataloader_persistent_workers:
+    value: false
+dataloader_pin_memory:
+    value: true
+dataloader_prefetch_factor:
+    value: null
+ddp_backend:
+    value: null
+ddp_broadcast_buffers:
+    value: null
+ddp_bucket_cap_mb:
+    value: null
+ddp_find_unused_parameters:
+    value: null
+ddp_static_graph:
+    value: null
+ddp_timeout:
+    value: 1800
+debug:
+    value: []
+deepspeed:
+    value: null
+disable_tqdm:
+    value: false
+do_eval:
+    value: false
+do_predict:
+    value: false
+do_train:
+    value: false
+dtype:
+    value: bfloat16
+effective_batch:
+    value: 8
+enable_jit_checkpoint:
+    value: false
+eos_token_id:
+    value: 151645
+eval_accumulation_steps:
+    value: null
+eval_delay:
+    value: 0
+eval_do_concat_batches:
+    value: true
+eval_on_start:
+    value: false
+eval_steps:
+    value: 5
+eval_strategy:
+    value: steps
+eval_use_gather_object:
+    value: false
+field_weights:
+    value: '{"prompt": 0.0, "cot": 1.0, "hard_case_type": 4.0, "sentiment": 3.0, "relevance": 3.0, "risk_categories": 2.0, "evidence": 0.4, "skeleton": 0.0, "default": 1.0}'
+fp16:
+    value: false
+fp16_full_eval:
+    value: false
+fsdp:
+    value: null
+fsdp_config:
+    value: null
+full_determinism:
+    value: false
+gradient_accumulation_steps:
+    value: 4
+gradient_checkpointing:
+    value: false
+gradient_checkpointing_kwargs:
+    value: null
+greater_is_better:
+    value: null
+head_dim:
+    value: 128
+hidden_act:
+    value: silu
+hidden_size:
+    value: 2560
+hub_always_push:
+    value: false
+hub_model_id:
+    value: null
+hub_private_repo:
+    value: null
+hub_revision:
+    value: null
+hub_strategy:
+    value: every_save
+hub_token:
+    value: <HUB_TOKEN>
+id2label:
+    value:
+        "0": LABEL_0
+        "1": LABEL_1
+ignore_data_skip:
+    value: false
+include_for_metrics:
+    value: []
+include_num_input_tokens_seen:
+    value: "no"
+initializer_range:
+    value: 0.02
+intermediate_size:
+    value: 9728
+is_encoder_decoder:
+    value: false
+label_names:
+    value: null
+label_smoothing_factor:
+    value: 0
+label2id:
+    value:
+        LABEL_0: 0
+        LABEL_1: 1
+layer_types:
+    value:
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+        - full_attention
+learning_rate:
+    value: 0.0001
+length_column_name:
+    value: length
+liger_kernel_config:
+    value: null
+load_best_model_at_end:
+    value: false
+local_rank:
+    value: -1
+log_level:
+    value: passive
+log_level_replica:
+    value: warning
+log_on_each_node:
+    value: true
+logging_first_step:
+    value: false
+logging_nan_inf_filter:
+    value: true
+logging_steps:
+    value: 1
+logging_strategy:
+    value: steps
+lora_alpha:
+    value: 32
+lora_r:
+    value: 16
+lr_scheduler_kwargs:
+    value: null
+lr_scheduler_type:
+    value: cosine
+max_grad_norm:
+    value: 1
+max_position_embeddings:
+    value: 262144
+max_seq_length:
+    value: 2560
+max_steps:
+    value: -1
+max_window_layers:
+    value: 36
+metric_for_best_model:
+    value: null
+model/num_parameters:
+    value: 4055503360
+model_type:
+    value: qwen3
+neftune_noise_alpha:
+    value: null
+num_attention_heads:
+    value: 32
+num_hidden_layers:
+    value: 36
+num_key_value_heads:
+    value: 8
+num_train_epochs:
+    value: 6
+optim:
+    value: adamw_torch
+optim_args:
+    value: null
+optim_target_modules:
+    value: null
+optimizer_steps_total:
+    value: 60
+output_attentions:
+    value: false
+output_dir:
+    value: /root/autodl-tmp/models/sft_senti/run_20261024_180116/probe_lora
+output_hidden_states:
+    value: false
+pad_token_id:
+    value: null
+parallelism_config:
+    value: null
+peft_config:
+    value:
+        default:
+            alora_invocation_tokens: null
+            arrow_config: null
+            auto_mapping: null
+            base_model_name_or_path: /root/autodl-tmp/models/Qwen3-4B-Instruct-2507
+            bias: none
+            corda_config: null
+            ensure_weight_tying: false
+            eva_config: null
+            exclude_modules: null
+            fan_in_fan_out: false
+            inference_mode: false
+            init_lora_weights: true
+            layer_replication: null
+            layers_pattern: null
+            layers_to_transform: null
+            lora_alpha: 32
+            lora_bias: false
+            lora_dropout: 0.05
+            lora_ga_config: null
+            megatron_config: null
+            megatron_core: megatron.core
+            modules_to_save: null
+            monteclora_config: null
+            peft_type: LORA
+            peft_version: 0.20.0
+            qalora_group_size: 16
+            r: 16
+            revision: null
+            runtime_config:
+                ephemeral_gpu_offload: false
+            target_modules:
+                - q_proj
+                - gate_proj
+                - down_proj
+                - v_proj
+                - up_proj
+                - k_proj
+                - o_proj
+            target_parameters: null
+            task_type: CAUSAL_LM
+            trainable_token_indices:
+                - 151667
+                - 151668
+            use_bdlora: null
+            use_dora: false
+            use_qalora: false
+            use_rslora: false
+            velora_config: null
+per_device_eval_batch_size:
+    value: 8
+per_device_train_batch_size:
+    value: 2
+poc_stage:
+    value: POC3
+prediction_loss_only:
+    value: false
+probe_tag:
+    value: sentiment-sft-probe
+problem_type:
+    value: null
+project:
+    value: huggingface
+push_to_hub:
+    value: false
+remove_unused_columns:
+    value: false
+report_to:
+    value:
+        - wandb
+restore_callback_states_from_checkpoint:
+    value: false
+resume_from_checkpoint:
+    value: null
+return_dict:
+    value: true
+rms_norm_eps:
+    value: 1e-06
+rope_parameters:
+    value:
+        rope_theta: 5000000
+        rope_type: default
+run_name:
+    value: probe_20261024_180116
+save_on_each_node:
+    value: false
+save_only_model:
+    value: false
+save_steps:
+    value: 500
+save_strategy:
+    value: "no"
+save_total_limit:
+    value: null
+seed:
+    value: 42
+skip_memory_metrics:
+    value: true
+sliding_window:
+    value: null
+tf32:
+    value: null
+tie_word_embeddings:
+    value: true
+torch_compile:
+    value: false
+torch_compile_backend:
+    value: null
+torch_compile_mode:
+    value: null
+torch_empty_cache_steps:
+    value: null
+trackio_bucket_id:
+    value: null
+trackio_space_id:
+    value: null
+trackio_static_space_id:
+    value: null
+train_file:
+    value: /root/autodl-tmp/datasets/mixed/sft_train.jsonl
+train_samples:
+    value: 73
+train_sampling_strategy:
+    value: random
+transformers_version:
+    value: 5.15.0
+use_cache:
+    value: false
+use_cpu:
+    value: false
+use_field_weights:
+    value: true
+use_liger_kernel:
+    value: false
+use_skeleton_mask:
+    value: true
+use_sliding_window:
+    value: false
+val_samples:
+    value: 8
+vocab_size:
+    value: 151936
+warmup_steps:
+    value: 3
+weight_decay:
+    value: 0

@@ -10,7 +10,6 @@ data/mixed/
 # 公开 Anchor 数据集（由 download_assets.py 生成）
 data/coig_cqia_anchor.jsonl
 results
-wandb/
 .DS_Store
 data/align_report.json
 .claude/settings.json

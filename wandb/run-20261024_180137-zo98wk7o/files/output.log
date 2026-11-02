@@ -1,0 +1,86 @@
+                                               
+{'loss': '2.791', 'grad_norm': '13.85', 'learning_rate': '0', 'epoch': '0.1081'}
+{'loss': '2.638', 'grad_norm': '9.279', 'learning_rate': '3.333e-05', 'epoch': '0.2162'}
+{'loss': '2.518', 'grad_norm': '4.936', 'learning_rate': '6.667e-05', 'epoch': '0.3243'}
+{'loss': '2.588', 'grad_norm': '4.878', 'learning_rate': '0.0001', 'epoch': '0.4324'}
+{'loss': '2.257', 'grad_norm': '3.811', 'learning_rate': '9.992e-05', 'epoch': '0.5405'}
+                                             
+{'eval_loss': '1.804', 'eval_runtime': '2.029', 'eval_samples_per_second': '3.943', 'eval_steps_per_second': '0.493', 'epoch': '0.5405'}
+{'loss': '1.58', 'grad_norm': '2.742', 'learning_rate': '9.97e-05', 'epoch': '0.6486'}
+{'loss': '1.514', 'grad_norm': '1.747', 'learning_rate': '9.932e-05', 'epoch': '0.7568'}
+{'loss': '1.391', 'grad_norm': '1.509', 'learning_rate': '9.879e-05', 'epoch': '0.8649'}
+{'loss': '1.393', 'grad_norm': '1.515', 'learning_rate': '9.811e-05', 'epoch': '0.973'}
+{'loss': '1.29', 'grad_norm': '1.642', 'learning_rate': '9.729e-05', 'epoch': '1'}
+{'eval_loss': '1.394', 'eval_runtime': '2.012', 'eval_samples_per_second': '3.976', 'eval_steps_per_second': '0.497', 'epoch': '1'}
+{'loss': '1.342', 'grad_norm': '1.609', 'learning_rate': '9.632e-05', 'epoch': '1.108'}
+{'loss': '1.289', 'grad_norm': '1.523', 'learning_rate': '9.522e-05', 'epoch': '1.216'}
+{'loss': '1.182', 'grad_norm': '1.299', 'learning_rate': '9.397e-05', 'epoch': '1.324'}
+{'loss': '1.254', 'grad_norm': '1.305', 'learning_rate': '9.26e-05', 'epoch': '1.432'}
+{'loss': '1.182', 'grad_norm': '1.413', 'learning_rate': '9.109e-05', 'epoch': '1.541'}
+{'eval_loss': '1.214', 'eval_runtime': '1.855', 'eval_samples_per_second': '4.313', 'eval_steps_per_second': '0.539', 'epoch': '1.541'}
+{'loss': '1.093', 'grad_norm': '1.337', 'learning_rate': '8.946e-05', 'epoch': '1.649'}
+{'loss': '0.993', 'grad_norm': '1.219', 'learning_rate': '8.771e-05', 'epoch': '1.757'}
+{'loss': '1.112', 'grad_norm': '1.374', 'learning_rate': '8.584e-05', 'epoch': '1.865'}
+{'loss': '1.073', 'grad_norm': '1.147', 'learning_rate': '8.386e-05', 'epoch': '1.973'}
+{'loss': '0.8282', 'grad_norm': '1.507', 'learning_rate': '8.179e-05', 'epoch': '2'}
+{'eval_loss': '1.082', 'eval_runtime': '1.863', 'eval_samples_per_second': '4.294', 'eval_steps_per_second': '0.537', 'epoch': '2'}
+{'loss': '1.055', 'grad_norm': '1.196', 'learning_rate': '7.961e-05', 'epoch': '2.108'}
+{'loss': '0.8481', 'grad_norm': '1.091', 'learning_rate': '7.735e-05', 'epoch': '2.216'}
+{'loss': '0.906', 'grad_norm': '1.216', 'learning_rate': '7.5e-05', 'epoch': '2.324'}
+{'loss': '0.9913', 'grad_norm': '1.108', 'learning_rate': '7.258e-05', 'epoch': '2.432'}
+{'loss': '0.9505', 'grad_norm': '1.107', 'learning_rate': '7.008e-05', 'epoch': '2.541'}
+{'eval_loss': '1.012', 'eval_runtime': '1.925', 'eval_samples_per_second': '4.155', 'eval_steps_per_second': '0.519', 'epoch': '2.541'}
+{'loss': '0.8074', 'grad_norm': '0.9916', 'learning_rate': '6.753e-05', 'epoch': '2.649'}
+{'loss': '0.8316', 'grad_norm': '0.9866', 'learning_rate': '6.493e-05', 'epoch': '2.757'}
+{'loss': '0.8183', 'grad_norm': '0.9859', 'learning_rate': '6.227e-05', 'epoch': '2.865'}
+{'loss': '0.8574', 'grad_norm': '0.8658', 'learning_rate': '5.959e-05', 'epoch': '2.973'}
+{'loss': '0.9883', 'grad_norm': '1.66', 'learning_rate': '5.687e-05', 'epoch': '3'}
+[CANARY] step 30: p(</think>)=0.677  p(next|after</think>)=0.000  p(<|im_end|>)=1.000  greedy_ok=3/3
+{'eval_loss': '0.9702', 'eval_runtime': '1.843', 'eval_samples_per_second': '4.341', 'eval_steps_per_second': '0.543', 'epoch': '3'}
+[CANARY] step 30: p(</think>)=0.677  p(next|after</think>)=0.000  p(<|im_end|>)=1.000  greedy_ok=3/3
+{'loss': '0.8271', 'grad_norm': '0.7308', 'learning_rate': '5.413e-05', 'epoch': '3.108'}
+{'loss': '0.8185', 'grad_norm': '0.7214', 'learning_rate': '5.138e-05', 'epoch': '3.216'}
+{'loss': '0.7417', 'grad_norm': '0.714', 'learning_rate': '4.862e-05', 'epoch': '3.324'}
+{'loss': '0.7678', 'grad_norm': '0.6833', 'learning_rate': '4.587e-05', 'epoch': '3.432'}
+{'loss': '0.7554', 'grad_norm': '0.6694', 'learning_rate': '4.313e-05', 'epoch': '3.541'}
+{'eval_loss': '0.9466', 'eval_runtime': '1.859', 'eval_samples_per_second': '4.303', 'eval_steps_per_second': '0.538', 'epoch': '3.541'}
+{'loss': '0.7605', 'grad_norm': '0.7368', 'learning_rate': '4.041e-05', 'epoch': '3.649'}
+{'loss': '0.8233', 'grad_norm': '0.6752', 'learning_rate': '3.773e-05', 'epoch': '3.757'}
+{'loss': '0.7372', 'grad_norm': '0.6988', 'learning_rate': '3.507e-05', 'epoch': '3.865'}
+{'loss': '0.6968', 'grad_norm': '1.151', 'learning_rate': '3.247e-05', 'epoch': '3.973'}
+{'loss': '0.878', 'grad_norm': '1.489', 'learning_rate': '2.992e-05', 'epoch': '4'}
+{'eval_loss': '0.9344', 'eval_runtime': '1.856', 'eval_samples_per_second': '4.31', 'eval_steps_per_second': '0.539', 'epoch': '4'}
+{'loss': '0.7992', 'grad_norm': '0.615', 'learning_rate': '2.742e-05', 'epoch': '4.108'}
+{'loss': '0.632', 'grad_norm': '0.5757', 'learning_rate': '2.5e-05', 'epoch': '4.216'}
+{'loss': '0.6821', 'grad_norm': '0.5978', 'learning_rate': '2.265e-05', 'epoch': '4.324'}
+{'loss': '0.8036', 'grad_norm': '0.6102', 'learning_rate': '2.039e-05', 'epoch': '4.432'}
+{'loss': '0.7365', 'grad_norm': '0.682', 'learning_rate': '1.821e-05', 'epoch': '4.541'}
+{'eval_loss': '0.9274', 'eval_runtime': '1.87', 'eval_samples_per_second': '4.279', 'eval_steps_per_second': '0.535', 'epoch': '4.541'}
+{'loss': '0.708', 'grad_norm': '0.6742', 'learning_rate': '1.614e-05', 'epoch': '4.649'}
+{'loss': '0.7202', 'grad_norm': '0.5951', 'learning_rate': '1.416e-05', 'epoch': '4.757'}
+{'loss': '0.7149', 'grad_norm': '0.5624', 'learning_rate': '1.229e-05', 'epoch': '4.865'}
+{'loss': '0.6413', 'grad_norm': '0.6044', 'learning_rate': '1.054e-05', 'epoch': '4.973'}
+{'loss': '0.6799', 'grad_norm': '1.59', 'learning_rate': '8.911e-06', 'epoch': '5'}
+{'eval_loss': '0.921', 'eval_runtime': '1.857', 'eval_samples_per_second': '4.309', 'eval_steps_per_second': '0.539', 'epoch': '5'}
+{'loss': '0.6481', 'grad_norm': '0.5926', 'learning_rate': '7.404e-06', 'epoch': '5.108'}
+{'loss': '0.7179', 'grad_norm': '0.5969', 'learning_rate': '6.026e-06', 'epoch': '5.216'}
+{'loss': '0.7104', 'grad_norm': '0.6067', 'learning_rate': '4.782e-06', 'epoch': '5.324'}
+{'loss': '0.6451', 'grad_norm': '0.554', 'learning_rate': '3.675e-06', 'epoch': '5.432'}
+{'loss': '0.6915', 'grad_norm': '0.9236', 'learning_rate': '2.709e-06', 'epoch': '5.541'}
+{'eval_loss': '0.9182', 'eval_runtime': '1.864', 'eval_samples_per_second': '4.291', 'eval_steps_per_second': '0.536', 'epoch': '5.541'}
+{'loss': '0.6444', 'grad_norm': '0.5603', 'learning_rate': '1.887e-06', 'epoch': '5.649'}
+{'loss': '0.7287', 'grad_norm': '0.6158', 'learning_rate': '1.21e-06', 'epoch': '5.757'}
+{'loss': '0.6908', 'grad_norm': '0.563', 'learning_rate': '6.819e-07', 'epoch': '5.865'}
+{'loss': '0.7538', 'grad_norm': '0.6498', 'learning_rate': '3.035e-07', 'epoch': '5.973'}
+{'loss': '0.6671', 'grad_norm': '1.971', 'learning_rate': '7.592e-08', 'epoch': '6'}
+[CANARY] step 60: p(</think>)=0.894  p(next|after</think>)=0.000  p(<|im_end|>)=1.000  greedy_ok=3/3
+{'eval_loss': '0.9183', 'eval_runtime': '1.862', 'eval_samples_per_second': '4.296', 'eval_steps_per_second': '0.537', 'epoch': '6'}
+[CANARY] step 60: p(</think>)=0.894  p(next|after</think>)=0.000  p(<|im_end|>)=1.000  greedy_ok=3/3
+{'train_runtime': '622.6', 'train_samples_per_second': '0.704', 'train_steps_per_second': '0.096', 'train_loss': '1.036', 'epoch': '6'}
+[CANARY] step 60: p(</think>)=0.894  p(next|after</think>)=0.000  p(<|im_end|>)=1.000  greedy_ok=3/3
+[CANARY] step 60: p(</think>)=0.894  p(next|after</think>)=0.000  p(<|im_end|>)=1.000  greedy_ok=3/3
+[EVAL] 训练结束 val_loss = 0.9182955026626587 (对照 train_loss=1.036340981721878；val 明显高于 train ⇒ 73 条小样本已出现过拟合，属探针预期内观察)
+[OK] 训练完成，LoRA Adapter 已存盘: /root/autodl-tmp/models/sft_senti/run_20261024_180116/probe_lora
+[OK] 训练指标存盘: /root/autodl-tmp/models/sft_senti/run_20261024_180116/probe_lora/train_metrics.json
+[OK] 本轮耗时: 679.8s | loss(train)=1.036340981721878
+[OK] wandb 同步完成: run=probe_20261024_180116, 查看 https://wandb.ai/hozshan-sally-he/sentiment-sft-probe4/runs/zo98wk7o

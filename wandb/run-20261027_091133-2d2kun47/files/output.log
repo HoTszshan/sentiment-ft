@@ -1,0 +1,20 @@
+100%|██████████| 10/10 [00:36<00:00,  3.66s/it]
+{'loss': '3.044', 'grad_norm': '15.52', 'learning_rate': '0', 'epoch': '0.1053'}
+{'loss': '2.794', 'grad_norm': '9.117', 'learning_rate': '0.0001', 'epoch': '0.2105'}
+{'loss': '2.516', 'grad_norm': '5.297', 'learning_rate': '9.698e-05', 'epoch': '0.3158'}
+{'loss': '2.425', 'grad_norm': '4.738', 'learning_rate': '8.83e-05', 'epoch': '0.4211'}
+{'loss': '2.173', 'grad_norm': '3.589', 'learning_rate': '7.5e-05', 'epoch': '0.5263'}
+100%|██████████| 1/1 [00:00<00:00,  7.51it/s]
+{'eval_loss': '1.796', 'eval_runtime': '1.97', 'eval_samples_per_second': '4.061', 'eval_steps_per_second': '0.508', 'epoch': '0.5263'}
+{'loss': '1.591', 'grad_norm': '2.407', 'learning_rate': '5.868e-05', 'epoch': '0.6316'}
+{'loss': '1.609', 'grad_norm': '2.12', 'learning_rate': '4.132e-05', 'epoch': '0.7368'}
+{'loss': '1.538', 'grad_norm': '2.077', 'learning_rate': '2.5e-05', 'epoch': '0.8421'}
+{'loss': '1.555', 'grad_norm': '1.804', 'learning_rate': '1.17e-05', 'epoch': '0.9474'}
+{'loss': '1.548', 'grad_norm': '1.771', 'learning_rate': '3.015e-06', 'epoch': '1'}
+{'eval_loss': '1.605', 'eval_runtime': '2.018', 'eval_samples_per_second': '3.963', 'eval_steps_per_second': '0.495', 'epoch': '1'}
+{'train_runtime': '39.79', 'train_samples_per_second': '1.835', 'train_steps_per_second': '0.251', 'train_loss': '2.079', 'epoch': '1'}
+[EVAL] 训练结束 val_loss = 1.604993462562561 (对照 train_loss=2.0794506669044495；val 明显高于 train ⇒ 73 条小样本已出现过拟合，属探针预期内观察)
+[OK] 训练完成，LoRA Adapter 已存盘: /root/autodl-tmp/models/sft_senti/run_20261027_091108/probe_lora
+[OK] 训练指标存盘: /root/autodl-tmp/models/sft_senti/run_20261027_091108/probe_lora/train_metrics.json
+[OK] 本轮耗时: 40.5s | loss(train)=2.0794506669044495
+[OK] wandb 同步完成: run=probe_20261027_091108, 查看 https://wandb.ai/hozshan-sally-he/sentiment-sft-probe4/runs/2d2kun47
