@@ -113,3 +113,115 @@
   - 门 2 金标不退化未过
 ======================================================================
 [OK] 结构化报告已落盘: /root/autodl-tmp/senti/output/R7ep4_G1p2_pool_r2_1877/eval.jsonl
+======================================================================
+模式 B · 模型对照评测
+  gold: data/gold500_test.jsonl
+  pred: /root/autodl-tmp/models/grpo_senti/run_20261103_001319_G1p2_pool_r2_1877/pred_gold500_test.jsonl
+  分母口径: 强解析失败即丢弃
+======================================================================
+
+--- 一、协议与格式门槛 ---
+  思考标签闭合率      : 100.00%  (要求 100%)
+  JSON 合法率         : 100.00%  (门槛 ≥99.8%)
+  evidence 严格子串率 : 100.00%  (分母=总样本数 500, 一票否决)
+  evidence 字段覆盖率 : 100.00%
+  闭集契约违规        : 1 条
+  尾赘文本条数        : 0
+
+--- 二、hard_case_type (7 类) ---
+  Macro-F1: 78.11%
+  类别                 support        P        R       F1
+  comparative             45    60.9%    86.7%    71.6%
+  counterfactual          50    81.4%    96.0%    88.1%
+  explicit               129    82.8%    78.3%    80.5%
+  fact_implicit          111    86.7%    76.6%    81.3%
+  irony                   45    94.7%    80.0%    86.7%
+  metaphor                40    63.2%    60.0%    61.5%
+  multi_subject           80    76.5%    77.5%    77.0%
+
+  ★ irony 单项召回: 80.00%  (FAIL, 门槛 ≥90.0%)
+
+--- 三、sentiment (3 类) ---
+  Macro-F1: 94.52%
+  类别           support        P        R       F1
+  negative         166    92.0%    97.6%    94.7%
+  neutral          226    97.7%    92.0%    94.8%
+  positive         108    92.8%    95.4%    94.1%
+
+  ★ 负向召回 (成对口径): 97.59%  |  误报率: 7.95%  (负向精确率 92.05%)
+
+--- 四、risk_categories (对称双罚) ---
+  ★ Subset Accuracy: 76.80%  (FAIL, 门槛 ≥90.0%)
+  空表支撑集: 264 条 | 空表精确率: 92.80%
+
+  per-key 诊断线 (不进准入门槛):
+  Key                  support        P        R       F1
+  compliance                36    70.3%    72.2%    71.2%
+  finance                    5    14.3%    20.0%    16.7%
+  general_negative          21    36.4%    19.0%    25.0%
+  governance                10   100.0%    20.0%    33.3%
+  marketing                 78    84.0%    80.8%    82.4%
+  product                  105    87.3%    91.4%    89.3%
+  service                   92    76.8%    82.6%    79.6%
+
+--- 五、四维切片热力 ---
+  [hard_case_type] 风险完全匹配率
+    explicit              n=129    77.5%
+    fact_implicit         n=111    81.1%
+    multi_subject         n=80     85.0%
+    counterfactual        n=50     66.0%
+    comparative           n=45     84.4%
+    irony                 n=45     62.2%
+    metaphor              n=40     67.5%
+  [industry] 风险完全匹配率
+    electronics_3c        n=92     78.3%
+    automotive            n=90     64.4%
+    beauty_cosmetics      n=87     74.7%
+    finance_insurance     n=79     83.5%
+    fmcg                  n=79     83.5%
+    real_estate           n=73     78.1%
+  [relevance] 风险完全匹配率
+    core                  n=328    72.0%
+    passing               n=136    85.3%
+    foil                  n=36     88.9%
+  [sentiment] 风险完全匹配率
+    neutral               n=226    79.2%
+    negative              n=166    59.6%
+    positive              n=108    98.2%
+
+--- 六、错判样例 (前 5 条，供 Shadow Pool 归因) ---
+  #9 [electronics_3c] gold=[] pred=[] sent:positive→neutral hc:explicit→fact_implicit
+      原文: 【目标主体】云佳系列
+【输入文本】
+关于2026年第二季度消费电子市场运行情况的通报显示，行业整体出…
+  #13 [beauty_cosmetics] gold=['governance'] pred=['marketing'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】雅诗兰黛小棕瓶
+【输入文本】
+做季度传播复盘时，我会把代言争议的治理信息单独列项：行业常…
+  #19 [fmcg] gold=['marketing', 'product'] pred=['compliance', 'marketing'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】统一
+【输入文本】
+刚查了统一的配料表，宣传的高蛋白含量根本达不到国标下限，标签还玩文字…
+  #23 [real_estate] gold=['compliance', 'service'] pred=['compliance'] sent:negative→negative hc:explicit→explicit
+      原文: 【目标主体】保利
+【输入文本】
+各位邻居，本周六上午九点，大家带上合同和付款凭证，去市住建局门口集合…
+  #25 [beauty_cosmetics] gold=['general_negative'] pred=['marketing', 'product'] sent:negative→negative hc:explicit→metaphor
+      原文: 【目标主体】珀莱雅双抗系列
+【输入文本】
+#化妆品抽检通报# 刚刷到监管部门这期抽检结果，真的火大！…
+
+--- 七、发布门 ---
+  gate1: N/A
+  gate2: FAIL
+  gate3: N/A
+  gate4: PASS
+  归因（前 5 条）:
+    [gate2] irony_recall: 安全字段未达底线：80.00 < 90.00
+
+======================================================================
+验收结论: 【FAIL 未达发布门槛】
+  - 闭集契约违规 1 条
+  - 门 2 金标不退化未过
+======================================================================
+[OK] 结构化报告已落盘: /root/autodl-tmp/senti/output/R7ep4_G1p2_pool_r2_1877/eval.jsonl
