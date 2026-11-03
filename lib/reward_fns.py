@@ -73,6 +73,17 @@ COT_SHORT = 120   # 过短罚下限：低于此视为推理空壳
 COT_IDEAL_HI = 200
 COT_DEAD = 320
 
+# ── G5a 消融开关 (2026-11-03)：r_length 硬置 0，验证 CoT 压缩归因 ──
+# 置 True 后 r_length 恒返 0（等于该维度不存在），其余三维不受影响；
+# 仅对照实验（tag G5a_nolen）使用，正式训练必须保持 False。
+R_LENGTH_DISABLED = os.environ.get("GRPO_DISABLE_R_LENGTH", "0") == "1"
+
+# ── G5c 消融开关 (2026-11-03)：risk 部分匹配档 ──
+# True 时 r_accuracy 的 risk 未中区插入 0.5 + 0.2×Jaccard(g_rk, p_rk) 部分档
+# （Jaccard>0 才生效；全对仍走 0.7/1.0 原档）；
+# 单调链保持 0.5 < 部分档(0.5~0.7) < 0.7 ≤ 1.0。仅对照实验（tag G5c_riskjac）使用。
+RISK_PARTIAL_MATCH = os.environ.get("GRPO_RISK_PARTIAL", "0") == "1"
+
 
 # ============================================================
 # 解析工具
@@ -211,6 +222,17 @@ def r_accuracy(completion: str, gold: Dict[str, Any]) -> Tuple[float, Dict[str, 
         detail["accuracy_pass"] = True
     elif detail["risk_ok"]:
         base = round(R_SENTIMENT_ONLY + 0.2, 4)   # 0.7: 难点类型待学
+    elif RISK_PARTIAL_MATCH:
+        # G5c 部分匹配档 (2026-11-03): risk 未全中但与 gold 有交集 →
+        # 0.5 + 0.2×Jaccard(g_rk, p_rk)，区间 (0.5, 0.7)，严格落在
+        # R_SENTIMENT_ONLY(0.5) 与 0.7 档之间，单调链不破；
+        # Jaccard=0（完全瞎标）回落 0.5——「蒙对一个」与「大部分对」就此拉开梯度。
+        inter = len(g_rk & p_rk)
+        union = len(g_rk | p_rk)
+        if union > 0 and inter > 0:
+            base = round(R_SENTIMENT_ONLY + 0.2 * (inter / union), 4)
+        else:
+            base = R_SENTIMENT_ONLY
     else:
         base = R_SENTIMENT_ONLY                    # 0.5: 风险标签待学
     # relevance 轻判 (契约 §五): 弱主观字段只做 ±0.2 微调，不参与定档;
@@ -275,7 +297,12 @@ def compute_reward(completion: str, input_text: str, gold: Dict[str, Any],
     ra, adetail = r_accuracy(completion, gold)
 
     # 门禁不变量2: 长度分只发给「判对 且 溯源通过」的轨迹
-    ri = r_length(completion, accuracy_pass=adetail["accuracy_pass"], tokenizer=tokenizer)
+    # G5a 开关 (2026-11-03): GRPO_DISABLE_R_LENGTH=1 时 r_length 恒 0（维度不存在），
+    # 用于 CoT 压缩归因消融——对照预期: 无压短力时 CoT 分位回弹。
+    if R_LENGTH_DISABLED:
+        ri = 0.0
+    else:
+        ri = r_length(completion, accuracy_pass=adetail["accuracy_pass"], tokenizer=tokenizer)
 
     total = round(rf + rg + ra + ri, 4)
     return {"total": total, "r_format": rf, "r_grounding": rg,
